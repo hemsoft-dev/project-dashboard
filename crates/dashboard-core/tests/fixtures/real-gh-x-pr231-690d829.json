@@ -1,0 +1,363 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-21T07:17:29.834607799Z",
+  "repository": {
+    "nameWithOwner": "hemsoft-dev/gh-x",
+    "rootPath": "/home/franz/github/hemsoft/gh-x",
+    "defaultBranch": "main"
+  },
+  "health": {
+    "defaultBranch": {
+      "status": "available",
+      "reason": "",
+      "clean": true,
+      "name": "main",
+      "checkedOut": true,
+      "upstream": "origin/main",
+      "synced": true,
+      "ahead": 0,
+      "behind": 0,
+      "changes": {
+        "clean": true,
+        "staged": 0,
+        "modified": 0,
+        "deleted": 0,
+        "renamed": 0,
+        "untracked": 0,
+        "conflicted": 0
+      }
+    },
+    "currentBranch": {
+      "status": "available",
+      "reason": "",
+      "clean": true,
+      "name": "main",
+      "checkedOut": true,
+      "upstream": "origin/main",
+      "synced": true,
+      "ahead": 0,
+      "behind": 0,
+      "changes": {
+        "clean": true,
+        "staged": 0,
+        "modified": 0,
+        "deleted": 0,
+        "renamed": 0,
+        "untracked": 0,
+        "conflicted": 0
+      }
+    },
+    "branches": {
+      "status": "available",
+      "reason": "",
+      "clean": false,
+      "local": 3,
+      "remote": 3,
+      "dangling": 1
+    },
+    "worktrees": {
+      "status": "available",
+      "reason": "",
+      "clean": false,
+      "total": 2,
+      "cleanupCandidates": 0,
+      "items": [
+        {
+          "path": "/home/franz/github/hemsoft/gh-x",
+          "head": "dea2252055e14229335cb8ad83cb88a1bae56e29",
+          "branch": "main",
+          "detached": false,
+          "detachedMerged": false,
+          "locked": false,
+          "prunable": false,
+          "prunableReason": "",
+          "primary": true,
+          "current": true,
+          "exists": true,
+          "clean": true,
+          "cleanKnown": true,
+          "cleanupCandidate": false,
+          "cleanupReason": ""
+        },
+        {
+          "path": "/home/franz/github/hemsoft/gh-x.worktrees/issue-230-status-json-output",
+          "head": "690d8297174672bd10bdad1663dfb38c06185006",
+          "branch": "feature/issue-230-status-json-output",
+          "detached": false,
+          "detachedMerged": false,
+          "locked": false,
+          "prunable": false,
+          "prunableReason": "",
+          "primary": false,
+          "current": false,
+          "exists": true,
+          "clean": true,
+          "cleanKnown": true,
+          "cleanupCandidate": false,
+          "cleanupReason": ""
+        }
+      ]
+    },
+    "stashes": {
+      "status": "available",
+      "reason": "",
+      "clean": true,
+      "count": 0
+    }
+  },
+  "issues": [
+    {
+      "number": 230,
+      "pullRequests": "#231",
+      "parent": "-",
+      "subIssues": "-",
+      "title": "Add --json output to gh x status",
+      "author": "Franz Hemmer",
+      "state": "open",
+      "labels": "feature, go",
+      "assignees": "",
+      "updated": "1h",
+      "updatedAt": "2026-10-21T06:13:02Z",
+      "url": "https://github.com/hemsoft-dev/gh-x/issues/230"
+    }
+  ],
+  "pullRequests": {
+    "open": [
+      {
+        "number": 231,
+        "issues": "#230",
+        "title": "feat: add versioned JSON output to status",
+        "author": "Franz Hemmer",
+        "state": "open",
+        "review": "-",
+        "approvals": 0,
+        "approvers": [],
+        "approvalsIncomplete": false,
+        "checks": "pending",
+        "comments": "4/4",
+        "aiReview": "pass",
+        "aiClean": true,
+        "branch": "issue-230-statu…",
+        "updated": "6m",
+        "updatedAt": "2026-10-21T07:11:17Z",
+        "mergedAt": null,
+        "url": "https://github.com/hemsoft-dev/gh-x/pull/231"
+      }
+    ],
+    "merged": [
+      {
+        "number": 229,
+        "issues": "-",
+        "title": "docs: record v0.21.2 release",
+        "author": "Franz Hemmer",
+        "state": "merged",
+        "review": "-",
+        "approvals": 0,
+        "approvers": [],
+        "approvalsIncomplete": false,
+        "checks": "pass",
+        "comments": "-",
+        "aiReview": "pass",
+        "aiClean": true,
+        "branch": "changelog-0.21.2",
+        "updated": "1d",
+        "updatedAt": "2026-10-19T22:11:46Z",
+        "mergedAt": "2026-10-19T22:11:44Z",
+        "url": "https://github.com/hemsoft-dev/gh-x/pull/229"
+      },
+      {
+        "number": 225,
+        "issues": "-",
+        "title": "chore(deps): bump the go-modules group across 1 ...",
+        "author": "dependabot",
+        "state": "merged",
+        "review": "-",
+        "approvals": 0,
+        "approvers": [],
+        "approvalsIncomplete": false,
+        "checks": "pass",
+        "comments": "-",
+        "aiReview": "pass",
+        "aiClean": true,
+        "branch": "go-modules-20c3…",
+        "updated": "1d",
+        "updatedAt": "2026-10-19T21:03:49Z",
+        "mergedAt": "2026-10-19T21:03:47Z",
+        "url": "https://github.com/hemsoft-dev/gh-x/pull/225"
+      },
+      {
+        "number": 226,
+        "issues": "-",
+        "title": "chore(deps): bump the github-actions group with ...",
+        "author": "dependabot",
+        "state": "merged",
+        "review": "-",
+        "approvals": 0,
+        "approvers": [],
+        "approvalsIncomplete": false,
+        "checks": "pass",
+        "comments": "-",
+        "aiReview": "pass",
+        "aiClean": true,
+        "branch": "github-actions-…",
+        "updated": "1d",
+        "updatedAt": "2026-10-19T21:01:24Z",
+        "mergedAt": "2026-10-19T21:01:22Z",
+        "url": "https://github.com/hemsoft-dev/gh-x/pull/226"
+      },
+      {
+        "number": 228,
+        "issues": "-",
+        "title": "docs: record v0.21.1 release",
+        "author": "Franz Hemmer",
+        "state": "merged",
+        "review": "-",
+        "approvals": 0,
+        "approvers": [],
+        "approvalsIncomplete": false,
+        "checks": "pass",
+        "comments": "-",
+        "aiReview": "pass",
+        "aiClean": true,
+        "branch": "record-v0.21.1",
+        "updated": "1d",
+        "updatedAt": "2026-10-19T20:45:12Z",
+        "mergedAt": "2026-10-19T20:45:07Z",
+        "url": "https://github.com/hemsoft-dev/gh-x/pull/228"
+      },
+      {
+        "number": 227,
+        "issues": "-",
+        "title": "fix(ci): recognize Codex receipts with HTML meta...",
+        "author": "Franz Hemmer",
+        "state": "merged",
+        "review": "-",
+        "approvals": 0,
+        "approvers": [],
+        "approvalsIncomplete": false,
+        "checks": "fail",
+        "comments": "-",
+        "aiReview": "pass",
+        "aiClean": true,
+        "branch": "codex-receipt-c…",
+        "updated": "1d",
+        "updatedAt": "2026-10-19T21:04:04Z",
+        "mergedAt": "2026-10-19T09:08:06Z",
+        "url": "https://github.com/hemsoft-dev/gh-x/pull/227"
+      }
+    ],
+    "mergedLimit": 5
+  },
+  "workflowRuns": [
+    {
+      "id": "39560246091",
+      "url": "https://github.com/hemsoft-dev/gh-x/actions/runs/39560246091",
+      "status": "*",
+      "rawStatus": "in_progress",
+      "title": "feat: add versioned JSON output to st...",
+      "workflow": "CI Quality Gates",
+      "branch": "feature/issue-230-sta...",
+      "event": "pull_request",
+      "elapsed": "6m9s",
+      "age": "6m",
+      "createdAt": "2026-10-21T07:11:20Z",
+      "startedAt": "2026-10-21T07:11:20Z",
+      "updatedAt": "2026-10-21T07:11:28Z"
+    },
+    {
+      "id": "39558917899",
+      "url": "https://github.com/hemsoft-dev/gh-x/actions/runs/39558917899",
+      "status": "✓",
+      "rawStatus": "completed",
+      "title": "feat: add versioned JSON output to st...",
+      "workflow": "CI Quality Gates",
+      "branch": "feature/issue-230-sta...",
+      "event": "pull_request",
+      "elapsed": "8m7s",
+      "age": "17m",
+      "createdAt": "2026-10-21T06:59:37Z",
+      "startedAt": "2026-10-21T06:59:37Z",
+      "updatedAt": "2026-10-21T07:07:44Z"
+    },
+    {
+      "id": "39558215235",
+      "url": "https://github.com/hemsoft-dev/gh-x/actions/runs/39558215235",
+      "status": "✓",
+      "rawStatus": "completed",
+      "title": "feat: add versioned JSON output to st...",
+      "workflow": "CI Quality Gates",
+      "branch": "feature/issue-230-sta...",
+      "event": "pull_request",
+      "elapsed": "7m28s",
+      "age": "24m",
+      "createdAt": "2026-10-21T06:53:02Z",
+      "startedAt": "2026-10-21T06:53:02Z",
+      "updatedAt": "2026-10-21T07:00:30Z"
+    },
+    {
+      "id": "39557264251",
+      "url": "https://github.com/hemsoft-dev/gh-x/actions/runs/39557264251",
+      "status": "X",
+      "rawStatus": "completed",
+      "title": "feat: add versioned JSON output to st...",
+      "workflow": "CI Quality Gates",
+      "branch": "feature/issue-230-sta...",
+      "event": "pull_request",
+      "elapsed": "9m21s",
+      "age": "33m",
+      "createdAt": "2026-10-21T06:44:05Z",
+      "startedAt": "2026-10-21T06:44:05Z",
+      "updatedAt": "2026-10-21T06:53:26Z"
+    },
+    {
+      "id": "39556153939",
+      "url": "https://github.com/hemsoft-dev/gh-x/actions/runs/39556153939",
+      "status": "X",
+      "rawStatus": "completed",
+      "title": "feat: add versioned JSON output to st...",
+      "workflow": "CI Quality Gates",
+      "branch": "feature/issue-230-sta...",
+      "event": "pull_request",
+      "elapsed": "11m1s",
+      "age": "43m",
+      "createdAt": "2026-10-21T06:33:32Z",
+      "startedAt": "2026-10-21T06:33:32Z",
+      "updatedAt": "2026-10-21T06:44:33Z"
+    }
+  ],
+  "workflowRunsPerfect": false,
+  "sections": [
+    {
+      "name": "issues",
+      "status": "available",
+      "reason": "",
+      "cached": true,
+      "fetchedAt": "2026-10-21T07:17:14.038548523Z",
+      "cacheAgeSeconds": 15.796059276
+    },
+    {
+      "name": "pullRequests.open",
+      "status": "available",
+      "reason": "",
+      "cached": true,
+      "fetchedAt": "2026-10-21T07:17:15.544390287Z",
+      "cacheAgeSeconds": 14.290217512
+    },
+    {
+      "name": "pullRequests.merged",
+      "status": "available",
+      "reason": "",
+      "cached": true,
+      "fetchedAt": "2026-10-21T07:17:18.725982372Z",
+      "cacheAgeSeconds": 11.108625427
+    },
+    {
+      "name": "workflowRuns",
+      "status": "available",
+      "reason": "",
+      "cached": true,
+      "fetchedAt": "2026-10-21T07:17:19.274810479Z",
+      "cacheAgeSeconds": 10.55979732
+    }
+  ]
+}

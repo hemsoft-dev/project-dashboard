@@ -158,3 +158,46 @@ fn an_overall_verdict_from_gh_x_wins_over_the_rows() {
             .unwrap();
     assert!(attention.is_clean());
 }
+
+/// Real `gh x status --json` output from gh-x built at hemsoft-dev/gh-x#231's head 690d829 (the gh-x#230 work), run
+/// in the hemsoft-dev/gh-x checkout on 2026-10-21. The terminal view of the same checkout printed:
+/// `✓ Main synced with origin/main · Clean working tree`, `Branches 3 local (1 dangling) · 3 remote`,
+/// `Worktrees 2 total · 0 cleanup candidates`, `✓ Stashes 0 stashes`, open issues (1), open pull requests (1),
+/// recently merged (5) and workflow runs (5).
+const REAL_GH_X_PR231: &str = include_str!("fixtures/real-gh-x-pr231-690d829.json");
+
+#[test]
+fn real_gh_x_output_parses_and_matches_its_terminal_view() {
+    let doc = StatusDocument::parse(REAL_GH_X_PR231).unwrap();
+    assert_eq!(doc.display_name(), "hemsoft-dev/gh-x");
+    let rows: Vec<(String, String, bool)> = doc
+        .health_rows()
+        .into_iter()
+        .map(|row| (row.label, row.text, row.clean))
+        .collect();
+    let expected = [
+        ("Main", "synced with origin/main · Clean working tree", true),
+        ("Branches", "3 local (1 dangling) · 3 remote", false),
+        ("Worktrees", "2 total · 0 cleanup candidates", false),
+        ("Stashes", "0 stashes", true),
+    ];
+    assert_eq!(
+        rows,
+        expected.map(|(label, text, clean)| (label.to_owned(), text.to_owned(), clean))
+    );
+    assert_eq!(doc.issues.len(), 1);
+    assert_eq!(doc.pull_requests.open.len(), 1);
+    assert_eq!(doc.pull_requests.merged.len(), 5);
+    assert_eq!(doc.workflow_runs.len(), 5);
+    assert!(doc.unavailable_sections().next().is_none());
+    assert!(
+        doc.sections
+            .iter()
+            .all(|section| section.cached && section.fetched_at.is_some())
+    );
+    assert!(!doc.is_clean());
+    assert_eq!(
+        doc.pull_requests.open[0].url,
+        "https://github.com/hemsoft-dev/gh-x/pull/231"
+    );
+}

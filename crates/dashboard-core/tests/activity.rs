@@ -7,7 +7,7 @@ use dashboard_core::activity::{ActivityKind, ago, last_activity};
 use dashboard_core::cache::StatusCache;
 use dashboard_core::fixtures::{self, ATTENTION, CLEAN, UNAVAILABLE};
 use dashboard_core::scheduler::Outcome;
-use dashboard_core::status::{Issue, PullRequest, StatusDocument, WorkflowRun};
+use dashboard_core::status::{Issue, PullRequest, PullRequests, StatusDocument, WorkflowRun};
 use dashboard_core::{Board, SortOrder};
 
 fn at(text: &str) -> DateTime<Utc> {
@@ -94,9 +94,11 @@ fn prs_issues_and_runs_all_compete_including_merged_prs() {
 #[test]
 fn ties_go_to_open_prs_then_merged_prs_then_issues_then_runs() {
     let same = Some("2026-10-21T06:00:00Z");
-    let mut doc = StatusDocument::default();
-    doc.workflow_runs = vec![run("9", same, None)];
-    doc.issues = vec![issue(7, same), issue(8, same)];
+    let mut doc = StatusDocument {
+        workflow_runs: vec![run("9", same, None)],
+        issues: vec![issue(7, same), issue(8, same)],
+        ..StatusDocument::default()
+    };
     assert_eq!(last_activity(&doc).unwrap().label, "Issue #7");
     doc.pull_requests.merged = vec![pr(5, same)];
     assert_eq!(last_activity(&doc).unwrap().label, "PR #5");
@@ -121,9 +123,14 @@ fn missing_or_unreadable_timestamps_are_skipped_and_runs_fall_back_to_created_at
 
 #[test]
 fn fractional_seconds_and_offsets_compare_as_instants() {
-    let mut doc = StatusDocument::default();
-    doc.issues = vec![issue(1, Some("2026-10-21T08:00:00.900Z"))];
-    doc.pull_requests.open = vec![pr(2, Some("2026-10-21T04:00:00.5-04:00"))];
+    let doc = StatusDocument {
+        issues: vec![issue(1, Some("2026-10-21T08:00:00.900Z"))],
+        pull_requests: PullRequests {
+            open: vec![pr(2, Some("2026-10-21T04:00:00.5-04:00"))],
+            ..PullRequests::default()
+        },
+        ..StatusDocument::default()
+    };
     // 04:00:00.5-04:00 is 08:00:00.5Z, before the issue's 08:00:00.9Z.
     assert_eq!(last_activity(&doc).unwrap().label, "Issue #1");
 }

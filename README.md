@@ -99,23 +99,27 @@ Project Dashboard needs the [GitHub CLI](https://cli.github.com) signed in (`gh 
 gh extension install hemsoft-dev/gh-x   # or: gh extension upgrade gh-x
 ```
 
-The window shows one card per repository: its name, a **Clean**, **Attention**, **Failed** or **Loading** badge,
-the counts of open PRs, open issues, recently merged PRs and workflow runs, and the health rows `gs` prints (default
-branch, branches, worktrees, stashes, and the current branch when it isn't the default), each with gh-x's own clean
-verdict. A card is Clean when every row is clean and every GitHub section loaded.
+The window shows a table with one row per repository, in config order: a colored dot for its overall state
+(**Clean**, **Attention**, **Failed** or **Loading**), its `owner/name`, the counts of open PRs and open issues, and its
+**last activity**: the most recently updated open or recently merged PR, open issue or workflow run in gh-x's report,
+such as `PR #12 · 14m ago` with its title. A repository is Clean when every health row is clean by gh-x's verdict and
+every GitHub section loaded.
 
-- **Expand** a card (the chevron) to see its open pull requests, open issues, recently merged pull requests and
-  workflow runs. Click a row to open it in your browser.
+- **Expand** a row (click it or its chevron) to see the health rows `gs` prints (default branch, branches, worktrees,
+  stashes, and the current branch when it isn't the default), its open pull requests, open issues, recently merged
+  pull requests and workflow runs. Several rows can be open at once, and they stay open across refreshes. Click an
+  item, or a row's last activity, to open it in your browser.
+- **Sort** by last activity, newest first, with the **Last activity** column header. Click it again for config order.
 - **Refresh all** with the title-bar button or **F5**. It uses gh-x's own cache when that is still fresh.
-- **Refresh one** card with its own button. It runs `gh x status --json --refresh`, bypassing gh-x's cache.
+- **Refresh one** repository with its row's button. It runs `gh x status --json --refresh`, bypassing gh-x's cache.
 - **Automatic refresh** runs every `refresh_minutes` (default 5).
-- At startup every card shows its last result from the local cache at once, marked **Cached**, and each card updates as
+- At startup every row shows its last result from the local cache at once, marked **Cached**, and each row updates as
   its fresh result arrives. Up to `parallelism` (default 4) `gh x status` processes run at a time.
-- A repository whose status fails shows the error on its own card; the others keep working. A GitHub section gh-x
-  couldn't load shows its reason on the card, and its count reads `?`; a section gh-x reports as turned off (the
-  merged list with `--merged 0`) reads `–` and *off*. Workflow runs show gh-x's own markers (`✓`, `X`, `*`, `○`,
-  `!`, `—`, `·`). A missing `gh` or gh-x shows one setup message
-  at the top.
+- A repository whose status fails shows the error in its row, in place of the last activity, and keeps its last good
+  counts; the others keep working. A GitHub section gh-x couldn't load shows its reason in the expanded row, and its
+  count reads `?`; a section gh-x reports as turned off (the merged list with `--merged 0`) reads `–` and *off*.
+  Workflow runs show gh-x's own markers (`✓`, `X`, `*`, `○`, `!`, `—`, `·`). A missing `gh` or gh-x shows one setup
+  message at the top.
 
 `cargo run -p dashboard-app -- --demo` shows sample data from the checked-in fixtures, without the config file,
 the cache or gh.

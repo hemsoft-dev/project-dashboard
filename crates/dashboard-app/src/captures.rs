@@ -87,17 +87,39 @@ fn captures() {
         theme::init(cx);
     });
 
-    // The populated board: clean, attention, a partly unavailable repository and a failing one.
-    let (board, view) = open(&mut cx, demo::checkouts(), 880.);
+    // The collapsed table, twelve rows: clean, attention, a partly unavailable repository and a failing one first.
+    let (board, view) = open(&mut cx, demo::checkouts(), 560.);
     fill(&mut cx, &view, &demo::DemoSource);
-    save(&mut cx, board, &out, "board");
+    save(&mut cx, board, &out, "table");
 
-    // The same board with codexbar expanded: its PR, issue, merged-PR and workflow-run tables.
-    let (expanded, expanded_view) = open(&mut cx, vec![PathBuf::from("/demo/codexbar")], 720.);
+    // The same table sorted by last activity, newest first.
+    cx.update(|cx| view.update(cx, |view, cx| view.toggle_sort(cx)));
+    cx.run_until_parked();
+    save(&mut cx, board, &out, "table-sorted");
+
+    // The table with codexbar expanded: its health rows and its PR, issue, merged-PR and workflow-run tables.
+    let (expanded, expanded_view) = open(&mut cx, demo::checkouts(), 980.);
     fill(&mut cx, &expanded_view, &demo::DemoSource);
     cx.update(|cx| expanded_view.update(cx, |view, cx| view.toggle_expanded(Path::new("/demo/codexbar"), cx)));
     cx.run_until_parked();
-    save(&mut cx, expanded, &out, "expanded-card");
+    save(&mut cx, expanded, &out, "expanded-row");
+
+    // The failing row expanded: its error in place of the last activity and again in its details.
+    let (failed, failed_view) = open(&mut cx, demo::checkouts(), 560.);
+    fill(&mut cx, &failed_view, &demo::DemoSource);
+    cx.update(|cx| failed_view.update(cx, |view, cx| view.toggle_expanded(Path::new("/demo/weather-cli"), cx)));
+    cx.run_until_parked();
+    save(&mut cx, failed, &out, "error-row");
+
+    // Frames for the expand-and-collapse recording: codexbar opens, hs-buddy opens too, then codexbar closes.
+    let (sequence, sequence_view) = open(&mut cx, demo::checkouts(), 820.);
+    fill(&mut cx, &sequence_view, &demo::DemoSource);
+    save(&mut cx, sequence, &out, "expand-1");
+    for (frame, checkout) in [(2, "/demo/codexbar"), (3, "/demo/hs-buddy"), (4, "/demo/codexbar")] {
+        cx.update(|cx| sequence_view.update(cx, |view, cx| view.toggle_expanded(Path::new(checkout), cx)));
+        cx.run_until_parked();
+        save(&mut cx, sequence, &out, &format!("expand-{frame}"));
+    }
 
     // A partly unavailable repository, expanded: the sections gh-x couldn't load say so instead of "None".
     let (partial, partial_view) = open(&mut cx, vec![PathBuf::from("/demo/minibot")], 520.);

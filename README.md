@@ -4,7 +4,7 @@ A fast, native Windows app that shows the status of all your active
 repositories at a glance. It covers everything `gh x status` (alias `gs`) shows
 for one checkout, across every project, in one window.
 
-Status: planning. See the [issues](https://github.com/hemsoft-dev/project-dashboard/issues).
+Status: early development. See the [issues](https://github.com/hemsoft-dev/project-dashboard/issues).
 
 ## Why
 
@@ -25,6 +25,32 @@ with the look and speed of [CodexBar](https://github.com/hemsoft-dev/codexbar).
 - **Many repos, one window:** a configurable list of local checkouts, refreshed
   in parallel. Cached results render first, and fresh data replaces them as it
   arrives.
+
+## Build and run
+
+Requirements:
+
+- [Rust](https://www.rust-lang.org/tools/install). `rust-toolchain.toml` pins stable; on Windows that is the MSVC
+  toolchain, with the Visual Studio Build Tools' "Desktop development with C++" workload.
+- On Linux, the headers GPUI links against. On Debian or Ubuntu:
+  `sudo apt install libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig-dev libfreetype-dev libxcb1-dev libx11-xcb-dev`.
+
+```sh
+git clone https://github.com/hemsoft-dev/project-dashboard.git
+cd project-dashboard
+cargo run -p dashboard-app            # opens the Project Dashboard window
+cargo run --release -p dashboard-app  # optimized build
+```
+
+Checks, the same ones CI runs on Linux and Windows:
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+```
+
+See [AGENTS.md](AGENTS.md) for the stack, the workspace layout and the conventions.
 
 ## License
 

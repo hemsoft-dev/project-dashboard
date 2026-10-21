@@ -264,7 +264,16 @@ impl BoardView {
                     .text_color(cx.theme().muted_foreground),
             )
             .child(div().text_lg().font_semibold().child(empty.title))
-            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(hint))
+            // Kept off the window's edges and centered when it wraps, as on a narrow window.
+            .child(
+                div()
+                    .max_w(px(640.))
+                    .px_8()
+                    .text_center()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(hint),
+            )
     }
 
     fn render_card(&self, ix: usize, card: &Card, cx: &mut Context<Self>) -> impl IntoElement {

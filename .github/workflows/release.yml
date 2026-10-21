@@ -63,6 +63,7 @@ jobs:
         run: |
           $version = (Get-Content dist/version.txt).Trim()
           $notes = "Windows x64. Download project-dashboard-$version-windows-x64.zip, unzip it anywhere and run project-dashboard.exe. See the README for installation and updates."
-          $flags = @('--title', "Project Dashboard $version", '--notes', $notes, '--verify-tag')
+          # The fixed install note, followed by GitHub's generated list of what changed.
+          $flags = @('--title', "Project Dashboard $version", '--notes', $notes, '--generate-notes', '--verify-tag')
           if ($version -match '-' -or $version.StartsWith('0.')) { $flags += '--prerelease' }
           gh release create '${{ github.ref_name }}' (Get-ChildItem dist/*.zip, dist/*.sha256).FullName @flags

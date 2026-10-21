@@ -4,8 +4,9 @@ Builds project-dashboard.exe in release, checks it, and zips it for a GitHub rel
 
 .DESCRIPTION
 Checks that the executable is a GUI-subsystem program (no console window), embeds icon resource 1 and the version
-block, and starts and opens its "Project Dashboard" window. Writes dist/project-dashboard-<version>-windows-x64.zip,
-its .sha256, version.txt, and window.png (a screenshot of the started app) to OutDir.
+block, and starts and opens its "Project Dashboard" window. Writes dist/project-dashboard-<version>-windows-x64.zip
+(the exe, README.md, LICENSE and assets/icon-256.png), its .sha256, version.txt, and window.png (a screenshot of the
+started app, when the session has a desktop to capture) to OutDir.
 
 .PARAMETER Tag
 The release tag (v<version>). When given, it must match the workspace version.
@@ -86,15 +87,21 @@ public static extern bool FreeLibrary(System.IntPtr module);
         if ($process.MainWindowTitle -ne 'Project Dashboard') {
             throw "No 'Project Dashboard' window within 60 s (main window title: '$($process.MainWindowTitle)')"
         }
-        Start-Sleep -Seconds 3
-        Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-        $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-        $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
-        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-        $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-        $bitmap.Save((Join-Path $OutDir 'window.png'), [System.Drawing.Imaging.ImageFormat]::Png)
-        $graphics.Dispose(); $bitmap.Dispose()
         Write-Information "Started: window '$($process.MainWindowTitle)', PID $($process.Id)" -InformationAction Continue
+        # The screenshot is evidence, not a gate: a session without an interactive desktop can't capture one, and that
+        # mustn't stop a release whose window checks passed.
+        Start-Sleep -Seconds 3
+        try {
+            Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+            $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+            $bitmap.Save((Join-Path $OutDir 'window.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+            $graphics.Dispose(); $bitmap.Dispose()
+        } catch {
+            Write-Warning "No desktop screenshot: $($_.Exception.Message)"
+        }
     } finally {
         if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
         Remove-Item $env:PROJECT_DASHBOARD_CONFIG_DIR -Recurse -Force -ErrorAction SilentlyContinue
@@ -106,6 +113,9 @@ public static extern bool FreeLibrary(System.IntPtr module);
     Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Path $stage | Out-Null
     Copy-Item $exe, (Join-Path $root 'README.md'), (Join-Path $root 'LICENSE') $stage
+    # The README shows the icon from assets/.
+    New-Item -ItemType Directory -Path (Join-Path $stage 'assets') | Out-Null
+    Copy-Item (Join-Path $root 'assets/icon-256.png') (Join-Path $stage 'assets')
     $zip = Join-Path $OutDir "$name.zip"
     Remove-Item $zip -ErrorAction SilentlyContinue
     Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip

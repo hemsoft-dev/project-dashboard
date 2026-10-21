@@ -25,13 +25,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # GPUI's X11 and Wayland backends link these.
+      # GPUI's X11 and Wayland backends link these; Mesa's software Vulkan (lavapipe) renders the screenshots.
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig-dev libfreetype-dev libxcb1-dev libx11-xcb-dev
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig-dev libfreetype-dev libxcb1-dev libx11-xcb-dev \
+            mesa-vulkan-drivers
 
       # rust-toolchain.toml pins stable with rustfmt and clippy; rustup installs it on first use.
       - name: Install Rust toolchain
@@ -50,3 +51,18 @@ jobs:
       # Includes the headless UI tests (in-process GPUI test windows; no desktop needed).
       - name: Test
         run: cargo test --workspace --locked
+
+      # The pull-request screenshots (src/captures.rs), rendered offscreen with the build above. Download them from
+      # the run's artifacts and attach them to the PR's Validation section.
+      - name: Screenshots
+        if: runner.os == 'Linux'
+        # Absolute: cargo runs the test from the crate's folder, so a relative CAPTURE_DIR would land there.
+        run: CAPTURE_DIR="$GITHUB_WORKSPACE/captures" cargo test -p dashboard-app --locked captures -- --ignored
+
+      - name: Upload screenshots
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: captures
+          path: captures/
+          if-no-files-found: error

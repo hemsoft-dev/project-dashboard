@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 dashboard-core.workspace = true
+chrono.workspace = true
 gpui-kit.workspace = true
 
 # Compiles the executable's icon and version resources (build.rs) with rc.exe from the Windows SDK.

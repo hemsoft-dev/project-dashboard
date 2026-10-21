@@ -10,6 +10,7 @@ mod mark;
 mod theme;
 #[cfg(test)]
 mod ui_tests;
+mod zoom;
 
 use std::sync::Arc;
 
@@ -34,6 +35,8 @@ fn main() {
         gpui_kit::init(cx);
         theme::init(cx);
         board_view::bind_keys(cx);
+        // The demo remembers its zoom too, so a restart keeps it.
+        zoom::init(cx, Some(config::default_dir()));
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
@@ -85,6 +88,7 @@ fn live_view(window: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<BoardView
             auto_refresh: config.refresh_interval(),
             config_problem,
             config_path: Some(dir.join(config::FILE_NAME)),
+            now: None,
         },
         window,
         cx,
@@ -103,6 +107,8 @@ fn demo_view(window: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<BoardView
             auto_refresh: None,
             config_problem: None,
             config_path: None,
+            // The fixtures' clock, so the demo's ages read the same whenever it runs.
+            now: Some(demo::fixture_now()),
         },
         window,
         cx,

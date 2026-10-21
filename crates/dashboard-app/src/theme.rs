@@ -17,5 +17,10 @@ pub fn init(cx: &mut App) {
         eprintln!("project-dashboard: theme {DARK} is missing from themes/dashboard.json");
         return;
     };
-    Theme::update(cx, |current| current.apply_config(&config));
+    // A theme carries a 100% font size; keep the zoom.
+    let font_size = crate::zoom::font_size(cx);
+    Theme::update(cx, |current| {
+        current.apply_config(&config);
+        current.font_size = font_size;
+    });
 }

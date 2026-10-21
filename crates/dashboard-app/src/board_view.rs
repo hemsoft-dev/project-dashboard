@@ -1,7 +1,8 @@
-//! The dashboard window's content: a title bar with the refresh controls, then one card per configured checkout.
+//! The dashboard window's content: a title bar with the refresh controls, then a table with one row per configured
+//! checkout: its overall state, name, open PR and issue counts, and last activity (#8).
 //!
-//! Each card shows what `gh x status` shows for that checkout: the health header with gh-x's clean verdicts, the
-//! counts, and (expanded) the open PR, open issue, merged PR and workflow run tables. Rows open in the browser.
+//! Expanding a row shows what `gh x status` shows for that checkout: the health rows with gh-x's clean verdicts and
+//! the open PR, open issue, merged PR and workflow run tables. Items open in the browser.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -9,18 +10,20 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Utc};
 use dashboard_core::cache::StatusCache;
 use dashboard_core::scheduler::{self, Outcome};
 use dashboard_core::source::StatusSource;
 use dashboard_core::status::{HealthRow, Issue, PullRequest, RunOutcome, Section, StatusDocument, WorkflowRun};
-use dashboard_core::{APP_NAME, Board, Card, Overall};
+use dashboard_core::{APP_NAME, Board, Card, Overall, SortOrder};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, TitleBar, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, Context, FocusHandle, Hsla, InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, actions, div, px,
+    AnyElement, App, Context, FocusHandle, Hsla, InteractiveElement as _, IntoElement, KeyBinding, MouseButton,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _,
+    Window, actions, canvas, div, px, rems,
 };
 
 actions!(project_dashboard, [Refresh]);
@@ -44,6 +47,8 @@ pub struct Options {
     pub config_problem: Option<String>,
     /// The config file, named in the empty state.
     pub config_path: Option<PathBuf>,
+    /// A fixed "now" for last-activity ages, for tests and screenshots; `None` reads the clock.
+    pub now: Option<DateTime<Utc>>,
 }
 
 pub struct BoardView {
@@ -51,7 +56,9 @@ pub struct BoardView {
     cache: StatusCache,
     source: Arc<dyn StatusSource>,
     options: Options,
+    /// Expanded rows, by checkout, so expansion survives refreshes and re-sorting.
     expanded: HashSet<PathBuf>,
+    sort: SortOrder,
     last_refresh: Option<Instant>,
     focus: FocusHandle,
 }
@@ -75,15 +82,16 @@ impl BoardView {
             source,
             options,
             expanded: HashSet::new(),
+            sort: SortOrder::default(),
             last_refresh: None,
             focus,
         };
-        // Keeps the title bar's "Updated … ago" current between refreshes.
+        // Keeps "Updated … ago" and the last-activity ages current between refreshes.
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(30)).await;
                 let Ok(()) = this.update(cx, |view, cx| {
-                    if view.last_refresh.is_some() {
+                    if view.last_refresh.is_some() || view.board.cards().iter().any(|card| card.document.is_some()) {
                         cx.notify();
                     }
                 }) else {
@@ -113,6 +121,35 @@ impl BoardView {
 
     pub fn is_expanded(&self, checkout: &Path) -> bool {
         self.expanded.contains(checkout)
+    }
+
+    #[cfg(test)]
+    pub fn sort(&self) -> SortOrder {
+        self.sort
+    }
+
+    /// Switches between config order and newest last activity first.
+    pub fn toggle_sort(&mut self, cx: &mut Context<Self>) {
+        self.sort = match self.sort {
+            SortOrder::Config => SortOrder::LastActivity,
+            SortOrder::LastActivity => SortOrder::Config,
+        };
+        cx.notify();
+    }
+
+    /// The checkouts in the order the table shows them.
+    #[cfg(test)]
+    pub fn row_order(&self) -> Vec<PathBuf> {
+        let cards = self.board.cards();
+        self.board
+            .order(self.sort)
+            .into_iter()
+            .map(|ix| cards[ix].checkout.clone())
+            .collect()
+    }
+
+    fn now(&self) -> DateTime<Utc> {
+        self.options.now.unwrap_or_else(Utc::now)
     }
 
     pub fn toggle_expanded(&mut self, checkout: &Path, cx: &mut Context<Self>) {
@@ -199,33 +236,62 @@ impl BoardView {
             (false, None) if self.board.cards().iter().any(|card| card.from_cache) => "Cached".to_owned(),
             (false, None) => String::new(),
         };
-        TitleBar::new().child(
-            h_flex()
-                .w_full()
-                .pr_2()
-                .gap_2()
-                .items_center()
-                .child(Icon::new(IconName::LayoutDashboard).text_color(cx.theme().primary))
-                .child(div().font_semibold().child(APP_NAME))
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .id("refresh-status")
-                        .test_support()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(status),
-                )
-                .child(
-                    Button::new("refresh-all")
-                        .ghost()
-                        .small()
-                        .icon(IconName::RefreshCw)
-                        .tooltip("Refresh all (F5)")
-                        .loading(refreshing)
-                        .on_click(cx.listener(|view, _, _, cx| view.refresh_all(cx))),
-                ),
-        )
+        TitleBar::new()
+            // The title bar is a fixed 34px; it grows with the zoom so its text isn't clipped.
+            .h(crate::zoom::scaled(34., cx).max(px(34.)))
+            .child(
+                // On a narrow, zoomed window the status gives way first, then the title; icon and button stay.
+                // gpui-kit's title bar never shrinks below its content's natural width, so this row is positioned over the
+                // bar's area instead of sizing it: the bar keeps the window's width and the row's text truncates within.
+                h_flex()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .min_w_0()
+                    .pr_2()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_none()
+                            .child(Icon::new(IconName::LayoutDashboard).text_color(cx.theme().primary)),
+                    )
+                    .child(
+                        div()
+                            .id("app-title")
+                            .test_support()
+                            .min_w_0()
+                            .flex_shrink(1.)
+                            .truncate()
+                            .font_semibold()
+                            .child(APP_NAME),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .id("refresh-status")
+                            .test_support()
+                            .min_w_0()
+                            .flex_shrink(10.)
+                            .truncate()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(status),
+                    )
+                    .child(
+                        div().flex_none().child(
+                            Button::new("refresh-all")
+                                .ghost()
+                                .small()
+                                .icon(IconName::RefreshCw)
+                                .tooltip("Refresh all (F5)")
+                                .loading(refreshing)
+                                .on_click(cx.listener(|view, _, _, cx| view.refresh_all(cx))),
+                        ),
+                    ),
+            )
     }
 
     fn render_banner(&self, icon: IconName, text: String, cx: &App) -> impl IntoElement {
@@ -267,7 +333,7 @@ impl BoardView {
             // Kept off the window's edges and centered when it wraps, as on a narrow window.
             .child(
                 div()
-                    .max_w(px(640.))
+                    .max_w(rems(40.))
                     .px_8()
                     .text_center()
                     .text_sm()
@@ -276,65 +342,253 @@ impl BoardView {
             )
     }
 
-    fn render_card(&self, ix: usize, card: &Card, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let sorted = self.sort == SortOrder::LastActivity;
+        h_flex()
+            .id("table-header")
+            .px_2()
+            .py_1()
+            .gap_3()
+            .items_center()
+            .text_xs()
+            .font_semibold()
+            .text_color(theme.muted_foreground)
+            .border_b_1()
+            .border_color(theme.border)
+            .child(div().w(CHEVRON).flex_none())
+            .child(div().w(STATE).flex_none())
+            .child(
+                div()
+                    .flex_basis(px(0.))
+                    .flex_grow(NAME_SHARE)
+                    .min_w(NAME_MIN)
+                    .truncate()
+                    .child("Repository"),
+            )
+            .child(div().w(COUNT).flex_none().text_right().child("PRs"))
+            .child(div().w(COUNT).flex_none().text_right().child("Issues"))
+            .child(
+                h_flex()
+                    .id("sort-activity")
+                    .test_support()
+                    .flex_basis(px(0.))
+                    .flex_grow(ACTIVITY_SHARE)
+                    .min_w(ACTIVITY_MIN)
+                    .gap_1()
+                    .cursor_pointer()
+                    .when(sorted, |this| this.text_color(theme.foreground))
+                    .hover(|style| style.text_color(theme.foreground))
+                    .on_click(cx.listener(|view, _, _, cx| view.toggle_sort(cx)))
+                    .child("Last activity")
+                    .child(if sorted { "↓" } else { "" }),
+            )
+            .child(div().w(REFRESH).flex_none())
+    }
+
+    fn render_row(&self, ix: usize, card: &Card, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let expanded = self.is_expanded(&card.checkout);
         let overall = card.overall();
         let checkout = card.checkout.clone();
-        let toggle_checkout = card.checkout.clone();
-        let header = h_flex()
-            .gap_2()
-            .items_center()
-            .child(
-                Button::new(("expand", ix))
-                    .ghost()
-                    .xsmall()
-                    .icon(if expanded {
-                        IconName::ChevronDown
-                    } else {
-                        IconName::ChevronRight
-                    })
-                    .tooltip(if expanded { "Collapse" } else { "Show the tables" })
-                    .on_click(cx.listener(move |view, _, _, cx| view.toggle_expanded(&toggle_checkout, cx))),
+        let toggle = card.checkout.clone();
+        let toggle_chevron = card.checkout.clone();
+        let now = self.now();
+        let count = |section: &str, len: fn(&StatusDocument) -> usize| -> String {
+            card.document.as_ref().map_or_else(
+                || "–".to_owned(),
+                |document| section_count(document, section, len(document)),
             )
-            .child(div().font_semibold().truncate().child(card.name()))
-            .child(overall_tag(overall))
-            // Stays while a refresh runs: until a fresh result lands, the card still shows the cached copy.
-            .when(card.from_cache, |this| {
-                this.child(
-                    div()
-                        .id(("cached", ix))
-                        .test_support()
-                        .child(Tag::secondary().small().outline().child("Cached")),
-                )
-            })
-            .child(div().flex_1())
-            .when_some(card.document.as_ref(), |this, document| {
-                this.child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(counts_line(document)),
-                )
-            })
+        };
+        let prs = count("pullRequests.open", |document| document.pull_requests.open.len());
+        let issues = count("issues", |document| document.issues.len());
+        let error = card.error.as_ref().filter(|error| !error.is_setup());
+        let activity: AnyElement = match (card.last_activity(), error) {
+            // A failed refresh says so in the activity column; the counts keep the last good status.
+            (_, Some(error)) => div()
+                .id(("row-error", ix))
+                .test_support()
+                .aria_label(error.to_string())
+                .truncate()
+                .text_color(theme.danger)
+                .child(error.to_string())
+                .into_any_element(),
+            (Some(activity), None) => {
+                let url = activity.url.clone();
+                h_flex()
+                    .id(("activity", ix))
+                    .test_support()
+                    .aria_label(format!("Last activity: {}, {}", activity.summary(now), activity.title))
+                    .min_w_0()
+                    .gap_2()
+                    .cursor_pointer()
+                    .hover(|style| style.underline())
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        cx.open_url(&url);
+                    })
+                    // The title only gets space the summary leaves; on a narrow window the summary truncates too.
+                    .child(
+                        div()
+                            .id(("activity-summary", ix))
+                            .test_support()
+                            .min_w_0()
+                            .truncate()
+                            .child(activity.summary(now)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(theme.muted_foreground)
+                            .child(activity.title.clone()),
+                    )
+                    .into_any_element()
+            }
+            // A setup problem (no gh or gh-x) is explained once in the banner; the row just says it has nothing.
+            (None, None) if card.document.is_none() && card.error.is_some() => div()
+                .id(("activity-placeholder", ix))
+                .test_support()
+                .aria_label("Unavailable")
+                .truncate()
+                .text_color(theme.muted_foreground)
+                .child("Unavailable")
+                .into_any_element(),
+            (None, None) if card.document.is_none() => div()
+                .id(("activity-placeholder", ix))
+                .test_support()
+                .aria_label("Loading")
+                .truncate()
+                .text_color(theme.muted_foreground)
+                .child("Loading…")
+                .into_any_element(),
+            (None, None) => div()
+                .truncate()
+                .text_color(theme.muted_foreground)
+                .child("No recent activity")
+                .into_any_element(),
+        };
+        let row = h_flex()
+            .id(("row", ix))
+            .test_support()
+            .px_2()
+            .py_1p5()
+            .gap_3()
+            .items_center()
+            .text_sm()
+            .cursor_pointer()
+            .hover(|style| style.bg(theme.list_hover))
+            .when(expanded, |this| this.bg(theme.list_active))
+            .on_click(cx.listener(move |view, _, _, cx| view.toggle_expanded(&toggle, cx)))
             .child(
-                Button::new(("refresh", ix))
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::RotateCw)
-                    .tooltip("Refresh this repository (gh x status --refresh)")
-                    .loading(card.refreshing)
-                    .on_click(cx.listener(move |view, _, _, cx| view.refresh_one(&checkout, cx))),
+                div().w(CHEVRON).flex_none().child(
+                    Button::new(("expand", ix))
+                        .ghost()
+                        .xsmall()
+                        .icon(if expanded {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        })
+                        .tooltip(if expanded { "Collapse" } else { "Show details" })
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            cx.stop_propagation();
+                            view.toggle_expanded(&toggle_chevron, cx)
+                        })),
+                ),
+            )
+            .child(div().w(STATE).flex_none().child(state_dot(ix, overall, cx)))
+            .child(
+                h_flex()
+                    .id(("name", ix))
+                    .test_support()
+                    .flex_basis(px(0.))
+                    .flex_grow(NAME_SHARE)
+                    .min_w(NAME_MIN)
+                    .gap_2()
+                    .child(div().min_w_0().truncate().font_semibold().child(card.name()))
+                    // Stays while a refresh runs: until a fresh result lands, the row still shows the cached copy.
+                    .when(card.from_cache, |this| {
+                        this.child(
+                            div()
+                                .id(("cached", ix))
+                                .test_support()
+                                .flex_none()
+                                .child(Tag::secondary().xsmall().outline().child("Cached")),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .id(("prs", ix))
+                    .test_support()
+                    .aria_label(format!("{prs} open pull requests"))
+                    .w(COUNT)
+                    .flex_none()
+                    .text_right()
+                    .child(prs),
+            )
+            .child(
+                div()
+                    .id(("issues", ix))
+                    .test_support()
+                    .aria_label(format!("{issues} open issues"))
+                    .w(COUNT)
+                    .flex_none()
+                    .text_right()
+                    .child(issues),
+            )
+            // Shrinks before anything else on a narrow window, so the refresh button stays in view.
+            .child(
+                div()
+                    .flex_basis(px(0.))
+                    .flex_grow(ACTIVITY_SHARE)
+                    .min_w(ACTIVITY_MIN)
+                    .child(activity),
+            )
+            .child(
+                div()
+                    .w(REFRESH)
+                    .flex_none()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        Button::new(("refresh", ix))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::RotateCw)
+                            .tooltip("Refresh this repository (gh x status --refresh)")
+                            .loading(card.refreshing)
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                cx.stop_propagation();
+                                view.refresh_one(&checkout, cx)
+                            })),
+                    ),
             );
+        let theme = cx.theme();
+        v_flex()
+            .id(("entry", ix))
+            .border_b_1()
+            .border_color(theme.border)
+            .child(row)
+            .when(expanded, |this| this.child(self.render_details(ix, card, cx)))
+    }
 
-        let mut body = v_flex().gap_1();
-        if let Some(error) = &card.error
-            && !error.is_setup()
-        {
+    /// The expanded part of a row: the error, the health rows, unavailable sections and the four tables.
+    fn render_details(&self, ix: usize, card: &Card, cx: &App) -> impl IntoElement {
+        let theme = cx.theme();
+        let mut body = v_flex()
+            .id(("details", ix))
+            .test_support()
+            .pl(rems(3.25))
+            .pr_4()
+            .pt_1()
+            .pb_3()
+            .gap_1();
+        if let Some(error) = card.error.as_ref().filter(|error| !error.is_setup()) {
             body = body.child(
                 h_flex()
-                    .id(("card-error", ix))
-                    .test_support()
                     .gap_2()
                     .items_start()
                     .text_sm()
@@ -358,9 +612,7 @@ impl BoardView {
                             section.reason
                         ))
                 }));
-                if expanded {
-                    body = body.child(tables(ix, document, cx));
-                }
+                body = body.child(tables(ix, document, cx));
             }
             None if card.error.is_none() => {
                 body = body.child(
@@ -372,25 +624,24 @@ impl BoardView {
             }
             None => {}
         }
-
-        let theme = cx.theme();
-        v_flex()
-            .id(("card", ix))
-            .test_support()
-            .p_3()
-            .gap_2()
-            .rounded(theme.radius_lg)
-            .border_1()
-            .border_color(match overall {
-                Overall::Failed => theme.danger,
-                Overall::Attention => theme.border,
-                _ => theme.border,
-            })
-            .bg(theme.group_box)
-            .child(header)
-            .child(body)
+        body
     }
 }
+
+// Table column widths, in rems so they follow the text size.
+const CHEVRON: gpui_kit::Rems = rems(1.75);
+const STATE: gpui_kit::Rems = rems(0.75);
+const COUNT: gpui_kit::Rems = rems(3.5);
+/// The repository name and last activity share the width the fixed columns leave, 2 : 3, at any window size and
+/// zoom, down to these minimums.
+const NAME_SHARE: f32 = 2.;
+const ACTIVITY_SHARE: f32 = 3.;
+const NAME_MIN: gpui_kit::Rems = rems(7.);
+const ACTIVITY_MIN: gpui_kit::Rems = rems(6.);
+/// The table's least width: the fixed columns (chevron, state, counts, refresh), the name and activity minimums, six
+/// 0.75 rem gaps and the 0.5 rem side padding. 468 px at 100%, inside the window's 480 px minimum.
+const TABLE_MIN: gpui_kit::Rems = rems(1.75 + 0.75 + 3.5 + 3.5 + 1.75 + 7. + 6. + 6. * 0.75 + 0.5);
+const REFRESH: gpui_kit::Rems = rems(1.75);
 
 impl Render for BoardView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -404,23 +655,36 @@ impl Render for BoardView {
         if self.board.is_empty() {
             content = content.child(self.render_empty(cx));
         } else {
-            let cards: Vec<AnyElement> = self
+            let cards = self.board.cards().to_vec();
+            let rows: Vec<AnyElement> = self
                 .board
-                .cards()
-                .to_vec()
-                .iter()
-                .enumerate()
-                .map(|(ix, card)| self.render_card(ix, card, cx).into_any_element())
+                .order(self.sort)
+                .into_iter()
+                .map(|ix| self.render_row(ix, &cards[ix], cx).into_any_element())
                 .collect();
+            // The table never narrows below its columns' minimums. When zoom makes those wider than the window, it
+            // scrolls sideways, header and all, so every row's controls stay reachable.
             content = content.child(
-                v_flex()
-                    .id("cards")
+                div()
+                    .id("table")
+                    .test_support()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .p_4()
-                    .gap_3()
-                    .children(cards),
+                    .overflow_x_scroll()
+                    .child(
+                        v_flex()
+                            .size_full()
+                            .min_w(TABLE_MIN)
+                            .child(self.render_header(cx))
+                            .child(
+                                v_flex()
+                                    .id("rows")
+                                    .flex_1()
+                                    .min_h_0()
+                                    .overflow_y_scroll()
+                                    .children(rows),
+                            ),
+                    ),
             );
         }
         v_flex()
@@ -431,9 +695,44 @@ impl Render for BoardView {
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .relative()
             .child(self.render_title_bar(cx))
             .child(content)
+            // Ctrl+wheel zooms; registered each frame in the capture phase, ahead of the table's scrolling.
+            .child(
+                canvas(|_, _, _| {}, |_, _, window, _| crate::zoom::capture_wheel(window))
+                    .absolute()
+                    .size_0(),
+            )
+            .when_some(crate::zoom::toast(cx), |this, label| this.child(zoom_toast(label, cx)))
     }
+}
+
+/// The zoom level, briefly, after it changes.
+fn zoom_toast(label: String, cx: &App) -> impl IntoElement {
+    let theme = cx.theme();
+    h_flex()
+        .absolute()
+        // At the bottom, clear of the table's header and first rows.
+        .bottom(rems(1.5))
+        .left_0()
+        .right_0()
+        .justify_center()
+        .child(
+            div()
+                .id("zoom-toast")
+                .test_support()
+                .aria_label(label.clone())
+                .px_3()
+                .py_1()
+                .rounded(theme.radius)
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.popover)
+                .text_sm()
+                .font_semibold()
+                .child(label),
+        )
 }
 
 /// Everything the receiver holds right now, and whether the refresh is complete.
@@ -457,30 +756,33 @@ fn ago(elapsed: Duration) -> String {
     }
 }
 
-fn overall_tag(overall: Overall) -> impl IntoElement {
-    let (tag, label) = match overall {
-        Overall::Loading => (Tag::secondary(), "Loading"),
-        Overall::Clean => (Tag::success(), "Clean"),
-        Overall::Attention => (Tag::warning(), "Attention"),
-        Overall::Failed => (Tag::danger(), "Failed"),
+/// The row's overall state as a colored dot, with its name for tests and the tooltip.
+fn state_dot(ix: usize, overall: Overall, cx: &App) -> impl IntoElement {
+    let theme = cx.theme();
+    let (color, label) = match overall {
+        Overall::Loading => (theme.muted_foreground, "Loading"),
+        Overall::Clean => (theme.success, "Clean"),
+        Overall::Attention => (theme.warning, "Attention"),
+        Overall::Failed => (theme.danger, "Failed"),
     };
-    tag.small().outline().child(label)
+    div()
+        .id(SharedString::from(format!("state-{ix}-{label}")))
+        .test_support()
+        // The color alone doesn't reach screen readers.
+        .aria_label(format!("State: {label}"))
+        .size(rems(0.625))
+        .rounded_full()
+        .bg(color)
+        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(label).build(window, cx))
 }
 
-pub(crate) fn counts_line(document: &StatusDocument) -> String {
-    // A section gh-x couldn't load counts as "?", and a turned-off one as "–", never as 0.
-    let count = |section: &str, len: usize| match document.section(section) {
+/// A section's count: "?" when gh-x couldn't load it, "–" when turned off, never 0 for either.
+pub(crate) fn section_count(document: &StatusDocument, section: &str, len: usize) -> String {
+    match document.section(section) {
         Some(section) if section.is_unavailable() => "?".to_owned(),
         Some(section) if section.is_disabled() => "–".to_owned(),
         _ => len.to_string(),
-    };
-    format!(
-        "{} PRs · {} issues · {} merged · {} runs",
-        count("pullRequests.open", document.pull_requests.open.len()),
-        count("issues", document.issues.len()),
-        count("pullRequests.merged", document.pull_requests.merged.len()),
-        count("workflowRuns", document.workflow_runs.len())
-    )
+    }
 }
 
 fn section_label(name: &str) -> &str {
@@ -503,10 +805,10 @@ fn health_row(row: &HealthRow, cx: &App) -> impl IntoElement {
     h_flex()
         .gap_2()
         .text_sm()
-        .child(div().w(px(14.)).text_color(color).child(marker))
+        .child(div().w(rems(0.875)).text_color(color).child(marker))
         .child(
             div()
-                .w(px(84.))
+                .w(rems(5.25))
                 .text_color(theme.muted_foreground)
                 .child(row.label.clone()),
         )
@@ -597,7 +899,7 @@ fn link_row(id: SharedString, url: &str, cells: Vec<AnyElement>, cx: &App) -> An
 
 fn cell(text: impl Into<SharedString>, width: f32) -> AnyElement {
     div()
-        .w(px(width))
+        .w(rems(width / 16.))
         .flex_none()
         .truncate()
         .child(text.into())
@@ -615,7 +917,7 @@ fn grow(text: impl Into<SharedString>) -> AnyElement {
 
 fn muted(text: impl Into<SharedString>, width: f32, cx: &App) -> AnyElement {
     div()
-        .w(px(width))
+        .w(rems(width / 16.))
         .flex_none()
         .truncate()
         .text_color(cx.theme().muted_foreground)
@@ -680,7 +982,7 @@ fn run_rows(ix: usize, runs: &[WorkflowRun], cx: &App) -> Vec<AnyElement> {
                 &run.url,
                 vec![
                     div()
-                        .w(px(14.))
+                        .w(rems(0.875))
                         .flex_none()
                         .text_color(color)
                         .child(mark)

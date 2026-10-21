@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+publish = false
+
+# Versions follow CodexBar's Cargo.toml and Cargo.lock (hemsoft-dev/codexbar), so both apps build on the same GPUI.
+[workspace.dependencies]
+dashboard-core = { path = "crates/dashboard-core" }
+gpui-kit = "0.8.0"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.dev.package."*"]
+opt-level = 2

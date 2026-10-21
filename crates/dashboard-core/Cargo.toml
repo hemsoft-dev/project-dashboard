@@ -1,0 +1,12 @@
+[package]
+name = "dashboard-core"
+description = "Project Dashboard data model: the board of repositories and their gh-x status. No UI."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

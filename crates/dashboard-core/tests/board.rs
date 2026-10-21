@@ -107,3 +107,26 @@ fn outcomes_for_removed_checkouts_are_ignored() {
     assert!(!applied);
     assert!(cache.is_empty());
 }
+
+#[test]
+fn a_checkout_listed_twice_gets_one_card_and_finishes_refreshing() {
+    let mut cache = StatusCache::default();
+    let listed = vec![
+        PathBuf::from("/src/gh-x"),
+        PathBuf::from("/src/codexbar"),
+        PathBuf::from("/src/gh-x"),
+    ];
+    let mut board = Board::new(&listed, &cache);
+    assert_eq!(board.checkouts(), paths());
+    board.start_refresh(&board.checkouts());
+    for checkout in board.checkouts() {
+        board.apply(
+            Outcome {
+                checkout,
+                result: Ok(fixtures::document(CLEAN)),
+            },
+            &mut cache,
+        );
+    }
+    assert!(!board.is_refreshing());
+}

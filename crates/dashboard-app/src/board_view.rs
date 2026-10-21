@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use dashboard_core::cache::StatusCache;
 use dashboard_core::scheduler::{self, Outcome};
 use dashboard_core::source::StatusSource;
-use dashboard_core::status::{HealthRow, Issue, PullRequest, StatusDocument, WorkflowRun};
+use dashboard_core::status::{HealthRow, Issue, PullRequest, Section, StatusDocument, WorkflowRun};
 use dashboard_core::{APP_NAME, Board, Card, Overall};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::tag::Tag;
@@ -76,6 +76,20 @@ impl BoardView {
             last_refresh: None,
             focus,
         };
+        // Keeps the title bar's "Updated … ago" current between refreshes.
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(30)).await;
+                let Ok(()) = this.update(cx, |view, cx| {
+                    if view.last_refresh.is_some() {
+                        cx.notify();
+                    }
+                }) else {
+                    break;
+                };
+            }
+        })
+        .detach();
         if let Some(interval) = view.options.auto_refresh {
             cx.spawn(async move |this, cx| {
                 loop {
@@ -274,8 +288,14 @@ impl BoardView {
             )
             .child(div().font_semibold().truncate().child(card.name()))
             .child(overall_tag(overall))
-            .when(card.from_cache && !card.refreshing, |this| {
-                this.child(Tag::secondary().small().outline().child("Cached"))
+            // Stays while a refresh runs: until a fresh result lands, the card still shows the cached copy.
+            .when(card.from_cache, |this| {
+                this.child(
+                    div()
+                        .id(("cached", ix))
+                        .test_support()
+                        .child(Tag::secondary().small().outline().child("Cached")),
+                )
             })
             .child(div().flex_1())
             .when_some(card.document.as_ref(), |this, document| {
@@ -487,9 +507,39 @@ fn health_row(row: &HealthRow, cx: &App) -> impl IntoElement {
         .child(div().flex_1().truncate().child(row.text.clone()))
 }
 
-/// One table: a heading with its count, then clickable rows or "None".
-fn table(title: &'static str, count: usize, rows: Vec<AnyElement>, cx: &App) -> impl IntoElement + use<> {
+/// One table: a heading with its count, then clickable rows or "None". When gh-x couldn't load the section, the
+/// count reads "?" and gh-x's reason stands in for the rows: an empty list there means unknown, not none.
+fn table(
+    title: &'static str,
+    count: usize,
+    unavailable: Option<&Section>,
+    rows: Vec<AnyElement>,
+    cx: &App,
+) -> impl IntoElement + use<> {
     let theme = cx.theme();
+    let heading = match unavailable {
+        Some(_) => format!("{title} (?)"),
+        None => format!("{title} ({count})"),
+    };
+    let body: Vec<AnyElement> = match unavailable {
+        Some(section) => vec![
+            div()
+                .id(SharedString::from(format!("unavailable-{title}")))
+                .test_support()
+                .text_sm()
+                .text_color(theme.warning)
+                .child(format!("Unavailable: {}", section.reason))
+                .into_any_element(),
+        ],
+        None if rows.is_empty() => vec![
+            div()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child("None")
+                .into_any_element(),
+        ],
+        None => rows,
+    };
     v_flex()
         .gap_0p5()
         .child(
@@ -498,12 +548,9 @@ fn table(title: &'static str, count: usize, rows: Vec<AnyElement>, cx: &App) -> 
                 .text_xs()
                 .font_semibold()
                 .text_color(theme.muted_foreground)
-                .child(format!("{title} ({count})")),
+                .child(heading),
         )
-        .when(rows.is_empty(), |this| {
-            this.child(div().text_sm().text_color(theme.muted_foreground).child("None"))
-        })
-        .children(rows)
+        .children(body)
 }
 
 /// A row that opens `url` in the default browser.
@@ -633,24 +680,28 @@ fn tables(ix: usize, document: &StatusDocument, cx: &App) -> impl IntoElement + 
         .child(table(
             "Open pull requests",
             prs.open.len(),
+            document.unavailable_section("pullRequests.open"),
             pr_rows("pr", ix, &prs.open, cx),
             cx,
         ))
         .child(table(
             "Open issues",
             document.issues.len(),
+            document.unavailable_section("issues"),
             issue_rows(ix, &document.issues, cx),
             cx,
         ))
         .child(table(
             "Recently merged",
             prs.merged.len(),
+            document.unavailable_section("pullRequests.merged"),
             pr_rows("merged", ix, &prs.merged, cx),
             cx,
         ))
         .child(table(
             "Workflow runs",
             document.workflow_runs.len(),
+            document.unavailable_section("workflowRuns"),
             run_rows(ix, &document.workflow_runs, cx),
             cx,
         ))

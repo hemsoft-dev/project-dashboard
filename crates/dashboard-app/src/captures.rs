@@ -98,6 +98,13 @@ fn captures() {
     cx.run_until_parked();
     save(&mut cx, expanded, &out, "expanded-card");
 
+    // A partly unavailable repository, expanded: the sections gh-x couldn't load say so instead of "None".
+    let (partial, partial_view) = open(&mut cx, vec![PathBuf::from("/demo/minibot")], 520.);
+    fill(&mut cx, &partial_view, &demo::DemoSource);
+    cx.update(|cx| partial_view.update(cx, |view, cx| view.toggle_expanded(Path::new("/demo/minibot"), cx)));
+    cx.run_until_parked();
+    save(&mut cx, partial, &out, "expanded-unavailable");
+
     // Without gh: one setup message instead of a failure on every card.
     struct NoGh;
     impl StatusSource for NoGh {

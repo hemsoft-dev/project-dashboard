@@ -20,6 +20,8 @@ pub struct StatusDocument {
     pub pull_requests: PullRequests,
     pub workflow_runs: Vec<WorkflowRun>,
     pub sections: Vec<Section>,
+    /// An overall verdict, if gh-x reports one; the dashboard then shows it as is.
+    pub verdict: Option<Verdict>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -311,7 +313,10 @@ impl StatusDocument {
             ),
         ];
         let current = &health.current_branch;
-        if (!current.name.is_empty() && current.name != default.name) || default.verdict.is_unavailable() {
+        // As the terminal does: a current branch other than the default (a detached HEAD has no name), or any current
+        // branch when the default's state is unavailable. An absent `currentBranch` object has no status.
+        let reported = !current.verdict.status.is_empty();
+        if reported && (current.name != default.name || default.verdict.is_unavailable()) {
             let name = if current.name.is_empty() {
                 "detached HEAD"
             } else {
@@ -331,9 +336,19 @@ impl StatusDocument {
         self.sections.iter().filter(|section| section.is_unavailable())
     }
 
-    /// Clean when every health row is clean by gh-x's verdict and every GitHub section loaded.
+    /// gh-x's overall verdict when the document carries one (a top-level `verdict`); otherwise clean when every
+    /// health row is clean by gh-x's own verdict and every GitHub section loaded. The terminal view has no overall
+    /// verdict of its own, so the fallback only combines gh-x's row and section verdicts and never re-derives them.
     pub fn is_clean(&self) -> bool {
+        if let Some(verdict) = &self.verdict {
+            return verdict.clean;
+        }
         self.health_rows().iter().all(|row| row.clean) && self.unavailable_sections().next().is_none()
+    }
+
+    /// The section named `name` when gh-x reports it unavailable.
+    pub fn unavailable_section(&self, name: &str) -> Option<&Section> {
+        self.unavailable_sections().find(|section| section.name == name)
     }
 }
 

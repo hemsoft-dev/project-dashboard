@@ -256,6 +256,86 @@ async fn automatic_refresh_runs_on_its_interval(cx: &mut TestAppContext) {
     assert_eq!(*source.0.lock().unwrap(), [(PathBuf::from("/demo/gh-x"), false)]);
 }
 
+#[gpui_kit::test]
+async fn an_unavailable_section_reads_unavailable_in_the_expanded_card_not_none(cx: &mut TestAppContext) {
+    let (handle, view) = open_board(
+        cx,
+        vec!["/demo/minibot".into()],
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        options(),
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    cx.update_window(handle, |_, window, cx| window.click(("expand", 0usize), cx))
+        .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("unavailable-Open pull requests").is_some());
+        assert!(window.try_find("unavailable-Open issues").is_some());
+        // The merged list and runs loaded (empty), so they don't claim to be unavailable.
+        assert!(window.try_find("unavailable-Recently merged").is_none());
+        assert!(window.try_find("unavailable-Workflow runs").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn cached_cards_keep_their_tag_while_a_refresh_runs(cx: &mut TestAppContext) {
+    let mut cache = StatusCache::default();
+    cache.insert("/demo/codexbar".into(), fixtures::document(ATTENTION));
+    let (handle, view) = open_board(
+        cx,
+        vec!["/demo/codexbar".into()],
+        cache,
+        Arc::new(demo::DemoSource),
+        options(),
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("cached", 0usize)).is_some(), "tagged while refreshing");
+    })
+    .unwrap();
+    assert!(cx.update(|cx| view.read(cx).board().is_refreshing()));
+    settle(cx, handle, &view).await;
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find(("cached", 0usize)).is_none(),
+            "fresh data drops the tag"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn the_updated_label_keeps_ticking_after_a_refresh(cx: &mut TestAppContext) {
+    let (handle, view) = open_board(
+        cx,
+        vec!["/demo/gh-x".into()],
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        options(),
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    let notified = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = notified.clone();
+    let _observer = cx.update(|cx| {
+        cx.observe(&view, move |_, _| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })
+    });
+    cx.executor().advance_clock(Duration::from_secs(61));
+    cx.run_until_parked();
+    assert!(
+        notified.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+        "re-rendered as time passed"
+    );
+}
+
 #[test]
 fn counts_mark_unavailable_sections_unknown() {
     assert_eq!(

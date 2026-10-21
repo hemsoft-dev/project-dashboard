@@ -118,3 +118,43 @@ fn unknown_and_missing_fields_parse_within_schema_one() {
     assert_eq!(doc.display_name(), "demo");
     assert!(doc.issues.is_empty());
 }
+
+#[test]
+fn a_detached_head_gets_its_current_row() {
+    let mut doc = fixtures::document(CLEAN);
+    doc.health.current_branch.name.clear();
+    doc.health.current_branch.upstream.clear();
+    doc.health.current_branch.verdict.clean = false;
+    let rows = doc.health_rows();
+    assert_eq!(rows.len(), 5);
+    assert_eq!(rows[4].label, "Current");
+    assert!(
+        rows[4].text.starts_with("detached HEAD · no upstream configured"),
+        "{}",
+        rows[4].text
+    );
+    assert!(!rows[4].clean);
+    assert!(!doc.is_clean());
+}
+
+#[test]
+fn a_document_without_a_current_branch_object_has_no_current_row() {
+    let doc = StatusDocument::parse(r#"{"schemaVersion": 1, "health": {"defaultBranch": {"status": "available", "clean": true, "name": "main", "checkedOut": true, "upstream": "origin/main", "changes": {"clean": true}}}}"#).unwrap();
+    assert!(doc.health_rows().iter().all(|row| row.label != "Current"));
+}
+
+#[test]
+fn an_overall_verdict_from_gh_x_wins_over_the_rows() {
+    let mut doc = fixtures::document(CLEAN);
+    assert!(doc.is_clean());
+    doc.verdict = Some(dashboard_core::status::Verdict {
+        status: "available".into(),
+        reason: String::new(),
+        clean: false,
+    });
+    assert!(!doc.is_clean());
+    let attention =
+        StatusDocument::parse(&ATTENTION.replacen("{", r#"{"verdict": {"status": "available", "clean": true},"#, 1))
+            .unwrap();
+    assert!(attention.is_clean());
+}

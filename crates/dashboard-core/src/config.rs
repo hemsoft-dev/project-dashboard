@@ -23,7 +23,7 @@ pub struct Config {
     pub root: Option<PathBuf>,
     /// Minutes between automatic refreshes; 0 turns them off.
     pub refresh_minutes: u64,
-    /// How many `gh x status` processes run at once.
+    /// How many `gh x status` processes run at once (1 to 16).
     pub parallelism: usize,
     /// Local checkouts, in display order.
     pub repositories: Vec<PathBuf>,
@@ -84,7 +84,7 @@ impl Config {
     pub fn parse(text: &str, path: &Path) -> Result<Self, ConfigError> {
         let mut config: Self =
             toml::from_str(text).map_err(|err| ConfigError::Parse(path.to_owned(), err.to_string()))?;
-        config.parallelism = config.parallelism.max(1);
+        config.parallelism = config.parallelism.clamp(1, crate::scheduler::MAX_PARALLELISM);
         Ok(config)
     }
 

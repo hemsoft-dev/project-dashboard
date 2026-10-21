@@ -161,3 +161,29 @@ fn results_arrive_as_each_finishes() {
     assert_eq!(receiver.recv().unwrap().checkout, PathBuf::from("/src/slow"));
     assert!(receiver.recv().is_err());
 }
+
+#[test]
+fn workers_never_exceed_the_checkouts_or_the_cap() {
+    assert_eq!(scheduler::workers(4, 10), 4);
+    assert_eq!(scheduler::workers(10_000, 2), 2);
+    assert_eq!(scheduler::workers(10_000, 100), scheduler::MAX_PARALLELISM);
+    assert_eq!(scheduler::workers(0, 3), 1);
+    assert_eq!(scheduler::workers(4, 0), 0);
+}
+
+#[test]
+fn a_huge_parallelism_still_refreshes_without_spawning_extra_threads() {
+    let fake = Arc::new(Fake::default());
+    let checkouts = vec![PathBuf::from("/src/a"), PathBuf::from("/src/b")];
+    let outcomes: Vec<_> = scheduler::refresh(fake.clone(), checkouts, usize::MAX, false)
+        .iter()
+        .collect();
+    assert_eq!(outcomes.len(), 2);
+    assert!(fake.peak.load(Ordering::SeqCst) <= 2);
+}
+
+#[test]
+fn an_empty_refresh_closes_at_once() {
+    let receiver = scheduler::refresh(Arc::new(Fake::default()), Vec::new(), 4, false);
+    assert!(receiver.recv().is_err());
+}

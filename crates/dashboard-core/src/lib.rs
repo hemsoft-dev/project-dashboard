@@ -90,10 +90,13 @@ pub struct Board {
 }
 
 impl Board {
-    /// One card per checkout, showing its cached status (if any) until the first refresh lands.
+    /// One card per checkout, showing its cached status (if any) until the first refresh lands. A checkout listed
+    /// twice gets one card, at its first position.
     pub fn new(checkouts: &[PathBuf], cache: &StatusCache) -> Self {
+        let mut seen = std::collections::HashSet::new();
         let cards = checkouts
             .iter()
+            .filter(|checkout| seen.insert(*checkout))
             .map(|checkout| {
                 let mut card = Card::new(checkout.clone());
                 if let Some(document) = cache.get(checkout) {

@@ -8,6 +8,14 @@ use std::sync::{Arc, Mutex};
 use crate::source::{FetchError, StatusSource};
 use crate::status::StatusDocument;
 
+/// The most `gh x status` processes that ever run at once.
+pub const MAX_PARALLELISM: usize = 16;
+
+/// How many workers a refresh of `checkouts` checkouts starts for a configured `parallelism`.
+pub fn workers(parallelism: usize, checkouts: usize) -> usize {
+    parallelism.clamp(1, MAX_PARALLELISM).min(checkouts)
+}
+
 /// One checkout's refresh result.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Outcome {
@@ -24,8 +32,9 @@ pub fn refresh(
     refresh: bool,
 ) -> mpsc::Receiver<Outcome> {
     let (sender, receiver) = mpsc::channel();
+    // Never more threads than checkouts, nor than the hard cap, whatever the config says.
+    let workers = workers(parallelism, checkouts.len());
     let queue = Arc::new(Mutex::new(checkouts.into_iter()));
-    let workers = parallelism.max(1);
     for _ in 0..workers {
         let queue = Arc::clone(&queue);
         let source = Arc::clone(&source);

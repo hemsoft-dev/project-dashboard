@@ -45,6 +45,12 @@ fn config_zero_refresh_turns_auto_refresh_off_and_parallelism_is_at_least_one() 
 }
 
 #[test]
+fn config_parallelism_is_capped() {
+    let config = Config::parse("parallelism = 100000", Path::new("config.toml")).unwrap();
+    assert_eq!(config.parallelism, dashboard_core::scheduler::MAX_PARALLELISM);
+}
+
+#[test]
 fn invalid_config_names_the_file() {
     let err = Config::parse("repositories = 3", Path::new("/cfg/config.toml")).unwrap_err();
     assert!(err.to_string().starts_with("/cfg/config.toml is not valid"), "{err}");

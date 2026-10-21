@@ -46,7 +46,10 @@ impl UiState {
         }
     }
 
-    /// Writes the file through a temporary one, so a crash mid-write leaves the old state.
+    /// Writes the file through a temporary one, so a crash mid-write leaves the old state. `std::fs::rename` replaces
+    /// an existing `ui-state.json` on Windows as well as Unix: Rust calls `MoveFileExW` with
+    /// `MOVEFILE_REPLACE_EXISTING` there (<https://doc.rust-lang.org/std/fs/fn.rename.html>), and
+    /// `saving_over_an_existing_state_file_replaces_it` checks it on every CI platform.
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
         let path = dir.join(STATE_FILE);

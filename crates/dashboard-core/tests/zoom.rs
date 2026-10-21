@@ -128,6 +128,20 @@ fn column_widths_survive_a_save_and_load_beside_the_zoom() {
 }
 
 #[test]
+fn saving_over_an_existing_state_file_replaces_it() {
+    let scratch = Scratch::new("replace");
+    let path = scratch.0.join(STATE_FILE);
+    UiState::update(&scratch.0, |state| state.columns.set(Column::Repository, 10.0)).unwrap();
+    assert!(path.is_file());
+    // The file exists now; each later save must replace it rather than fail, on Windows too.
+    for width in [11.0, 12.0, 13.0] {
+        UiState::update(&scratch.0, |state| state.columns.set(Column::Repository, width)).unwrap();
+        assert_eq!(UiState::load(&scratch.0).columns.get(Column::Repository), width);
+    }
+    assert!(!path.with_extension("json.tmp").exists());
+}
+
+#[test]
 fn a_malformed_or_out_of_range_column_width_falls_back_on_its_own() {
     let scratch = Scratch::new("bad-columns");
     std::fs::create_dir_all(&scratch.0).unwrap();

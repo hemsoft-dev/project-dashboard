@@ -1,7 +1,7 @@
 //! A repository's last activity: the most recently updated open or merged pull request, open issue or workflow run in
 //! its `gh x status --json` document. Only gh-x's own timestamps are read.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, TimeZone, Utc};
 
 use crate::status::StatusDocument;
 
@@ -24,10 +24,23 @@ pub struct Activity {
 }
 
 impl Activity {
-    /// "PR #12 · 14m ago".
-    pub fn summary(&self, now: DateTime<Utc>) -> String {
-        format!("{} · {}", self.label, ago(self.at, now))
+    /// How long ago it was updated: "14m ago".
+    pub fn age(&self, now: DateTime<Utc>) -> String {
+        ago(self.at, now)
     }
+
+    /// When it was updated, on this computer's clock: "2026-10-21 02:16".
+    pub fn local_time(&self) -> String {
+        time_in(self.at, &Local)
+    }
+}
+
+/// `at` on `zone`'s clock, to the minute: "2026-10-21 02:16".
+pub fn time_in<Tz: TimeZone>(at: DateTime<Utc>, zone: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    at.with_timezone(zone).format("%Y-%m-%d %H:%M").to_string()
 }
 
 fn parse(at: Option<&str>) -> Option<DateTime<Utc>> {

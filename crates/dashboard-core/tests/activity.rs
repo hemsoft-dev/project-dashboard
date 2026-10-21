@@ -2,8 +2,8 @@
 
 use std::path::PathBuf;
 
-use chrono::{DateTime, Utc};
-use dashboard_core::activity::{ActivityKind, ago, last_activity};
+use chrono::{DateTime, FixedOffset, Utc};
+use dashboard_core::activity::{ActivityKind, ago, last_activity, time_in};
 use dashboard_core::cache::StatusCache;
 use dashboard_core::fixtures::{self, ATTENTION, CLEAN, UNAVAILABLE};
 use dashboard_core::scheduler::Outcome;
@@ -136,11 +136,16 @@ fn fractional_seconds_and_offsets_compare_as_instants() {
 }
 
 #[test]
-fn the_summary_reads_kind_number_and_age() {
+fn the_activity_reads_its_label_age_and_time() {
     let mut doc = StatusDocument::default();
     doc.pull_requests.open = vec![pr(12, Some("2026-10-21T06:16:00Z"))];
     let newest = last_activity(&doc).unwrap();
-    assert_eq!(newest.summary(at("2026-10-21T06:30:00Z")), "PR #12 · 14m ago");
+    assert_eq!(newest.label, "PR #12");
+    assert_eq!(newest.age(at("2026-10-21T06:30:00Z")), "14m ago");
+    // US Eastern in October is four hours behind UTC.
+    let eastern = FixedOffset::west_opt(4 * 3600).unwrap();
+    assert_eq!(time_in(newest.at, &eastern), "2026-10-21 02:16");
+    assert_eq!(time_in(newest.at, &Utc), "2026-10-21 06:16");
 }
 
 #[test]
@@ -177,18 +182,27 @@ fn board_with(times: &[Option<&str>]) -> Board {
 }
 
 #[test]
-fn config_order_is_the_default_and_last_activity_sorts_newest_first() {
+fn config_order_is_the_default_and_update_time_sorts_both_ways() {
     let board = board_with(&[
         Some("2026-10-21T05:00:00Z"),
         None,
         Some("2026-10-21T07:00:00Z"),
         Some("2026-10-21T05:00:00Z"),
         Some("2026-10-21T06:00:00Z"),
+        None,
     ]);
     assert_eq!(SortOrder::default(), SortOrder::Config);
-    assert_eq!(board.order(SortOrder::Config), [0, 1, 2, 3, 4]);
-    // Ties keep config order; a repository without activity goes last.
-    assert_eq!(board.order(SortOrder::LastActivity), [2, 4, 0, 3, 1]);
+    assert_eq!(board.order(SortOrder::Config), [0, 1, 2, 3, 4, 5]);
+    // Ties keep config order; repositories without an update time go last, in config order, either way.
+    assert_eq!(board.order(SortOrder::NewestFirst), [2, 4, 0, 3, 1, 5]);
+    assert_eq!(board.order(SortOrder::OldestFirst), [0, 3, 4, 2, 1, 5]);
+}
+
+#[test]
+fn the_sort_cycles_newest_oldest_then_config() {
+    assert_eq!(SortOrder::Config.next(), SortOrder::NewestFirst);
+    assert_eq!(SortOrder::NewestFirst.next(), SortOrder::OldestFirst);
+    assert_eq!(SortOrder::OldestFirst.next(), SortOrder::Config);
 }
 
 #[test]
@@ -214,5 +228,6 @@ fn loading_and_failed_cards_without_a_status_sort_last() {
         },
         &mut cache,
     );
-    assert_eq!(board.order(SortOrder::LastActivity), [2, 0, 1]);
+    assert_eq!(board.order(SortOrder::NewestFirst), [2, 0, 1]);
+    assert_eq!(board.order(SortOrder::OldestFirst), [2, 0, 1]);
 }

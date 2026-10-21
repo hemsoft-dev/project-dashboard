@@ -103,10 +103,13 @@ fn captures() {
     fill(&mut cx, &view, &demo::DemoSource);
     save(&mut cx, board, &out, "table");
 
-    // The same table sorted by last activity, newest first.
-    cx.update(|cx| view.update(cx, |view, cx| view.toggle_sort(cx)));
+    // The same table sorted by update time, newest first, then oldest first.
+    cx.update(|cx| view.update(cx, |view, cx| view.cycle_sort(cx)));
     cx.run_until_parked();
     save(&mut cx, board, &out, "table-sorted");
+    cx.update(|cx| view.update(cx, |view, cx| view.cycle_sort(cx)));
+    cx.run_until_parked();
+    save(&mut cx, board, &out, "table-sorted-oldest");
 
     // The window at its 480 px minimum: last activity shrinks, every refresh button stays in view.
     let (narrow, narrow_view) = open_sized(&mut cx, demo::checkouts(), 480., 560.);

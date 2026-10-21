@@ -8,8 +8,10 @@
 //! Expanding a row shows what `gh x status` shows for that checkout: the health rows with gh-x's clean verdicts and
 //! the open PR, open issue, merged PR and workflow run tables. Items open in the browser.
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
@@ -79,6 +81,8 @@ pub struct BoardView {
     sort: SortOrder,
     columns: ColumnWidths,
     resizing: Option<Resize>,
+    /// The repository column's width as last laid out, which a narrow window can make less than its setting.
+    repository_laid_out: Rc<Cell<Option<Pixels>>>,
     last_refresh: Option<Instant>,
     focus: FocusHandle,
 }
@@ -106,6 +110,7 @@ impl BoardView {
             sort: SortOrder::default(),
             columns,
             resizing: None,
+            repository_laid_out: Rc::new(Cell::new(None)),
             last_refresh: None,
             focus,
         };
@@ -157,7 +162,7 @@ impl BoardView {
     }
 
     /// Starts dragging `column`'s right border, or restores its default width on a double-click.
-    fn start_resize(&mut self, column: Column, event: &MouseDownEvent, cx: &mut Context<Self>) {
+    fn start_resize(&mut self, column: Column, event: &MouseDownEvent, window: &Window, cx: &mut Context<Self>) {
         if event.click_count >= 2 {
             self.resizing = None;
             self.columns.reset(column);
@@ -165,10 +170,18 @@ impl BoardView {
             cx.notify();
             return;
         }
+        let mut start_width = self.columns.get(column);
+        // On a narrow window the repository column is drawn narrower than its setting. Start from what is on screen,
+        // so the border follows the pointer from the first pixel.
+        if column == Column::Repository
+            && let Some(laid_out) = self.repository_laid_out.get()
+        {
+            start_width = start_width.min(laid_out / window.rem_size());
+        }
         self.resizing = Some(Resize {
             column,
             start_x: event.position.x,
-            start_width: self.columns.get(column),
+            start_width,
         });
     }
 
@@ -222,9 +235,9 @@ impl BoardView {
             .cursor_col_resize()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |view, event: &MouseDownEvent, _, cx| {
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
-                    view.start_resize(column, event, cx);
+                    view.start_resize(column, event, window, cx);
                 }),
             )
             .child(
@@ -239,10 +252,22 @@ impl BoardView {
 
     /// A header cell for a resizable column, with the handle on its right border.
     fn header_cell(&self, column: Column, cell: impl IntoElement, cx: &mut Context<Self>) -> impl IntoElement {
+        let laid_out = (column == Column::Repository).then(|| Rc::clone(&self.repository_laid_out));
         column_cell(column, &self.columns)
             .relative()
             .child(cell)
             .child(self.resize_handle(column, cx))
+            // Records the width the layout gave the column, for a drag that starts on a narrow window.
+            .when_some(laid_out, |this, laid_out| {
+                this.child(
+                    canvas(
+                        move |bounds, _, _| laid_out.set(Some(bounds.size.width)),
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+            })
     }
 
     /// Moves to the next order: newest updated first, oldest first, then config order.

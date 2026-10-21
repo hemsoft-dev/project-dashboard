@@ -1015,6 +1015,31 @@ async fn a_column_stops_at_its_minimum_and_a_double_click_restores_its_default(c
 }
 
 #[gpui_kit::test]
+async fn on_a_narrow_window_a_repository_drag_starts_from_the_width_on_screen(cx: &mut TestAppContext) {
+    // 640 px leaves the repository column less than its 18 rem (288 px) setting.
+    let (handle, view) = open_board_sized(
+        cx,
+        demo::checkouts(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        options(),
+        640.,
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    let shown = width_of(cx, handle, "header-repository");
+    assert!(shown < px(18. * 16.), "shrunk to {shown:?}");
+    drag_border(cx, handle, Column::Repository, -16.);
+    // One rem left of what was on screen, not one rem left of the setting (which would show no change at all).
+    let after = width_of(cx, handle, "header-repository");
+    assert_eq!(after, shown - px(16.));
+    assert_eq!(
+        cx.update(|cx| view.read(cx).columns()).get(Column::Repository),
+        Column::Repository.clamp(f32::from(shown) / 16. - 1.)
+    );
+}
+
+#[gpui_kit::test]
 async fn resized_columns_are_saved_and_restored_on_the_next_start(cx: &mut TestAppContext) {
     let dir = std::env::temp_dir().join(format!("project-dashboard-ui-columns-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

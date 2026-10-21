@@ -102,7 +102,7 @@
         "approvals": 0,
         "approvers": [],
         "approvalsIncomplete": false,
-        "checks": "✓ 6/6",
+        "checks": "pass",
         "comments": "0",
         "aiReview": "-",
         "aiClean": null,
@@ -122,7 +122,7 @@
         "approvals": 0,
         "approvers": [],
         "approvalsIncomplete": false,
-        "checks": "✓ 6/6",
+        "checks": "pass",
         "comments": "0",
         "aiReview": "-",
         "aiClean": null,
@@ -139,7 +139,7 @@
     {
       "id": "18311000001",
       "url": "https://github.com/hemsoft-dev/gh-x/actions/runs/18311000001",
-      "status": "success",
+      "status": "✓",
       "rawStatus": "completed/success",
       "title": "docs: record v0.21.2 release",
       "workflow": "CI",
@@ -152,6 +152,7 @@
       "updatedAt": "2026-10-19T04:15:16Z"
     }
   ],
+  "workflowRunsPerfect": true,
   "sections": [
     {
       "name": "issues",

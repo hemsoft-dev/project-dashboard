@@ -130,6 +130,8 @@ pub struct Issue {
     pub labels: String,
     pub assignees: String,
     pub updated: String,
+    /// RFC 3339; `null` when unknown.
+    pub updated_at: Option<String>,
     pub url: String,
 }
 
@@ -149,6 +151,7 @@ pub struct PullRequest {
     pub ai_clean: Option<bool>,
     pub branch: String,
     pub updated: String,
+    pub updated_at: Option<String>,
     pub merged_at: Option<String>,
     pub url: String,
 }
@@ -174,6 +177,9 @@ pub struct WorkflowRun {
     pub event: String,
     pub elapsed: String,
     pub age: String,
+    pub created_at: Option<String>,
+    pub started_at: Option<String>,
+    pub updated_at: Option<String>,
 }
 
 /// One GitHub section's load result: `available` or `unavailable` with a reason, and whether it came from gh-x's cache.

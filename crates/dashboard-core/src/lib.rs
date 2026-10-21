@@ -3,6 +3,7 @@
 //! Status data always comes from `gh x status --json` (gh-x is the single source of truth): [`source`] runs it,
 //! [`status`] reads its document, and the board only arranges and aggregates gh-x's own verdicts.
 
+pub mod activity;
 pub mod cache;
 pub mod config;
 pub mod scheduler;
@@ -11,6 +12,7 @@ pub mod status;
 
 use std::path::{Path, PathBuf};
 
+use crate::activity::{Activity, last_activity};
 use crate::cache::StatusCache;
 use crate::scheduler::Outcome;
 use crate::source::FetchError;
@@ -63,6 +65,11 @@ impl Card {
             Some(document) => document.display_name().to_owned(),
             None => folder_name(&self.checkout),
         }
+    }
+
+    /// The newest PR, issue or run in the latest status.
+    pub fn last_activity(&self) -> Option<Activity> {
+        self.document.as_ref().and_then(last_activity)
     }
 
     pub fn overall(&self) -> Overall {
@@ -165,9 +172,35 @@ impl Board {
             .find(|error| error.is_setup())
     }
 
+    /// The cards' indices in display order: config order, or newest last activity first with the rest after them in
+    /// config order.
+    pub fn order(&self, sort: SortOrder) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.cards.len()).collect();
+        if sort == SortOrder::LastActivity {
+            let activity: Vec<_> = self
+                .cards
+                .iter()
+                .map(|card| card.last_activity().map(|activity| activity.at))
+                .collect();
+            // Stable, so equal times and cards without activity keep config order; `None` sorts after any time.
+            order.sort_by(|&a, &b| activity[b].cmp(&activity[a]));
+        }
+        order
+    }
+
     pub fn checkouts(&self) -> Vec<PathBuf> {
         self.cards.iter().map(|card| card.checkout.clone()).collect()
     }
+}
+
+/// How the table orders its rows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SortOrder {
+    /// The order of `repositories` in config.toml.
+    #[default]
+    Config,
+    /// Newest last activity first.
+    LastActivity,
 }
 
 /// A headline and a hint, for a board with nothing to show.

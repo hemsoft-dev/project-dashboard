@@ -33,6 +33,7 @@ fn options() -> Options {
         auto_refresh: None,
         config_problem: None,
         config_path: Some(PathBuf::from("~/.config/project-dashboard/config.toml")),
+        now: Some(demo::fixture_now()),
     }
 }
 

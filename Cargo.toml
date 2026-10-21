@@ -13,6 +13,8 @@ publish = false
 dashboard-core = { path = "crates/dashboard-core" }
 gpui-kit = "0.8.0"
 serde = { version = "1", features = ["derive"] }
+# Timestamps for last activity, as CodexBar pins it.
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 serde_json = "1"
 # The config file (crates/dashboard-core/src/config.rs).
 toml = "1"

@@ -85,6 +85,7 @@ fn live_view(window: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<BoardView
             auto_refresh: config.refresh_interval(),
             config_problem,
             config_path: Some(dir.join(config::FILE_NAME)),
+            now: None,
         },
         window,
         cx,
@@ -103,6 +104,8 @@ fn demo_view(window: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<BoardView
             auto_refresh: None,
             config_problem: None,
             config_path: None,
+            // The fixtures' clock, so the demo's ages read the same whenever it runs.
+            now: Some(demo::fixture_now()),
         },
         window,
         cx,

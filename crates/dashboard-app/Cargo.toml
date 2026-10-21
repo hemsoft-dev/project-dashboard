@@ -14,10 +14,14 @@ path = "src/main.rs"
 dashboard-core.workspace = true
 gpui-kit.workspace = true
 
+# Compiles the executable's icon and version resources (build.rs) with rc.exe from the Windows SDK.
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"
+
 [dev-dependencies]
 # Headless UI tests: the real view in an in-process test window, with no desktop input or focus changes.
 gpui-kit = { workspace = true, features = ["test-support"] }
-# Saves the headless captures (src/captures.rs) as PNGs.
+# Saves the headless captures (src/captures.rs) and the icon example's PNGs.
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [lints]

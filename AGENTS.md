@@ -26,7 +26,12 @@ crates/
                     # the status cache (cache.rs), running gh (source.rs), the parallel refresh (scheduler.rs)
                     # and the board (lib.rs). Fixtures: tests/fixtures/status-*.json.
   dashboard-app/    # GPUI views and the `project-dashboard` binary. `--demo` shows the fixtures.
+                    # src/mark.rs draws the icon; build.rs embeds it and the version block on Windows.
+scripts/Build-WindowsRelease.ps1   # Release build, executable checks and zip (.github/workflows/release.yml).
 ```
+
+Releases: bump `[workspace.package] version`, merge, push the tag `v<version>`. The release workflow refuses a tag
+that doesn't match the version.
 
 Keep logic that can be tested without a window in `dashboard-core`.
 

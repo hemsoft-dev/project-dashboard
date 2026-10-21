@@ -1,5 +1,7 @@
 # Project Dashboard
 
+<img src="assets/icon-256.png" alt="Project Dashboard icon: four gold dashboard tiles on a black rounded square" width="96">
+
 A fast, native Windows app that shows the status of all your active
 repositories at a glance. It covers everything `gh x status` (alias `gs`) shows
 for one checkout, across every project, in one window.
@@ -25,6 +27,41 @@ with the look and speed of [CodexBar](https://github.com/hemsoft-dev/codexbar).
 - **Many repos, one window:** a configurable list of local checkouts, refreshed
   in parallel. Cached results render first, and fresh data replaces them as it
   arrives.
+
+## Install on Windows
+
+1. Open the [latest release](https://github.com/hemsoft-dev/project-dashboard/releases) (early versions are marked
+   *Pre-release*) and download `project-dashboard-<version>-windows-x64.zip`. The `.sha256` file next to it holds the
+   zip's SHA-256 checksum, which `Get-FileHash <zip>` in PowerShell should match.
+2. Unzip it to a folder of your own, for example `%LOCALAPPDATA%\Programs\ProjectDashboard`.
+3. Run `project-dashboard.exe`. It opens a window, with no console behind it. To find it from Start, right-click the exe,
+   choose *Show more options › Pin to Start* (or *Create shortcut*), or pin the running app to the taskbar.
+
+Windows SmartScreen may warn about an unrecognized app because the executable isn't code-signed yet. Choose
+*More info › Run anyway*.
+
+Your settings and cache live in `%APPDATA%\ProjectDashboard`, outside the install folder, so updating never touches
+them.
+
+### Update
+
+Close Project Dashboard, download the newer release's zip, and unzip it over the old folder, replacing
+`project-dashboard.exe`. Pinned shortcuts keep working because the path doesn't change. Each release's notes list what
+changed.
+
+### Release a new version (maintainers)
+
+Set `version` under `[workspace.package]` in `Cargo.toml`, merge, then push a matching tag:
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+The [Release workflow](.github/workflows/release.yml) builds `project-dashboard.exe` on `windows-latest`, checks it
+(GUI subsystem, embedded icon and version info, starts and opens its window), zips it with this README and the license,
+and publishes the zip and its `.sha256` on a GitHub release. Versions below 1.0 and versions with a hyphen
+(`1.2.0-beta.1`) are published as pre-releases. The app's icon is drawn in code (`crates/dashboard-app/src/mark.rs`);
+`cargo run -p dashboard-app --example icon -- icon.png 256` writes it as a PNG.
 
 ## Build and run
 

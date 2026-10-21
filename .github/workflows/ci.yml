@@ -56,7 +56,8 @@ jobs:
       # the run's artifacts and attach them to the PR's Validation section.
       - name: Screenshots
         if: runner.os == 'Linux'
-        run: CAPTURE_DIR=captures cargo test -p dashboard-app --locked captures -- --ignored
+        # Absolute: cargo runs the test from the crate's folder, so a relative CAPTURE_DIR would land there.
+        run: CAPTURE_DIR="$GITHUB_WORKSPACE/captures" cargo test -p dashboard-app --locked captures -- --ignored
 
       - name: Upload screenshots
         if: runner.os == 'Linux'

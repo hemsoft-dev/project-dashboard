@@ -42,7 +42,7 @@ cargo run -p dashboard-app                                    # open the dashboa
 cargo fmt --all --check                                       # format
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked                               # unit tests and headless UI tests
-CAPTURE_DIR=captures cargo test -p dashboard-app captures -- --ignored   # PNG screenshots (Linux only)
+CAPTURE_DIR=$PWD/captures cargo test -p dashboard-app captures -- --ignored   # PNGs (Linux; absolute path)
 ```
 
 On Linux, building needs GPUI's headers:

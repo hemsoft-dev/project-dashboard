@@ -1,7 +1,8 @@
 //! Screenshots for pull requests, rendered offscreen by GPUI's Linux headless renderer (wgpu), so no window ever appears
 //! on a desktop. Windows has no headless renderer in GPUI.
 //!
-//! `CAPTURE_DIR=<folder> cargo test -p dashboard-app captures -- --ignored` writes one PNG per state.
+//! `CAPTURE_DIR=<absolute folder> cargo test -p dashboard-app captures -- --ignored` writes one PNG per state. Cargo
+//! runs the test from this crate's folder, so a relative folder lands under `crates/dashboard-app`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

@@ -248,6 +248,10 @@ async fn a_missing_gh_shows_one_setup_message(cx: &mut TestAppContext) {
     settle(cx, handle, &view).await;
     cx.update_window(handle, |_, window, _| {
         assert_eq!(window.find_all("banner").len(), 1);
+        // The rows say they have nothing rather than "Loading…" forever.
+        for ix in 0..4usize {
+            assert_eq!(window.find(("activity-placeholder", ix)).label(), Some("Unavailable"));
+        }
         // The cards don't repeat it.
         assert!(window.try_find(("row-error", 0usize)).is_none());
     })
@@ -813,6 +817,42 @@ async fn at_200_percent_in_the_narrowest_window_the_table_scrolls_sideways_to_ev
             refresh.origin.x >= px(0.) && refresh.origin.x + refresh.size.width <= px(480.),
             "scrolled into view: {:?}",
             refresh
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn at_200_percent_in_the_narrowest_window_the_title_bar_keeps_its_refresh_button(cx: &mut TestAppContext) {
+    let (handle, view) = open_board_sized(
+        cx,
+        demo::checkouts(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        options(),
+        480.,
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    cx.update(|cx| zoom::set_level(2.0, cx));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let button = window.find("refresh-all").bounds();
+        assert!(
+            button.origin.x + button.size.width <= px(480.),
+            "refresh-all ends at {:?}",
+            button.origin.x + button.size.width
+        );
+        let title = window.find("app-title").bounds();
+        let status = window.find("refresh-status").bounds();
+        assert!(
+            title.origin.x + title.size.width <= status.origin.x + px(1.),
+            "title overlaps the status"
+        );
+        assert!(
+            status.origin.x + status.size.width <= button.origin.x + px(1.),
+            "status overlaps the button"
         );
     })
     .unwrap();

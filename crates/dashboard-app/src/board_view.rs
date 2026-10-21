@@ -240,30 +240,56 @@ impl BoardView {
             // The title bar is a fixed 34px; it grows with the zoom so its text isn't clipped.
             .h(crate::zoom::scaled(34., cx).max(px(34.)))
             .child(
+                // On a narrow, zoomed window the status gives way first, then the title; icon and button stay.
+                // gpui-kit's title bar never shrinks below its content's natural width, so this row is positioned over the
+                // bar's area instead of sizing it: the bar keeps the window's width and the row's text truncates within.
                 h_flex()
-                    .w_full()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .min_w_0()
                     .pr_2()
                     .gap_2()
                     .items_center()
-                    .child(Icon::new(IconName::LayoutDashboard).text_color(cx.theme().primary))
-                    .child(div().font_semibold().child(APP_NAME))
+                    .child(
+                        div()
+                            .flex_none()
+                            .child(Icon::new(IconName::LayoutDashboard).text_color(cx.theme().primary)),
+                    )
+                    .child(
+                        div()
+                            .id("app-title")
+                            .test_support()
+                            .min_w_0()
+                            .flex_shrink(1.)
+                            .truncate()
+                            .font_semibold()
+                            .child(APP_NAME),
+                    )
                     .child(div().flex_1())
                     .child(
                         div()
                             .id("refresh-status")
                             .test_support()
+                            .min_w_0()
+                            .flex_shrink(10.)
+                            .truncate()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
                             .child(status),
                     )
                     .child(
-                        Button::new("refresh-all")
-                            .ghost()
-                            .small()
-                            .icon(IconName::RefreshCw)
-                            .tooltip("Refresh all (F5)")
-                            .loading(refreshing)
-                            .on_click(cx.listener(|view, _, _, cx| view.refresh_all(cx))),
+                        div().flex_none().child(
+                            Button::new("refresh-all")
+                                .ghost()
+                                .small()
+                                .icon(IconName::RefreshCw)
+                                .tooltip("Refresh all (F5)")
+                                .loading(refreshing)
+                                .on_click(cx.listener(|view, _, _, cx| view.refresh_all(cx))),
+                        ),
                     ),
             )
     }
@@ -421,7 +447,19 @@ impl BoardView {
                     )
                     .into_any_element()
             }
+            // A setup problem (no gh or gh-x) is explained once in the banner; the row just says it has nothing.
+            (None, None) if card.document.is_none() && card.error.is_some() => div()
+                .id(("activity-placeholder", ix))
+                .test_support()
+                .aria_label("Unavailable")
+                .truncate()
+                .text_color(theme.muted_foreground)
+                .child("Unavailable")
+                .into_any_element(),
             (None, None) if card.document.is_none() => div()
+                .id(("activity-placeholder", ix))
+                .test_support()
+                .aria_label("Loading")
                 .truncate()
                 .text_color(theme.muted_foreground)
                 .child("Loading…")

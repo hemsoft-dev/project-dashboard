@@ -19,6 +19,8 @@ pub struct StatusDocument {
     pub issues: Vec<Issue>,
     pub pull_requests: PullRequests,
     pub workflow_runs: Vec<WorkflowRun>,
+    /// Whether all five recent runs completed successfully.
+    pub workflow_runs_perfect: Option<bool>,
     pub sections: Vec<Section>,
     /// An overall verdict, if gh-x reports one; the dashboard then shows it as is.
     pub verdict: Option<Verdict>,
@@ -49,6 +51,8 @@ impl Verdict {
 }
 
 pub const UNAVAILABLE: &str = "unavailable";
+/// A section turned off by the invocation, such as the merged list with `--merged 0`.
+pub const DISABLED: &str = "disabled";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -187,6 +191,38 @@ pub struct Section {
 impl Section {
     pub fn is_unavailable(&self) -> bool {
         self.status == UNAVAILABLE
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        self.status == DISABLED
+    }
+}
+
+/// A workflow run's state, read from gh-x's terminal marker (`status`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunOutcome {
+    Success,
+    Failure,
+    Running,
+    Queued,
+    Attention,
+    Skipped,
+    Unknown,
+}
+
+impl WorkflowRun {
+    /// The marker's meaning, per gh-x's status JSON reference: `✓` success, `X` failure, `*` running, `○` queued,
+    /// `!` attention, `—` skipped or neutral, `·` unknown. Anything else is unknown too, and still shown as is.
+    pub fn outcome(&self) -> RunOutcome {
+        match self.status.as_str() {
+            "✓" => RunOutcome::Success,
+            "X" => RunOutcome::Failure,
+            "*" => RunOutcome::Running,
+            "○" => RunOutcome::Queued,
+            "!" => RunOutcome::Attention,
+            "—" => RunOutcome::Skipped,
+            _ => RunOutcome::Unknown,
+        }
     }
 }
 
@@ -344,6 +380,11 @@ impl StatusDocument {
             return verdict.clean;
         }
         self.health_rows().iter().all(|row| row.clean) && self.unavailable_sections().next().is_none()
+    }
+
+    /// The section named `name`, if gh-x reported it.
+    pub fn section(&self, name: &str) -> Option<&Section> {
+        self.sections.iter().find(|section| section.name == name)
     }
 
     /// The section named `name` when gh-x reports it unavailable.

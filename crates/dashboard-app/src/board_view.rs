@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use dashboard_core::cache::StatusCache;
 use dashboard_core::scheduler::{self, Outcome};
 use dashboard_core::source::StatusSource;
-use dashboard_core::status::{HealthRow, Issue, PullRequest, Section, StatusDocument, WorkflowRun};
+use dashboard_core::status::{HealthRow, Issue, PullRequest, RunOutcome, Section, StatusDocument, WorkflowRun};
 use dashboard_core::{APP_NAME, Board, Card, Overall};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::tag::Tag;
@@ -468,16 +468,11 @@ fn overall_tag(overall: Overall) -> impl IntoElement {
 }
 
 pub(crate) fn counts_line(document: &StatusDocument) -> String {
-    // A section gh-x couldn't load counts as "?", not 0.
-    let count = |section: &str, len: usize| {
-        if document
-            .unavailable_sections()
-            .any(|unavailable| unavailable.name == section)
-        {
-            "?".to_owned()
-        } else {
-            len.to_string()
-        }
+    // A section gh-x couldn't load counts as "?", and a turned-off one as "–", never as 0.
+    let count = |section: &str, len: usize| match document.section(section) {
+        Some(section) if section.is_unavailable() => "?".to_owned(),
+        Some(section) if section.is_disabled() => "–".to_owned(),
+        _ => len.to_string(),
     };
     format!(
         "{} PRs · {} issues · {} merged · {} runs",
@@ -519,37 +514,53 @@ fn health_row(row: &HealthRow, cx: &App) -> impl IntoElement {
 }
 
 /// One table: a heading with its count, then clickable rows or "None". When gh-x couldn't load the section, the
-/// count reads "?" and gh-x's reason stands in for the rows: an empty list there means unknown, not none.
+/// count reads "?" and gh-x's reason stands in for the rows: an empty list there means unknown, not none. A section
+/// the invocation turned off reads "off".
 fn table(
     title: &'static str,
     count: usize,
-    unavailable: Option<&Section>,
+    section: Option<&Section>,
     rows: Vec<AnyElement>,
     cx: &App,
 ) -> impl IntoElement + use<> {
     let theme = cx.theme();
-    let heading = match unavailable {
-        Some(_) => format!("{title} (?)"),
-        None => format!("{title} ({count})"),
+    let unavailable = section.filter(|section| section.is_unavailable());
+    let disabled = section.is_some_and(Section::is_disabled);
+    let heading = match (unavailable, disabled) {
+        (Some(_), _) => format!("{title} (?)"),
+        (None, true) => format!("{title} (off)"),
+        (None, false) => format!("{title} ({count})"),
     };
-    let body: Vec<AnyElement> = match unavailable {
-        Some(section) => vec![
+    let note = |id: String, text: String, color| {
+        vec![
             div()
-                .id(SharedString::from(format!("unavailable-{title}")))
+                .id(SharedString::from(id))
                 .test_support()
                 .text_sm()
-                .text_color(theme.warning)
-                .child(format!("Unavailable: {}", section.reason))
+                .text_color(color)
+                .child(text)
                 .into_any_element(),
-        ],
-        None if rows.is_empty() => vec![
+        ]
+    };
+    let body: Vec<AnyElement> = match (unavailable, disabled) {
+        (Some(section), _) => note(
+            format!("unavailable-{title}"),
+            format!("Unavailable: {}", section.reason),
+            theme.warning,
+        ),
+        (None, true) => note(
+            format!("disabled-{title}"),
+            "Turned off for this run".to_owned(),
+            theme.muted_foreground,
+        ),
+        (None, false) if rows.is_empty() => vec![
             div()
                 .text_sm()
                 .text_color(theme.muted_foreground)
                 .child("None")
                 .into_any_element(),
         ],
-        None => rows,
+        (None, false) => rows,
     };
     v_flex()
         .gap_0p5()
@@ -656,11 +667,14 @@ fn run_rows(ix: usize, runs: &[WorkflowRun], cx: &App) -> Vec<AnyElement> {
     let theme = cx.theme();
     runs.iter()
         .map(|run| {
-            let (mark, color) = match run.status.as_str() {
-                "success" => ("✓", theme.success),
-                "failure" | "cancelled" | "timed_out" | "startup_failure" => ("✗", theme.danger),
-                _ => ("●", theme.warning),
+            // gh-x's own marker, colored by its meaning.
+            let color = match run.outcome() {
+                RunOutcome::Success => theme.success,
+                RunOutcome::Failure => theme.danger,
+                RunOutcome::Running | RunOutcome::Queued | RunOutcome::Attention => theme.warning,
+                RunOutcome::Skipped | RunOutcome::Unknown => theme.muted_foreground,
             };
+            let mark = run.status.clone();
             link_row(
                 format!("run-{ix}-{}", run.id).into(),
                 &run.url,
@@ -691,28 +705,28 @@ fn tables(ix: usize, document: &StatusDocument, cx: &App) -> impl IntoElement + 
         .child(table(
             "Open pull requests",
             prs.open.len(),
-            document.unavailable_section("pullRequests.open"),
+            document.section("pullRequests.open"),
             pr_rows("pr", ix, &prs.open, cx),
             cx,
         ))
         .child(table(
             "Open issues",
             document.issues.len(),
-            document.unavailable_section("issues"),
+            document.section("issues"),
             issue_rows(ix, &document.issues, cx),
             cx,
         ))
         .child(table(
             "Recently merged",
             prs.merged.len(),
-            document.unavailable_section("pullRequests.merged"),
+            document.section("pullRequests.merged"),
             pr_rows("merged", ix, &prs.merged, cx),
             cx,
         ))
         .child(table(
             "Workflow runs",
             document.workflow_runs.len(),
-            document.unavailable_section("workflowRuns"),
+            document.section("workflowRuns"),
             run_rows(ix, &document.workflow_runs, cx),
             cx,
         ))

@@ -92,7 +92,8 @@ See [AGENTS.md](AGENTS.md) for the stack, the workspace layout and the conventio
 ## Usage
 
 Project Dashboard needs the [GitHub CLI](https://cli.github.com) signed in (`gh auth login`) and the
-[gh-x](https://github.com/hemsoft-dev/gh-x) extension with `gh x status --json`:
+[gh-x](https://github.com/hemsoft-dev/gh-x) extension, v0.22.0 or later, for `gh x status --json`
+([schema version 1](https://github.com/hemsoft-dev/gh-x/blob/main/docs/status-json.md)):
 
 ```sh
 gh extension install hemsoft-dev/gh-x   # or: gh extension upgrade gh-x
@@ -111,7 +112,9 @@ verdict. A card is Clean when every row is clean and every GitHub section loaded
 - At startup every card shows its last result from the local cache at once, marked **Cached**, and each card updates as
   its fresh result arrives. Up to `parallelism` (default 4) `gh x status` processes run at a time.
 - A repository whose status fails shows the error on its own card; the others keep working. A GitHub section gh-x
-  couldn't load shows its reason on the card, and its count reads `?`. A missing `gh` or gh-x shows one setup message
+  couldn't load shows its reason on the card, and its count reads `?`; a section gh-x reports as turned off (the
+  merged list with `--merged 0`) reads `–` and *off*. Workflow runs show gh-x's own markers (`✓`, `X`, `*`, `○`,
+  `!`, `—`, `·`). A missing `gh` or gh-x shows one setup message
   at the top.
 
 `cargo run -p dashboard-app -- --demo` shows sample data from the checked-in fixtures, without the config file,

@@ -95,6 +95,7 @@
     "mergedLimit": 5
   },
   "workflowRuns": [],
+  "workflowRunsPerfect": false,
   "sections": [
     {
       "name": "issues",

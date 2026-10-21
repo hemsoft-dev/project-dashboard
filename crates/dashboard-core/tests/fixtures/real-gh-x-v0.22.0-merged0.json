@@ -1,0 +1,255 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-21T08:50:18.2793813Z",
+  "repository": {
+    "nameWithOwner": "hemsoft-dev/project-dashboard",
+    "rootPath": "/home/franz/github/hemsoft/project-dashboard",
+    "defaultBranch": "main"
+  },
+  "health": {
+    "defaultBranch": {
+      "status": "available",
+      "reason": "",
+      "clean": true,
+      "name": "main",
+      "checkedOut": true,
+      "upstream": "origin/main",
+      "synced": true,
+      "ahead": 0,
+      "behind": 0,
+      "changes": {
+        "clean": true,
+        "staged": 0,
+        "modified": 0,
+        "deleted": 0,
+        "renamed": 0,
+        "untracked": 0,
+        "conflicted": 0
+      }
+    },
+    "currentBranch": {
+      "status": "available",
+      "reason": "",
+      "clean": true,
+      "name": "main",
+      "checkedOut": true,
+      "upstream": "origin/main",
+      "synced": true,
+      "ahead": 0,
+      "behind": 0,
+      "changes": {
+        "clean": true,
+        "staged": 0,
+        "modified": 0,
+        "deleted": 0,
+        "renamed": 0,
+        "untracked": 0,
+        "conflicted": 0
+      }
+    },
+    "branches": {
+      "status": "available",
+      "reason": "",
+      "clean": false,
+      "local": 2,
+      "remote": 1,
+      "dangling": 0
+    },
+    "worktrees": {
+      "status": "available",
+      "reason": "",
+      "clean": false,
+      "total": 2,
+      "cleanupCandidates": 1,
+      "items": [
+        {
+          "path": "/home/franz/github/hemsoft/project-dashboard",
+          "head": "1a7677a89906c545d1f8bcf4d95d8d1e5dc60233",
+          "branch": "main",
+          "detached": false,
+          "detachedMerged": false,
+          "locked": false,
+          "prunable": false,
+          "prunableReason": "",
+          "primary": true,
+          "current": true,
+          "exists": true,
+          "clean": true,
+          "cleanKnown": true,
+          "cleanupCandidate": false,
+          "cleanupReason": ""
+        },
+        {
+          "path": "/home/franz/github/hemsoft/project-dashboard.worktrees/issue-2b",
+          "head": "1a7677a89906c545d1f8bcf4d95d8d1e5dc60233",
+          "branch": "issue-2-final-schema",
+          "detached": false,
+          "detachedMerged": false,
+          "locked": false,
+          "prunable": false,
+          "prunableReason": "",
+          "primary": false,
+          "current": false,
+          "exists": true,
+          "clean": true,
+          "cleanKnown": true,
+          "cleanupCandidate": true,
+          "cleanupReason": "clean, merged branch with no open PR"
+        }
+      ]
+    },
+    "stashes": {
+      "status": "available",
+      "reason": "",
+      "clean": true,
+      "count": 0
+    }
+  },
+  "issues": [
+    {
+      "number": 3,
+      "pullRequests": "-",
+      "parent": "-",
+      "subIssues": "-",
+      "title": "Package a Windows release with a HemSoft icon",
+      "author": "Franz Hemmer",
+      "state": "open",
+      "labels": "enhancement",
+      "assignees": "",
+      "updated": "2h",
+      "updatedAt": "2026-10-21T06:13:32Z",
+      "url": "https://github.com/hemsoft-dev/project-dashboard/issues/3"
+    },
+    {
+      "number": 2,
+      "pullRequests": "-",
+      "parent": "-",
+      "subIssues": "-",
+      "title": "Show gh x status for all configured repositories",
+      "author": "Franz Hemmer",
+      "state": "open",
+      "labels": "enhancement",
+      "assignees": "",
+      "updated": "56m",
+      "updatedAt": "2026-10-21T07:53:58Z",
+      "url": "https://github.com/hemsoft-dev/project-dashboard/issues/2"
+    }
+  ],
+  "pullRequests": {
+    "open": [],
+    "merged": [],
+    "mergedLimit": 0
+  },
+  "workflowRuns": [
+    {
+      "id": "39572195492",
+      "url": "https://github.com/hemsoft-dev/project-dashboard/actions/runs/39572195492",
+      "status": "*",
+      "rawStatus": "in_progress",
+      "title": "feat: package a Windows release with ...",
+      "workflow": "Release",
+      "branch": "v0.1.0",
+      "event": "push",
+      "elapsed": "44s",
+      "age": "44s",
+      "createdAt": "2026-10-21T08:49:34Z",
+      "startedAt": "2026-10-21T08:49:34Z",
+      "updatedAt": "2026-10-21T08:49:37Z"
+    },
+    {
+      "id": "39572176274",
+      "url": "https://github.com/hemsoft-dev/project-dashboard/actions/runs/39572176274",
+      "status": "*",
+      "rawStatus": "in_progress",
+      "title": "feat: package a Windows release with ...",
+      "workflow": "CI",
+      "branch": "main",
+      "event": "push",
+      "elapsed": "54s",
+      "age": "54s",
+      "createdAt": "2026-10-21T08:49:24Z",
+      "startedAt": "2026-10-21T08:49:24Z",
+      "updatedAt": "2026-10-21T08:49:34Z"
+    },
+    {
+      "id": "39570823436",
+      "url": "https://github.com/hemsoft-dev/project-dashboard/actions/runs/39570823436",
+      "status": "✓",
+      "rawStatus": "completed",
+      "title": "feat: package a Windows release with ...",
+      "workflow": "Release",
+      "branch": "issue-3-windows-release",
+      "event": "pull_request",
+      "elapsed": "1m56s",
+      "age": "11m",
+      "createdAt": "2026-10-21T08:38:38Z",
+      "startedAt": "2026-10-21T08:38:38Z",
+      "updatedAt": "2026-10-21T08:40:34Z"
+    },
+    {
+      "id": "39570823402",
+      "url": "https://github.com/hemsoft-dev/project-dashboard/actions/runs/39570823402",
+      "status": "✓",
+      "rawStatus": "completed",
+      "title": "feat: package a Windows release with ...",
+      "workflow": "CI",
+      "branch": "issue-3-windows-release",
+      "event": "pull_request",
+      "elapsed": "9m23s",
+      "age": "11m",
+      "createdAt": "2026-10-21T08:38:38Z",
+      "startedAt": "2026-10-21T08:38:38Z",
+      "updatedAt": "2026-10-21T08:48:01Z"
+    },
+    {
+      "id": "39570092243",
+      "url": "https://github.com/hemsoft-dev/project-dashboard/actions/runs/39570092243",
+      "status": "✓",
+      "rawStatus": "completed",
+      "title": "Running Copilot Code Review",
+      "workflow": "Copilot",
+      "branch": "issue-3-windows-release",
+      "event": "dynamic",
+      "elapsed": "3m32s",
+      "age": "17m",
+      "createdAt": "2026-10-21T08:32:51Z",
+      "startedAt": "2026-10-21T08:32:51Z",
+      "updatedAt": "2026-10-21T08:36:23Z"
+    }
+  ],
+  "workflowRunsPerfect": false,
+  "sections": [
+    {
+      "name": "issues",
+      "status": "available",
+      "reason": "",
+      "cached": true,
+      "fetchedAt": "2026-10-21T08:49:59.038881838Z",
+      "cacheAgeSeconds": 19.240499462
+    },
+    {
+      "name": "pullRequests.open",
+      "status": "available",
+      "reason": "",
+      "cached": true,
+      "fetchedAt": "2026-10-21T08:49:59.376373529Z",
+      "cacheAgeSeconds": 18.903007771
+    },
+    {
+      "name": "pullRequests.merged",
+      "status": "disabled",
+      "reason": "",
+      "cached": false,
+      "fetchedAt": null,
+      "cacheAgeSeconds": 0
+    },
+    {
+      "name": "workflowRuns",
+      "status": "available",
+      "reason": "",
+      "cached": true,
+      "fetchedAt": "2026-10-21T08:50:00.601594595Z",
+      "cacheAgeSeconds": 17.677786705
+    }
+  ]
+}

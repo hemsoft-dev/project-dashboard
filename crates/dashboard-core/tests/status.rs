@@ -201,3 +201,93 @@ fn real_gh_x_output_parses_and_matches_its_terminal_view() {
         "https://github.com/hemsoft-dev/gh-x/pull/231"
     );
 }
+
+/// Real output of the released gh-x v0.22.0 (the merged gh-x#230 producer) in the codexbar checkout on
+/// 2026-10-21. Its terminal view at the same time: `Main behind origin/main by 95 commits · Clean working tree`,
+/// `Branches 1 local (0 dangling) · 28 remote`, `Worktrees 15 total · 0 cleanup candidates`, `✓ Stashes 0 stashes`,
+/// open issues (1), open pull requests (0), recently merged (5), workflow runs ✓ ✓ ! ✓ ✓.
+const REAL_V022_CODEXBAR: &str = include_str!("fixtures/real-gh-x-v0.22.0-codexbar.json");
+
+/// Real gh-x v0.22.0 output of `gh x status --json --merged 0` in the project-dashboard checkout on 2026-10-21. Its
+/// terminal view: `✓ Main synced with origin/main · Clean working tree`, `Branches 2 local (0 dangling) · 1 remote`,
+/// `Worktrees 2 total · 1 cleanup candidate`, `✓ Stashes 0 stashes`, open issues (2), open pull requests (0), no
+/// merged list, workflow runs * * ✓ ✓ ✓.
+const REAL_V022_MERGED0: &str = include_str!("fixtures/real-gh-x-v0.22.0-merged0.json");
+
+fn rows_of(doc: &StatusDocument) -> Vec<(String, String, bool)> {
+    doc.health_rows()
+        .into_iter()
+        .map(|row| (row.label, row.text, row.clean))
+        .collect()
+}
+
+fn owned(rows: &[(&str, &str, bool)]) -> Vec<(String, String, bool)> {
+    rows.iter()
+        .map(|(label, text, clean)| ((*label).to_owned(), (*text).to_owned(), *clean))
+        .collect()
+}
+
+#[test]
+fn released_gh_x_output_matches_its_terminal_view() {
+    use dashboard_core::status::RunOutcome::{Attention, Success};
+    let doc = StatusDocument::parse(REAL_V022_CODEXBAR).unwrap();
+    assert_eq!(doc.display_name(), "HemSoft/codexbar");
+    assert_eq!(
+        rows_of(&doc),
+        owned(&[
+            ("Main", "behind origin/main by 95 commits · Clean working tree", false),
+            ("Branches", "1 local (0 dangling) · 28 remote", false),
+            ("Worktrees", "15 total · 0 cleanup candidates", false),
+            ("Stashes", "0 stashes", true),
+        ])
+    );
+    assert_eq!(doc.issues.len(), 1);
+    assert_eq!(doc.pull_requests.open.len(), 0);
+    assert_eq!(doc.pull_requests.merged.len(), 5);
+    let outcomes: Vec<_> = doc.workflow_runs.iter().map(|run| run.outcome()).collect();
+    assert_eq!(outcomes, [Success, Success, Attention, Success, Success]);
+    assert_eq!(doc.workflow_runs_perfect, Some(false));
+}
+
+#[test]
+fn a_turned_off_merged_list_is_disabled_not_unavailable() {
+    use dashboard_core::status::RunOutcome::{Running, Success};
+    let doc = StatusDocument::parse(REAL_V022_MERGED0).unwrap();
+    assert_eq!(
+        rows_of(&doc),
+        owned(&[
+            ("Main", "synced with origin/main · Clean working tree", true),
+            ("Branches", "2 local (0 dangling) · 1 remote", false),
+            ("Worktrees", "2 total · 1 cleanup candidate", false),
+            ("Stashes", "0 stashes", true),
+        ])
+    );
+    let merged = doc.section("pullRequests.merged").unwrap();
+    assert!(merged.is_disabled() && !merged.is_unavailable());
+    assert_eq!(merged.fetched_at, None);
+    assert_eq!(doc.pull_requests.merged_limit, 0);
+    assert!(doc.unavailable_sections().next().is_none());
+    assert_eq!(doc.issues.len(), 2);
+    let outcomes: Vec<_> = doc.workflow_runs.iter().map(|run| run.outcome()).collect();
+    assert_eq!(outcomes, [Running, Running, Success, Success, Success]);
+}
+
+#[test]
+fn every_documented_run_marker_has_its_meaning() {
+    use dashboard_core::status::{RunOutcome, WorkflowRun};
+    let outcome = |marker: &str| {
+        WorkflowRun {
+            status: marker.into(),
+            ..WorkflowRun::default()
+        }
+        .outcome()
+    };
+    assert_eq!(outcome("✓"), RunOutcome::Success);
+    assert_eq!(outcome("X"), RunOutcome::Failure);
+    assert_eq!(outcome("*"), RunOutcome::Running);
+    assert_eq!(outcome("○"), RunOutcome::Queued);
+    assert_eq!(outcome("!"), RunOutcome::Attention);
+    assert_eq!(outcome("—"), RunOutcome::Skipped);
+    assert_eq!(outcome("·"), RunOutcome::Unknown);
+    assert_eq!(outcome("?"), RunOutcome::Unknown);
+}

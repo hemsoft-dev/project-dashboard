@@ -61,8 +61,10 @@ window opens on anyone's desktop.
 
 ## Tests
 
-- The status fixtures follow gh-x's `--json` schema version 1. When gh-x changes the schema, update the fixtures
-  from real `gh x status --json` output and the structs in `status.rs` together.
+- The status fixtures follow gh-x's `--json` schema version 1
+  ([reference](https://github.com/hemsoft-dev/gh-x/blob/main/docs/status-json.md)). `real-*.json` are actual gh-x
+  output, each pinned to the terminal view it was captured with; keep at least one. When gh-x changes the schema,
+  update the fixtures from real `gh x status --json` output and the structs in `status.rs` together.
 - UI tests use `#[gpui_kit::test]` and in-process test windows (`src/ui_tests.rs`); they never open a desktop window
   or send OS input.
 - Name tests after the behavior they check (`empty_board_renders_its_empty_state`).

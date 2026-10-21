@@ -336,6 +336,41 @@ async fn the_updated_label_keeps_ticking_after_a_refresh(cx: &mut TestAppContext
     );
 }
 
+/// Serves the real gh-x v0.22.0 `--merged 0` output for every checkout.
+struct MergedOff;
+
+impl StatusSource for MergedOff {
+    fn fetch(&self, _: &Path, _: bool) -> Result<StatusDocument, FetchError> {
+        Ok(StatusDocument::parse(include_str!(
+            "../../dashboard-core/tests/fixtures/real-gh-x-v0.22.0-merged0.json"
+        ))
+        .unwrap())
+    }
+}
+
+#[gpui_kit::test]
+async fn a_turned_off_section_reads_off_in_the_expanded_card(cx: &mut TestAppContext) {
+    let (handle, view) = open_board(
+        cx,
+        vec!["/demo/project-dashboard".into()],
+        StatusCache::default(),
+        Arc::new(MergedOff),
+        options(),
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    cx.update_window(handle, |_, window, cx| window.click(("expand", 0usize), cx))
+        .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("disabled-Recently merged").is_some());
+        assert!(window.try_find("unavailable-Recently merged").is_none());
+        assert!(window.try_find("disabled-Open issues").is_none());
+    })
+    .unwrap();
+}
+
 #[test]
 fn counts_mark_unavailable_sections_unknown() {
     assert_eq!(
@@ -346,6 +381,11 @@ fn counts_mark_unavailable_sections_unknown() {
         counts_line(&fixtures::document(UNAVAILABLE)),
         "? PRs · ? issues · 0 merged · 0 runs"
     );
+    let merged_off = StatusDocument::parse(include_str!(
+        "../../dashboard-core/tests/fixtures/real-gh-x-v0.22.0-merged0.json"
+    ))
+    .unwrap();
+    assert_eq!(counts_line(&merged_off), "0 PRs · 2 issues · – merged · 5 runs");
 }
 
 fn rgb_of(color: gpui_kit::Hsla) -> (u8, u8, u8) {

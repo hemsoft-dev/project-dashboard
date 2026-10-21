@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dashboard_core::cache::StatusCache;
+use dashboard_core::columns::{Column, ColumnWidths};
 use dashboard_core::fixtures::{self, ATTENTION, CLEAN, UNAVAILABLE};
 use dashboard_core::source::{FetchError, StatusSource};
 use dashboard_core::status::StatusDocument;
@@ -30,6 +31,8 @@ fn options() -> Options {
         config_problem: None,
         config_path: None,
         now: Some(demo::fixture_now()),
+        columns: Default::default(),
+        ui_state_dir: None,
     }
 }
 
@@ -791,10 +794,10 @@ async fn the_zoom_is_saved_and_restored_on_the_next_start(cx: &mut TestAppContex
         press(cx, handle, "ctrl-=");
     }
     // Saved once input settles, not on every step.
-    assert!(!dir.join(dashboard_core::zoom::STATE_FILE).exists());
+    assert!(!dir.join(dashboard_core::ui_state::STATE_FILE).exists());
     cx.executor().advance_clock(Duration::from_secs(1));
     cx.run_until_parked();
-    assert_eq!(dashboard_core::zoom::UiState::load(&dir).zoom, 1.3);
+    assert_eq!(dashboard_core::ui_state::UiState::load(&dir).zoom, 1.3);
     // The next start reads it back.
     cx.update(|cx| {
         zoom::reset_for_tests(cx);
@@ -898,6 +901,222 @@ async fn at_200_percent_in_the_narrowest_window_the_title_bar_keeps_its_refresh_
         assert!(
             status.origin.x + status.size.width <= button.origin.x + px(1.),
             "status overlaps the button"
+        );
+    })
+    .unwrap();
+}
+
+// Resizable columns (#14).
+
+/// The center of a column's resize handle, in window coordinates.
+fn handle_center(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    column: Column,
+) -> gpui_kit::Point<gpui_kit::Pixels> {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.find(("resize", column as usize)).bounds().center()
+    })
+    .unwrap()
+}
+
+fn drag_border(cx: &mut TestAppContext, handle: AnyWindowHandle, column: Column, dx: f32) {
+    let from = handle_center(cx, handle, column);
+    cx.update_window(handle, |_, window, cx| {
+        window.drag(from, gpui_kit::point(from.x + px(dx), from.y), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+fn width_of(cx: &mut TestAppContext, handle: AnyWindowHandle, id: impl Into<gpui_kit::ElementId>) -> gpui_kit::Pixels {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.find(id).bounds().size.width
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+async fn the_repository_column_defaults_to_a_name_sized_width(cx: &mut TestAppContext) {
+    let (handle, view) = twelve(cx).await;
+    assert_eq!(cx.update(|cx| view.read(cx).columns()), ColumnWidths::default());
+    // 18 rem at the 16 px base: no wider than about 20 rem in a 1100 px window, leaving the rest to last activity.
+    assert_eq!(width_of(cx, handle, "header-repository"), px(18. * 16.));
+    for ix in 0..12usize {
+        assert_eq!(width_of(cx, handle, ("name", ix)), px(18. * 16.), "row {ix}");
+    }
+    cx.update_window(handle, |_, window, _| {
+        // Every handle shows the resize cursor's purpose to assistive tech too.
+        assert_eq!(
+            window.find(("resize", Column::Repository as usize)).label(),
+            Some("Resize Repository")
+        );
+        // Last activity got the width the narrower repository column freed.
+        let summary = window.find(("activity-summary", 0usize)).bounds();
+        assert!(
+            summary.origin.x < px(600.),
+            "last activity starts at {:?}",
+            summary.origin.x
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn dragging_a_column_border_resizes_the_header_and_every_row(cx: &mut TestAppContext) {
+    let (handle, view) = twelve(cx).await;
+    drag_border(cx, handle, Column::Repository, -80.);
+    let columns = cx.update(|cx| view.read(cx).columns());
+    assert_eq!(columns.get(Column::Repository), 13.0);
+    assert_eq!(width_of(cx, handle, "header-repository"), px(13. * 16.));
+    for ix in 0..12usize {
+        assert_eq!(width_of(cx, handle, ("name", ix)), px(13. * 16.), "row {ix}");
+    }
+    // Another column, wider: its header and cells grow together, and the handle followed the border.
+    let before = handle_center(cx, handle, Column::PullRequests);
+    drag_border(cx, handle, Column::PullRequests, 32.);
+    assert_eq!(cx.update(|cx| view.read(cx).columns()).get(Column::PullRequests), 5.25);
+    assert_eq!(width_of(cx, handle, ("prs", 3usize)), px(5.25 * 16.));
+    assert_eq!(handle_center(cx, handle, Column::PullRequests).x, before.x + px(32.));
+    // Dragging a border never sorts or expands anything.
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::Config);
+    assert!(!cx.update(|cx| view.read(cx).is_expanded(Path::new("/demo/gh-x"))));
+}
+
+#[gpui_kit::test]
+async fn a_column_stops_at_its_minimum_and_a_double_click_restores_its_default(cx: &mut TestAppContext) {
+    let (handle, view) = twelve(cx).await;
+    drag_border(cx, handle, Column::Repository, -1000.);
+    assert_eq!(
+        cx.update(|cx| view.read(cx).columns()).get(Column::Repository),
+        Column::Repository.min_width()
+    );
+    assert_eq!(width_of(cx, handle, ("name", 0usize)), px(6. * 16.));
+    drag_border(cx, handle, Column::Updated, -1000.);
+    assert_eq!(
+        width_of(cx, handle, "sort-updated"),
+        px(Column::Updated.min_width() * 16.)
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.double_click(("resize", Column::Repository as usize), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let columns = cx.update(|cx| view.read(cx).columns());
+    assert_eq!(columns.get(Column::Repository), Column::Repository.default_width());
+    assert_eq!(
+        columns.get(Column::Updated),
+        Column::Updated.min_width(),
+        "only that column"
+    );
+    assert_eq!(width_of(cx, handle, ("name", 0usize)), px(18. * 16.));
+}
+
+#[gpui_kit::test]
+async fn on_a_narrow_window_a_repository_drag_starts_from_the_width_on_screen(cx: &mut TestAppContext) {
+    // 640 px leaves the repository column less than its 18 rem (288 px) setting.
+    let (handle, view) = open_board_sized(
+        cx,
+        demo::checkouts(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        options(),
+        640.,
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    let shown = width_of(cx, handle, "header-repository");
+    assert!(shown < px(18. * 16.), "shrunk to {shown:?}");
+    drag_border(cx, handle, Column::Repository, -16.);
+    // One rem left of what was on screen, not one rem left of the setting (which would show no change at all).
+    let after = width_of(cx, handle, "header-repository");
+    assert_eq!(after, shown - px(16.));
+    assert_eq!(
+        cx.update(|cx| view.read(cx).columns()).get(Column::Repository),
+        Column::Repository.clamp(f32::from(shown) / 16. - 1.)
+    );
+}
+
+#[gpui_kit::test]
+async fn resized_columns_are_saved_and_restored_on_the_next_start(cx: &mut TestAppContext) {
+    let dir = std::env::temp_dir().join(format!("project-dashboard-ui-columns-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    // The zoom saved earlier must survive a column save.
+    dashboard_core::ui_state::UiState::update(&dir, |state| state.zoom = 1.2).unwrap();
+    let saving = Options {
+        ui_state_dir: Some(dir.clone()),
+        ..options()
+    };
+    let (handle, view) = open_board(
+        cx,
+        demo::checkouts(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        saving,
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    drag_border(cx, handle, Column::Repository, -96.);
+    let saved = dashboard_core::ui_state::UiState::load(&dir);
+    assert_eq!(saved.columns.get(Column::Repository), 12.0);
+    assert_eq!(saved.zoom, 1.2);
+    // The next start opens with the saved widths.
+    let restored = Options {
+        columns: saved.columns,
+        ..options()
+    };
+    let (handle, view) = open_board(
+        cx,
+        demo::checkouts(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        restored,
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    assert_eq!(width_of(cx, handle, ("name", 0usize)), px(12. * 16.));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[gpui_kit::test]
+async fn columns_wider_than_the_window_scroll_sideways_with_the_header(cx: &mut TestAppContext) {
+    use gpui_kit::{ScrollDelta, point};
+    let mut wide = ColumnWidths::default();
+    // With the repository column at its minimum the table needs about 1,250 px.
+    wide.set(Column::Updated, 55.);
+    let (handle, view) = open_board(
+        cx,
+        demo::checkouts(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        Options {
+            columns: wide,
+            ..options()
+        },
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let refresh = window.find(("refresh", 0usize)).bounds();
+        assert!(
+            refresh.origin.x > px(1100.),
+            "starts off to the right at {:?}",
+            refresh.origin.x
+        );
+        window.scroll("table", ScrollDelta::Pixels(point(px(-2000.), px(0.))), cx);
+        window.render_frame(cx);
+        let refresh = window.find(("refresh", 0usize)).bounds();
+        assert!(
+            refresh.origin.x + refresh.size.width <= px(1100.),
+            "scrolled into view: {refresh:?}"
+        );
+        // The header scrolled with the rows: its Updated cell still lines up with theirs.
+        assert_eq!(
+            window.find("sort-updated").bounds().origin.x,
+            window.find(("updated", 0usize)).bounds().origin.x
         );
     })
     .unwrap();

@@ -6,7 +6,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use dashboard_core::zoom::{self as levels, UiState};
+use dashboard_core::ui_state::UiState;
+use dashboard_core::zoom as levels;
 use gpui_kit::component::Theme;
 use gpui_kit::{
     App, DispatchPhase, Global, KeyBinding, Pixels, ScrollDelta, ScrollWheelEvent, TouchPhase, Window, actions, px,
@@ -135,8 +136,9 @@ fn save(cx: &mut App) {
     let Some(state) = cx.try_global::<ZoomState>() else {
         return;
     };
+    let level = state.level;
     if let Some(dir) = &state.dir
-        && let Err(err) = (UiState { zoom: state.level }).save(dir)
+        && let Err(err) = UiState::update(dir, |saved| saved.zoom = level)
     {
         eprintln!("project-dashboard: can't save the zoom level: {err}");
     }

@@ -2,20 +2,27 @@
 //! checkout: its overall state, name, open PR and issue counts, when it was last updated (#13), and its last activity
 //! (#8).
 //!
+//! Dragging the border between two header cells resizes the column to its left (#14); double-clicking it restores the
+//! default. The widths are remembered in `ui-state.json`.
+//!
 //! Expanding a row shows what `gh x status` shows for that checkout: the health rows with gh-x's clean verdicts and
 //! the open PR, open issue, merged PR and workflow run tables. Items open in the browser.
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use dashboard_core::cache::StatusCache;
+use dashboard_core::columns::{Column, ColumnWidths};
 use dashboard_core::scheduler::{self, Outcome};
 use dashboard_core::source::StatusSource;
 use dashboard_core::status::{HealthRow, Issue, PullRequest, RunOutcome, Section, StatusDocument, WorkflowRun};
+use dashboard_core::ui_state::UiState;
 use dashboard_core::{APP_NAME, Board, Card, Overall, SortOrder};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::tag::Tag;
@@ -23,8 +30,8 @@ use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, Styled
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, Context, FocusHandle, Hsla, InteractiveElement as _, IntoElement, KeyBinding, MouseButton,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _,
-    Window, actions, canvas, div, px, rems,
+    MouseDownEvent, MouseMoveEvent, ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, TestSupportExt as _, Window, actions, canvas, div, px, rems,
 };
 
 actions!(project_dashboard, [Refresh]);
@@ -50,6 +57,18 @@ pub struct Options {
     pub config_path: Option<PathBuf>,
     /// A fixed "now" for last-activity ages, for tests and screenshots; `None` reads the clock.
     pub now: Option<DateTime<Utc>>,
+    /// The column widths to start with, as `ui-state.json` remembers them.
+    pub columns: ColumnWidths,
+    /// The folder for `ui-state.json`, where resized columns are saved; `None` keeps them in memory.
+    pub ui_state_dir: Option<PathBuf>,
+}
+
+/// A column border being dragged: which column, and where the drag started.
+#[derive(Clone, Copy)]
+struct Resize {
+    column: Column,
+    start_x: Pixels,
+    start_width: f32,
 }
 
 pub struct BoardView {
@@ -60,6 +79,10 @@ pub struct BoardView {
     /// Expanded rows, by checkout, so expansion survives refreshes and re-sorting.
     expanded: HashSet<PathBuf>,
     sort: SortOrder,
+    columns: ColumnWidths,
+    resizing: Option<Resize>,
+    /// The repository column's width as last laid out, which a narrow window can make less than its setting.
+    repository_laid_out: Rc<Cell<Option<Pixels>>>,
     last_refresh: Option<Instant>,
     focus: FocusHandle,
 }
@@ -77,6 +100,7 @@ impl BoardView {
         window.focus(&focus, cx);
         // One limit for every refresh, so overlapping refreshes never run more than `parallelism` gh processes.
         let source: Arc<dyn StatusSource> = Arc::new(scheduler::Limited::new(source, options.parallelism));
+        let columns = options.columns;
         let view = Self {
             board: Board::new(checkouts, &cache),
             cache,
@@ -84,6 +108,9 @@ impl BoardView {
             options,
             expanded: HashSet::new(),
             sort: SortOrder::default(),
+            columns,
+            resizing: None,
+            repository_laid_out: Rc::new(Cell::new(None)),
             last_refresh: None,
             focus,
         };
@@ -127,6 +154,122 @@ impl BoardView {
     #[cfg(test)]
     pub fn sort(&self) -> SortOrder {
         self.sort
+    }
+
+    #[cfg(test)]
+    pub fn columns(&self) -> ColumnWidths {
+        self.columns
+    }
+
+    /// Starts dragging `column`'s right border, or restores its default width on a double-click.
+    fn start_resize(&mut self, column: Column, event: &MouseDownEvent, window: &Window, cx: &mut Context<Self>) {
+        if event.click_count >= 2 {
+            self.resizing = None;
+            self.columns.reset(column);
+            self.save_columns();
+            cx.notify();
+            return;
+        }
+        let mut start_width = self.columns.get(column);
+        // On a narrow window the repository column is drawn narrower than its setting. Start from what is on screen,
+        // so the border follows the pointer from the first pixel.
+        if column == Column::Repository
+            && let Some(laid_out) = self.repository_laid_out.get()
+        {
+            start_width = start_width.min(laid_out / window.rem_size());
+        }
+        self.resizing = Some(Resize {
+            column,
+            start_x: event.position.x,
+            start_width,
+        });
+    }
+
+    /// Follows the pointer while a border is dragged; widths are in rems, so the drag is measured at the current zoom.
+    fn drag_resize(&mut self, event: &MouseMoveEvent, window: &Window, cx: &mut Context<Self>) {
+        let Some(resize) = self.resizing else {
+            return;
+        };
+        // The button came up outside the window: the drag is over.
+        if event.pressed_button != Some(MouseButton::Left) {
+            self.end_resize(cx);
+            return;
+        }
+        let delta = (event.position.x - resize.start_x) / window.rem_size();
+        self.columns.set(resize.column, resize.start_width + delta);
+        cx.notify();
+    }
+
+    /// Saves the widths and repaints, so the handle drops its dragging color.
+    fn end_resize(&mut self, cx: &mut Context<Self>) {
+        if self.resizing.take().is_some() {
+            self.save_columns();
+            cx.notify();
+        }
+    }
+
+    fn save_columns(&self) {
+        let columns = self.columns;
+        if let Some(dir) = &self.options.ui_state_dir
+            && let Err(err) = UiState::update(dir, |state| state.columns = columns)
+        {
+            eprintln!("project-dashboard: can't save the column widths: {err}");
+        }
+    }
+
+    /// The handle on `column`'s right border: it spans the gap to the next column, so it never covers a header's own
+    /// click target.
+    fn resize_handle(&self, column: Column, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = cx.theme();
+        let (line, active) = (theme.border, theme.primary);
+        let dragging = self.resizing.is_some_and(|resize| resize.column == column);
+        div()
+            .id(("resize", column as usize))
+            .test_support()
+            .aria_label(format!("Resize {}", column_title(column)))
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right(-GAP)
+            .w(GAP)
+            .flex()
+            .justify_center()
+            .cursor_col_resize()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    view.start_resize(column, event, window, cx);
+                }),
+            )
+            .child(
+                div()
+                    .id(("resize-line", column as usize))
+                    .w(px(1.))
+                    .h_full()
+                    .bg(if dragging { active } else { line })
+                    .hover(move |style| style.bg(active)),
+            )
+    }
+
+    /// A header cell for a resizable column, with the handle on its right border.
+    fn header_cell(&self, column: Column, cell: impl IntoElement, cx: &mut Context<Self>) -> impl IntoElement {
+        let laid_out = (column == Column::Repository).then(|| Rc::clone(&self.repository_laid_out));
+        column_cell(column, &self.columns)
+            .relative()
+            .child(cell)
+            .child(self.resize_handle(column, cx))
+            // Records the width the layout gave the column, for a drag that starts on a narrow window.
+            .when_some(laid_out, |this, laid_out| {
+                this.child(
+                    canvas(
+                        move |bounds, _, _| laid_out.set(Some(bounds.size.width)),
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+            })
     }
 
     /// Moves to the next order: newest updated first, oldest first, then config order.
@@ -342,6 +485,7 @@ impl BoardView {
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
+        let foreground = theme.foreground;
         let (arrow, sort_label) = match self.sort {
             SortOrder::Config => ("", "Updated, not sorted"),
             SortOrder::NewestFirst => ("↓", "Updated, newest first"),
@@ -362,39 +506,45 @@ impl BoardView {
             .child(div().w(CHEVRON).flex_none())
             .child(div().w(STATE).flex_none())
             .child(
-                div()
-                    .flex_basis(px(0.))
-                    .flex_grow(NAME_SHARE)
-                    .min_w(NAME_MIN)
-                    .truncate()
-                    .child("Repository"),
+                self.header_cell(
+                    Column::Repository,
+                    div()
+                        .id("header-repository")
+                        .test_support()
+                        .truncate()
+                        .child(column_title(Column::Repository)),
+                    cx,
+                ),
             )
-            .child(div().w(COUNT).flex_none().text_right().child("PRs"))
-            .child(div().w(COUNT).flex_none().text_right().child("Issues"))
+            .child(self.header_cell(
+                Column::PullRequests,
+                div().truncate().text_right().child(column_title(Column::PullRequests)),
+                cx,
+            ))
+            .child(self.header_cell(
+                Column::Issues,
+                div().truncate().text_right().child(column_title(Column::Issues)),
+                cx,
+            ))
             .child(
-                h_flex()
-                    .id("sort-updated")
-                    .test_support()
-                    .aria_label(sort_label)
-                    .ml(UPDATED_LEAD)
-                    .w(UPDATED)
-                    .flex_none()
-                    .gap_1()
-                    .cursor_pointer()
-                    .when(sorted, |this| this.text_color(theme.foreground))
-                    .hover(|style| style.text_color(theme.foreground))
-                    .on_click(cx.listener(|view, _, _, cx| view.cycle_sort(cx)))
-                    .child("Updated")
-                    .child(arrow),
+                self.header_cell(
+                    Column::Updated,
+                    h_flex()
+                        .id("sort-updated")
+                        .test_support()
+                        .aria_label(sort_label)
+                        .size_full()
+                        .gap_1()
+                        .cursor_pointer()
+                        .when(sorted, |this| this.text_color(foreground))
+                        .hover(move |style| style.text_color(foreground))
+                        .on_click(cx.listener(|view, _, _, cx| view.cycle_sort(cx)))
+                        .child(column_title(Column::Updated))
+                        .child(arrow),
+                    cx,
+                ),
             )
-            .child(
-                div()
-                    .flex_basis(px(0.))
-                    .flex_grow(ACTIVITY_SHARE)
-                    .min_w(ACTIVITY_MIN)
-                    .truncate()
-                    .child("Last activity"),
-            )
+            .child(div().flex_1().min_w(ACTIVITY_MIN).truncate().child("Last activity"))
             .child(div().w(REFRESH).flex_none())
     }
 
@@ -539,12 +689,11 @@ impl BoardView {
             )
             .child(div().w(STATE).flex_none().child(state_dot(ix, overall, cx)))
             .child(
-                h_flex()
+                column_cell(Column::Repository, &self.columns)
                     .id(("name", ix))
                     .test_support()
-                    .flex_basis(px(0.))
-                    .flex_grow(NAME_SHARE)
-                    .min_w(NAME_MIN)
+                    .flex()
+                    .items_center()
                     .gap_2()
                     .child(div().min_w_0().truncate().font_semibold().child(card.name()))
                     // Stays while a refresh runs: until a fresh result lands, the row still shows the cached copy.
@@ -563,8 +712,9 @@ impl BoardView {
                     .id(("prs", ix))
                     .test_support()
                     .aria_label(format!("{prs} open pull requests"))
-                    .w(COUNT)
+                    .w(width(Column::PullRequests, &self.columns))
                     .flex_none()
+                    .truncate()
                     .text_right()
                     .child(prs),
             )
@@ -573,20 +723,16 @@ impl BoardView {
                     .id(("issues", ix))
                     .test_support()
                     .aria_label(format!("{issues} open issues"))
-                    .w(COUNT)
+                    .w(width(Column::Issues, &self.columns))
                     .flex_none()
+                    .truncate()
                     .text_right()
                     .child(issues),
             )
-            .child(div().ml(UPDATED_LEAD).w(UPDATED).flex_none().child(updated))
-            // Shrinks before anything else on a narrow window, so the refresh button stays in view.
-            .child(
-                div()
-                    .flex_basis(px(0.))
-                    .flex_grow(ACTIVITY_SHARE)
-                    .min_w(ACTIVITY_MIN)
-                    .child(activity),
-            )
+            .child(column_cell(Column::Updated, &self.columns).child(updated))
+            // Takes the width the other columns leave, and shrinks first on a narrow window, so the refresh button
+            // stays in view.
+            .child(div().flex_1().min_w(ACTIVITY_MIN).child(activity))
             .child(
                 div()
                     .w(REFRESH)
@@ -667,27 +813,53 @@ impl BoardView {
     }
 }
 
-// Table column widths, in rems so they follow the text size.
+// Table column widths, in rems so they follow the text size. The resizable columns' widths are in `ColumnWidths`.
 const CHEVRON: gpui_kit::Rems = rems(1.75);
 const STATE: gpui_kit::Rems = rems(0.75);
-const COUNT: gpui_kit::Rems = rems(3.25);
-/// Fits "Updated ↓" and the longest age, "just now".
-const UPDATED: gpui_kit::Rems = rems(4.5);
-/// Extra space before the update time, so it doesn't read as part of the right-aligned issue count before it.
-const UPDATED_LEAD: gpui_kit::Rems = rems(0.75);
+const REFRESH: gpui_kit::Rems = rems(1.75);
 /// The space between columns.
 const GAP: gpui_kit::Rems = rems(0.5);
-/// The repository name and last activity share the width the fixed columns leave, 2 : 3, at any window size and
-/// zoom, down to these minimums.
-const NAME_SHARE: f32 = 2.;
-const ACTIVITY_SHARE: f32 = 3.;
-const NAME_MIN: gpui_kit::Rems = rems(6.);
+/// Extra space before the update time, so it doesn't read as part of the right-aligned issue count before it.
+const UPDATED_LEAD: gpui_kit::Rems = rems(0.75);
+/// Last activity takes whatever width is left, down to this.
 const ACTIVITY_MIN: gpui_kit::Rems = rems(3.25);
-/// The table's least width: the fixed columns (chevron, state, counts, updated and its lead, refresh), the name and
-/// activity minimums, seven 0.5 rem gaps and 0.5 rem padding on each side. 476 px at 100%, inside the window's 480 px
-/// minimum.
-const TABLE_MIN: gpui_kit::Rems = rems(1.75 + 0.75 + 3.25 + 3.25 + 0.75 + 4.5 + 1.75 + 6. + 3.25 + 7. * 0.5 + 2. * 0.5);
-const REFRESH: gpui_kit::Rems = rems(1.75);
+
+fn width(column: Column, widths: &ColumnWidths) -> gpui_kit::Rems {
+    rems(widths.get(column))
+}
+
+/// A resizable column's cell. The repository column gives way on a narrow window, down to its minimum, after last
+/// activity has; the others keep the width they were given.
+fn column_cell(column: Column, widths: &ColumnWidths) -> gpui_kit::Div {
+    let cell = div().min_w_0();
+    match column {
+        Column::Repository => cell
+            .flex_basis(width(column, widths))
+            .flex_grow(0.)
+            .flex_shrink(1.)
+            .min_w(rems(column.min_width())),
+        Column::Updated => cell.ml(UPDATED_LEAD).w(width(column, widths)).flex_none(),
+        _ => cell.w(width(column, widths)).flex_none(),
+    }
+}
+
+fn column_title(column: Column) -> &'static str {
+    match column {
+        Column::Repository => "Repository",
+        Column::PullRequests => "PRs",
+        Column::Issues => "Issues",
+        Column::Updated => "Updated",
+    }
+}
+
+/// The table's least width: chevron, state and refresh; the repository column's minimum and the other resizable
+/// columns' widths; the lead before Updated; last activity's minimum; seven gaps and 0.5 rem padding on each side. At
+/// the default widths that is 476 px at 100%, inside the window's 480 px minimum. Wider columns make the table scroll
+/// sideways instead.
+fn table_min(widths: &ColumnWidths) -> gpui_kit::Rems {
+    let resizable = widths.total() - widths.get(Column::Repository) + Column::Repository.min_width();
+    rems(1.75 + 0.75 + 1.75 + resizable + 0.75 + 3.25 + 7. * 0.5 + 2. * 0.5)
+}
 
 impl Render for BoardView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -720,7 +892,7 @@ impl Render for BoardView {
                     .child(
                         v_flex()
                             .size_full()
-                            .min_w(TABLE_MIN)
+                            .min_w(table_min(&self.columns))
                             .child(self.render_header(cx))
                             .child(
                                 v_flex()
@@ -738,6 +910,9 @@ impl Render for BoardView {
             .key_context("Dashboard")
             .track_focus(&self.focus)
             .on_action(cx.listener(|view, _: &Refresh, _, cx| view.refresh_all(cx)))
+            // A column border drag follows the pointer anywhere in the window.
+            .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, window, cx| view.drag_resize(event, window, cx)))
+            .on_mouse_up(MouseButton::Left, cx.listener(|view, _, _, cx| view.end_resize(cx)))
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)

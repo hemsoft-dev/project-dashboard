@@ -35,6 +35,8 @@ fn options() -> Options {
         config_problem: None,
         config_path: Some(PathBuf::from("~/.config/project-dashboard/config.toml")),
         now: Some(demo::fixture_now()),
+        columns: Default::default(),
+        ui_state_dir: None,
     }
 }
 

@@ -600,6 +600,9 @@ const NAME_SHARE: f32 = 2.;
 const ACTIVITY_SHARE: f32 = 3.;
 const NAME_MIN: gpui_kit::Rems = rems(7.);
 const ACTIVITY_MIN: gpui_kit::Rems = rems(6.);
+/// The table's least width: the fixed columns (chevron, state, counts, refresh), the name and activity minimums, six
+/// 0.75 rem gaps and the 0.5 rem side padding. 468 px at 100%, inside the window's 480 px minimum.
+const TABLE_MIN: gpui_kit::Rems = rems(1.75 + 0.75 + 3.5 + 3.5 + 1.75 + 7. + 6. + 6. * 0.75 + 0.5);
 const REFRESH: gpui_kit::Rems = rems(1.75);
 
 impl Render for BoardView {
@@ -621,13 +624,29 @@ impl Render for BoardView {
                 .into_iter()
                 .map(|ix| self.render_row(ix, &cards[ix], cx).into_any_element())
                 .collect();
-            content = content.child(self.render_header(cx)).child(
-                v_flex()
-                    .id("rows")
+            // The table never narrows below its columns' minimums. When zoom makes those wider than the window, it
+            // scrolls sideways, header and all, so every row's controls stay reachable.
+            content = content.child(
+                div()
+                    .id("table")
+                    .test_support()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .children(rows),
+                    .overflow_x_scroll()
+                    .child(
+                        v_flex()
+                            .size_full()
+                            .min_w(TABLE_MIN)
+                            .child(self.render_header(cx))
+                            .child(
+                                v_flex()
+                                    .id("rows")
+                                    .flex_1()
+                                    .min_h_0()
+                                    .overflow_y_scroll()
+                                    .children(rows),
+                            ),
+                    ),
             );
         }
         v_flex()

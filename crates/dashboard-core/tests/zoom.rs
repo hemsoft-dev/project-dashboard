@@ -62,6 +62,10 @@ fn the_level_survives_a_save_and_load() {
     assert_eq!(UiState::load(&scratch.0), UiState::default());
     UiState { zoom: 1.3 }.save(&scratch.0).unwrap();
     assert_eq!(UiState::load(&scratch.0).zoom, 1.3);
+    // A later save replaces the file (on Windows too, where rename must overwrite an existing destination).
+    UiState { zoom: 0.8 }.save(&scratch.0).unwrap();
+    UiState { zoom: 1.5 }.save(&scratch.0).unwrap();
+    assert_eq!(UiState::load(&scratch.0).zoom, 1.5);
     assert!(!scratch.0.join("ui-state.json.tmp").exists());
     // config.toml is untouched: the state lives in its own file.
     assert!(!scratch.0.join("config.toml").exists());

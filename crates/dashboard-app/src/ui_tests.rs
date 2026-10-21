@@ -780,3 +780,40 @@ async fn at_200_percent_the_table_still_fits_its_columns(cx: &mut TestAppContext
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+async fn at_200_percent_in_the_narrowest_window_the_table_scrolls_sideways_to_every_control(cx: &mut TestAppContext) {
+    use gpui_kit::{ScrollDelta, point};
+    let (handle, view) = open_board_sized(
+        cx,
+        demo::checkouts(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        options(),
+        480.,
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    cx.update(|cx| zoom::set_level(2.0, cx));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        // Wider than the window: the refresh buttons start out of view, and names keep their minimum.
+        let refresh = window.find(("refresh", 0usize)).bounds();
+        assert!(
+            refresh.origin.x > px(480.),
+            "starts off to the right at {:?}",
+            refresh.origin.x
+        );
+        assert!(window.find(("name", 0usize)).bounds().size.width >= px(7. * 32.));
+        window.scroll("table", ScrollDelta::Pixels(point(px(-2000.), px(0.))), cx);
+        window.render_frame(cx);
+        let refresh = window.find(("refresh", 0usize)).bounds();
+        assert!(
+            refresh.origin.x >= px(0.) && refresh.origin.x + refresh.size.width <= px(480.),
+            "scrolled into view: {:?}",
+            refresh
+        );
+    })
+    .unwrap();
+}

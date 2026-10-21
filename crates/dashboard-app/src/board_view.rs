@@ -415,8 +415,10 @@ impl BoardView {
         let prs = count("pullRequests.open", |document| document.pull_requests.open.len());
         let issues = count("issues", |document| document.issues.len());
         let error = card.error.as_ref().filter(|error| !error.is_setup());
+        // Found once per row: both the Updated and Last activity columns show it.
+        let last_activity = card.last_activity();
         // The age, with the exact local time on hover; a dash until there is something to date.
-        let updated: AnyElement = match card.last_activity() {
+        let updated: AnyElement = match &last_activity {
             Some(activity) => {
                 let age = activity.age(now);
                 let time: SharedString = activity.local_time().into();
@@ -439,7 +441,7 @@ impl BoardView {
                 .child("–")
                 .into_any_element(),
         };
-        let activity: AnyElement = match (card.last_activity(), error) {
+        let activity: AnyElement = match (last_activity, error) {
             // A failed refresh says so in the activity column; the counts keep the last good status.
             (_, Some(error)) => div()
                 .id(("row-error", ix))

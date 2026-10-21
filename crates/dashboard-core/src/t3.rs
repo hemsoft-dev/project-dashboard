@@ -181,7 +181,7 @@ impl ThreadFinder for LocalT3 {
             t3code_home.as_deref(),
             &dirs::home_dir().unwrap_or_default(),
         );
-        find(&resolve_userdata(&homes), checkouts)
+        find_in_homes(&homes, checkouts)
     }
 }
 
@@ -195,21 +195,43 @@ pub fn tooltip(lookup: &Lookup) -> String {
 }
 
 /// The thread for each checkout, in the order given, from the local T3 server in `userdata`.
+/// The thread for each checkout from the first of `homes` whose server is listening. A home left with a stale
+/// runtime file by a crashed or stopped server is passed over for a later one that is running. With none running,
+/// the reason comes from the home [`resolve_userdata`] picks.
+pub fn find_in_homes(homes: &[PathBuf], checkouts: &[PathBuf]) -> Vec<Lookup> {
+    for home in homes {
+        if let Ok(server) = Server::locate(&home.join("userdata"))
+            && server.is_listening(PROBE)
+        {
+            return lookups(&server, checkouts);
+        }
+    }
+    find(&resolve_userdata(homes), checkouts)
+}
+
+/// How long to wait for a server to accept a connection.
+const PROBE: Duration = Duration::from_millis(300);
+
 pub fn find(userdata: &Path, checkouts: &[PathBuf]) -> Vec<Lookup> {
     let all = |reason: NoThread| checkouts.iter().map(|_| Err(reason.clone())).collect();
     let server = match Server::locate(userdata) {
         Ok(server) => server,
         Err(reason) => return all(reason),
     };
-    if !server.is_listening(Duration::from_millis(300)) {
+    if !server.is_listening(PROBE) {
         return all(NoThread::NotRunning);
     }
+    lookups(&server, checkouts)
+}
+
+/// Every checkout's thread from a running server's database.
+fn lookups(server: &Server, checkouts: &[PathBuf]) -> Vec<Lookup> {
     match read(&server.state_db) {
         Ok(state) => checkouts
             .iter()
-            .map(|checkout| state.lookup(&server, checkout))
+            .map(|checkout| state.lookup(server, checkout))
             .collect(),
-        Err(reason) => all(reason),
+        Err(reason) => checkouts.iter().map(|_| Err(reason.clone())).collect(),
     }
 }
 

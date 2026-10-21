@@ -470,6 +470,50 @@ fn the_home_with_a_running_server_wins() {
 }
 
 #[test]
+fn a_stale_home_is_passed_over_for_the_running_server() {
+    let scratch = Scratch::new("stale");
+    let stale = scratch.0.join(".t3").join("userdata");
+    let live = scratch.0.join(".t3-server").join("userdata");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::create_dir_all(&live).unwrap();
+    // The first home still has a database and a runtime file, but its server has gone.
+    database(
+        &stale,
+        &[("p-old", DASHBOARD, false)],
+        &[(
+            "t-old",
+            "p-old",
+            "Stale",
+            "2026-10-21T08:00:00Z",
+            false,
+            false,
+            None,
+            None,
+        )],
+    );
+    let gone = TcpListener::bind("127.0.0.1:0").unwrap();
+    let gone_port = gone.local_addr().unwrap().port();
+    drop(gone);
+    userdata(&stale, &format!("http://127.0.0.1:{gone_port}"));
+    database(
+        &live,
+        &[("p1", DASHBOARD, false)],
+        &[("t-live", "p1", "Live", "2026-10-21T09:00:00Z", false, false, None, None)],
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    userdata(&live, &format!("http://{}", listener.local_addr().unwrap()));
+    let homes = [scratch.0.join(".t3"), scratch.0.join(".t3-server")];
+    let found = t3::find_in_homes(&homes, &[PathBuf::from(DASHBOARD)]);
+    assert_eq!(found[0].as_ref().unwrap().title, "Live");
+    // With no server listening anywhere, the reason is that T3 isn't running.
+    drop(listener);
+    assert_eq!(
+        t3::find_in_homes(&homes, &[PathBuf::from(DASHBOARD)]),
+        [Err(NoThread::NotRunning)]
+    );
+}
+
+#[test]
 fn reasons_read_as_tooltips() {
     assert_eq!(NoThread::NotRunning.to_string(), "T3 Code isn't running");
     assert_eq!(

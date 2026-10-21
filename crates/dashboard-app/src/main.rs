@@ -6,6 +6,7 @@ mod board_view;
 #[cfg(all(test, target_os = "linux"))]
 mod captures;
 mod demo;
+mod mark;
 mod theme;
 #[cfg(test)]
 mod ui_tests;

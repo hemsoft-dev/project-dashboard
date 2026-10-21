@@ -1,0 +1,92 @@
+name: Release
+
+# Builds the Windows release on windows-latest, checks the executable (GUI subsystem, icon, version block, starts and
+# opens its window) and zips it. On a v* tag it publishes the zip on a GitHub release; 0.x and hyphenated versions
+# are pre-releases. Pull requests that touch the packaging run the same build and checks without publishing.
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/release.yml
+      - scripts/Build-WindowsRelease.ps1
+      - crates/dashboard-app/build.rs
+      - crates/dashboard-app/src/mark.rs
+      - crates/dashboard-app/src/main.rs
+      - Cargo.toml
+      - Cargo.lock
+      - crates/*/Cargo.toml
+      # Packaged beside the exe.
+      - README.md
+      - LICENSE
+      - assets/**
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    # Builds and runs the pull request's own code, so it gets a read-only token; publishing is a separate job.
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        shell: bash
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      # The tag reaches the script through the environment, never as command text.
+      - name: Build, check and zip
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: ./scripts/Build-WindowsRelease.ps1 -OutDir dist -Tag $env:RELEASE_TAG
+
+      - name: Upload the package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: project-dashboard-windows
+          path: dist/
+          retention-days: 14
+
+  publish:
+    needs: windows
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download the package
+        uses: actions/download-artifact@v4
+        with:
+          name: project-dashboard-windows
+          path: dist
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="$(cat dist/version.txt)"
+          notes="Windows x64. Download project-dashboard-$version-windows-x64.zip, unzip it anywhere and run project-dashboard.exe. See the README for installation and updates."
+          flags=(--repo "$GITHUB_REPOSITORY" --title "Project Dashboard $version" --notes "$notes" --generate-notes --verify-tag)
+          # 0.x and hyphenated versions are pre-releases.
+          if [[ "$version" == *-* || "$version" == 0.* ]]; then flags+=(--prerelease); fi
+          # The install note comes first, followed by GitHub's generated list of what changed.
+          gh release create "$RELEASE_TAG" dist/*.zip dist/*.sha256 "${flags[@]}"

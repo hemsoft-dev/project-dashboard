@@ -17,6 +17,10 @@ on:
       - Cargo.toml
       - Cargo.lock
       - crates/*/Cargo.toml
+      # Packaged beside the exe.
+      - README.md
+      - LICENSE
+      - assets/**
   workflow_dispatch:
 
 concurrency:

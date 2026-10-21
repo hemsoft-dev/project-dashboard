@@ -1,8 +1,9 @@
 //! Project Dashboard's mark: the four dashboard tiles in HemSoft gold on a black rounded square, the gold running from
 //! bright at the top right to deep at the bottom left like the hemsoft-dev avatar's streaks.
 //!
-//! One drawing serves the Windows executable's icon (`build.rs`) and the PNGs in `assets/` (`examples/icon.rs`), so
-//! they can't drift apart. The build script includes this file by path, so it depends on nothing.
+//! One drawing serves the Windows executable's icon (`build.rs`) and `assets/icon-256.png` (`examples/icon.rs`); a test
+//! fails when the committed PNG no longer matches the drawing. The build script includes this file by path, so it
+//! depends on nothing.
 
 // Each consumer uses a subset: the build script only `ico`, the example only `rgba`.
 #![allow(dead_code)]
@@ -262,6 +263,18 @@ mod tests {
             expected_offset = offset + 40 + (size * size * 4 + mask_stride * size) as usize;
         }
         assert_eq!(ico.len(), expected_offset, "nothing trails the last image");
+    }
+
+    #[test]
+    fn the_committed_png_is_the_current_drawing() {
+        let png = image::load_from_memory(include_bytes!("../../../assets/icon-256.png"))
+            .expect("assets/icon-256.png decodes")
+            .into_rgba8();
+        assert_eq!(png.dimensions(), (256, 256));
+        assert!(
+            png.as_raw() == &rgba(256),
+            "assets/icon-256.png is stale: run `cargo run -p dashboard-app --example icon -- assets/icon-256.png 256`"
+        );
     }
 
     #[test]

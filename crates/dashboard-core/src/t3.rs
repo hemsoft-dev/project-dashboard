@@ -200,6 +200,8 @@ pub struct Thread {
     pub id: String,
     pub title: String,
     pub running: bool,
+    /// T3's ISO 8601 timestamp, which sorts as text.
+    pub updated_at: String,
 }
 
 impl State {
@@ -213,12 +215,18 @@ impl State {
         if projects.is_empty() {
             return Err(NoThread::NoProject);
         }
-        // A checkout registered twice: a running thread in either wins, then the first project's newest.
+        // Across every project for the checkout (T3 can register a folder twice): running first, then newest. On a
+        // tie the earlier candidate wins, so the choice never depends on the database's row order within a project.
         let thread = projects
             .iter()
             .flat_map(|project| project.threads.iter())
-            .find(|thread| thread.running)
-            .or_else(|| projects.iter().find_map(|project| project.threads.first()))
+            .reduce(|best, thread| {
+                if (thread.running, &thread.updated_at) > (best.running, &best.updated_at) {
+                    thread
+                } else {
+                    best
+                }
+            })
             .ok_or(NoThread::NoOpenThread)?;
         Ok(ThreadLink {
             title: thread.title.clone(),
@@ -258,7 +266,7 @@ pub fn read(state_db: &Path) -> Result<State, NoThread> {
         .map_err(unreadable)?;
     let threads: Vec<(String, Thread)> = connection
         .prepare(
-            "SELECT t.project_id, t.thread_id, t.title,
+            "SELECT t.project_id, t.thread_id, t.title, COALESCE(t.updated_at, ''),
                     EXISTS (SELECT 1 FROM orchestration_v2_projection_runs r
                             WHERE r.thread_id = t.thread_id
                               AND r.status IN ('preparing', 'queued', 'starting', 'running', 'waiting'))
@@ -276,7 +284,8 @@ pub fn read(state_db: &Path) -> Result<State, NoThread> {
                 Thread {
                     id: row.get(1)?,
                     title: row.get(2)?,
-                    running: row.get(3)?,
+                    updated_at: row.get(3)?,
+                    running: row.get(4)?,
                 },
             ))
         })

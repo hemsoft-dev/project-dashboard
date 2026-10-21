@@ -1229,4 +1229,17 @@ async fn threads_are_looked_up_at_start_and_again_after_each_refresh(cx: &mut Te
     settle(cx, handle, &view).await;
     cx.run_until_parked();
     assert_eq!(count(&counter), 2, "after a refresh");
+    // Asked twice while the first lookup is still running: the second waits for it, then runs, rather than being
+    // dropped and leaving the first lookup's older answer in place.
+    cx.update(|cx| {
+        view.update(cx, |view, cx| {
+            view.find_threads(cx);
+            view.find_threads(cx);
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(count(&counter), 4, "the queued lookup ran too");
+    // Once idle, nothing more runs on its own.
+    cx.run_until_parked();
+    assert_eq!(count(&counter), 4);
 }

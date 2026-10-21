@@ -93,6 +93,8 @@ pub struct BoardView {
     /// Each checkout's T3 thread, once looked up.
     threads: HashMap<PathBuf, Lookup>,
     finding_threads: bool,
+    /// Another lookup was asked for while one ran; it starts when that one lands, so its result is never stale.
+    threads_wanted: bool,
     last_refresh: Option<Instant>,
     focus: FocusHandle,
 }
@@ -123,6 +125,7 @@ impl BoardView {
             repository_laid_out: Rc::new(Cell::new(None)),
             threads: HashMap::new(),
             finding_threads: false,
+            threads_wanted: false,
             last_refresh: None,
             focus,
         };
@@ -371,9 +374,14 @@ impl BoardView {
         }
     }
 
-    /// Looks up every checkout's T3 thread off the UI thread, unless a lookup is already running.
+    /// Looks up every checkout's T3 thread off the UI thread. Asked again while a lookup runs, it runs once more
+    /// after that one lands.
     pub fn find_threads(&mut self, cx: &mut Context<Self>) {
-        if self.finding_threads || self.board.is_empty() {
+        if self.board.is_empty() {
+            return;
+        }
+        if self.finding_threads {
+            self.threads_wanted = true;
             return;
         }
         self.finding_threads = true;
@@ -388,6 +396,9 @@ impl BoardView {
             let _ = this.update(cx, |view, cx| {
                 view.finding_threads = false;
                 view.threads = checkouts.into_iter().zip(found).collect();
+                if std::mem::take(&mut view.threads_wanted) {
+                    view.find_threads(cx);
+                }
                 cx.notify();
             });
         })

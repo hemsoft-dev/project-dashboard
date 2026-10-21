@@ -193,6 +193,71 @@ fn a_running_thread_wins_over_a_newer_idle_one() {
 }
 
 #[test]
+fn a_folder_registered_twice_links_the_best_thread_across_both_projects() {
+    let scratch = Scratch::new("duplicate");
+    database(
+        &scratch.0,
+        &[
+            ("p1", DASHBOARD, false),
+            ("p2", DASHBOARD.replace('/', "\\").as_str(), false),
+        ],
+        &[
+            ("t-old", "p1", "Older", "2026-10-21T08:00:00Z", false, false, None, None),
+            (
+                "t-new",
+                "p2",
+                "Newer, other project",
+                "2026-10-21T12:00:00Z",
+                false,
+                false,
+                None,
+                None,
+            ),
+        ],
+    );
+    assert_eq!(lookup(&scratch.0, DASHBOARD).unwrap().title, "Newer, other project");
+    // A running thread in either project still comes first, even when it is older.
+    let scratch = Scratch::new("duplicate-running");
+    database(
+        &scratch.0,
+        &[("p1", DASHBOARD, false), ("p2", DASHBOARD, false)],
+        &[
+            (
+                "t-new",
+                "p1",
+                "Newest",
+                "2026-10-21T12:00:00Z",
+                false,
+                false,
+                None,
+                None,
+            ),
+            (
+                "t-run-old",
+                "p2",
+                "Running, older",
+                "2026-10-21T07:00:00Z",
+                false,
+                false,
+                None,
+                Some("running"),
+            ),
+            (
+                "t-run-new",
+                "p2",
+                "Running, newer",
+                "2026-10-21T09:00:00Z",
+                false,
+                false,
+                None,
+                Some("running"),
+            ),
+        ],
+    );
+    assert_eq!(lookup(&scratch.0, DASHBOARD).unwrap().title, "Running, newer");
+}
+
+#[test]
 fn settled_archived_and_subagent_threads_are_skipped() {
     let scratch = Scratch::new("skipped");
     database(

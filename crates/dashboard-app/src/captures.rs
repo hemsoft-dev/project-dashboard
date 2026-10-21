@@ -95,6 +95,7 @@ fn captures() {
     cx.update(|cx| {
         gpui_kit::init(cx);
         theme::init(cx);
+        crate::zoom::init(cx, None);
     });
 
     // The collapsed table, twelve rows: clean, attention, a partly unavailable repository and a failing one first.
@@ -111,6 +112,19 @@ fn captures() {
     let (narrow, narrow_view) = open_sized(&mut cx, demo::checkouts(), 480., 560.);
     fill(&mut cx, &narrow_view, &demo::DemoSource);
     save(&mut cx, narrow, &out, "table-narrow");
+
+    // Zoom (#9): the same table with codexbar expanded at 80%, 100% and 150%, in a 1100×760 window like the app's.
+    let (zoomed, zoomed_view) = open(&mut cx, demo::checkouts(), 760.);
+    fill(&mut cx, &zoomed_view, &demo::DemoSource);
+    cx.update(|cx| zoomed_view.update(cx, |view, cx| view.toggle_expanded(Path::new("/demo/codexbar"), cx)));
+    for (level, name) in [(0.8, "zoom-80"), (1.0, "zoom-100"), (1.5, "zoom-150")] {
+        cx.update(|cx| crate::zoom::set_level(level, cx));
+        cx.run_until_parked();
+        // Each level's toast shows in the capture, as it does right after the change.
+        save(&mut cx, zoomed, &out, name);
+    }
+    cx.update(|cx| crate::zoom::set_level(1.0, cx));
+    cx.run_until_parked();
 
     // The table with codexbar expanded: its health rows and its PR, issue, merged-PR and workflow-run tables.
     let (expanded, expanded_view) = open(&mut cx, demo::checkouts(), 980.);

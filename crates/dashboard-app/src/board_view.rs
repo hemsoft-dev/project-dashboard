@@ -23,7 +23,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, Context, FocusHandle, Hsla, InteractiveElement as _, IntoElement, KeyBinding, MouseButton,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _,
-    Window, actions, div, px, rems,
+    Window, actions, canvas, div, px, rems,
 };
 
 actions!(project_dashboard, [Refresh]);
@@ -236,33 +236,36 @@ impl BoardView {
             (false, None) if self.board.cards().iter().any(|card| card.from_cache) => "Cached".to_owned(),
             (false, None) => String::new(),
         };
-        TitleBar::new().child(
-            h_flex()
-                .w_full()
-                .pr_2()
-                .gap_2()
-                .items_center()
-                .child(Icon::new(IconName::LayoutDashboard).text_color(cx.theme().primary))
-                .child(div().font_semibold().child(APP_NAME))
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .id("refresh-status")
-                        .test_support()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(status),
-                )
-                .child(
-                    Button::new("refresh-all")
-                        .ghost()
-                        .small()
-                        .icon(IconName::RefreshCw)
-                        .tooltip("Refresh all (F5)")
-                        .loading(refreshing)
-                        .on_click(cx.listener(|view, _, _, cx| view.refresh_all(cx))),
-                ),
-        )
+        TitleBar::new()
+            // The title bar is a fixed 34px; it grows with the zoom so its text isn't clipped.
+            .h(crate::zoom::scaled(34., cx).max(px(34.)))
+            .child(
+                h_flex()
+                    .w_full()
+                    .pr_2()
+                    .gap_2()
+                    .items_center()
+                    .child(Icon::new(IconName::LayoutDashboard).text_color(cx.theme().primary))
+                    .child(div().font_semibold().child(APP_NAME))
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .id("refresh-status")
+                            .test_support()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(status),
+                    )
+                    .child(
+                        Button::new("refresh-all")
+                            .ghost()
+                            .small()
+                            .icon(IconName::RefreshCw)
+                            .tooltip("Refresh all (F5)")
+                            .loading(refreshing)
+                            .on_click(cx.listener(|view, _, _, cx| view.refresh_all(cx))),
+                    ),
+            )
     }
 
     fn render_banner(&self, icon: IconName, text: String, cx: &App) -> impl IntoElement {
@@ -304,7 +307,7 @@ impl BoardView {
             // Kept off the window's edges and centered when it wraps, as on a narrow window.
             .child(
                 div()
-                    .max_w(px(640.))
+                    .max_w(rems(40.))
                     .px_8()
                     .text_center()
                     .text_sm()
@@ -329,16 +332,22 @@ impl BoardView {
             .border_color(theme.border)
             .child(div().w(CHEVRON).flex_none())
             .child(div().w(STATE).flex_none())
-            .child(div().flex_1().min_w(NAME_MIN).truncate().child("Repository"))
+            .child(
+                div()
+                    .flex_basis(px(0.))
+                    .flex_grow(NAME_SHARE)
+                    .min_w(NAME_MIN)
+                    .truncate()
+                    .child("Repository"),
+            )
             .child(div().w(COUNT).flex_none().text_right().child("PRs"))
             .child(div().w(COUNT).flex_none().text_right().child("Issues"))
             .child(
                 h_flex()
                     .id("sort-activity")
                     .test_support()
-                    .flex_basis(ACTIVITY)
-                    .flex_grow(0.)
-                    .flex_shrink(1.)
+                    .flex_basis(px(0.))
+                    .flex_grow(ACTIVITY_SHARE)
                     .min_w(ACTIVITY_MIN)
                     .gap_1()
                     .cursor_pointer()
@@ -457,7 +466,8 @@ impl BoardView {
                 h_flex()
                     .id(("name", ix))
                     .test_support()
-                    .flex_1()
+                    .flex_basis(px(0.))
+                    .flex_grow(NAME_SHARE)
                     .min_w(NAME_MIN)
                     .gap_2()
                     .child(div().min_w_0().truncate().font_semibold().child(card.name()))
@@ -495,9 +505,8 @@ impl BoardView {
             // Shrinks before anything else on a narrow window, so the refresh button stays in view.
             .child(
                 div()
-                    .flex_basis(ACTIVITY)
-                    .flex_grow(0.)
-                    .flex_shrink(1.)
+                    .flex_basis(px(0.))
+                    .flex_grow(ACTIVITY_SHARE)
                     .min_w(ACTIVITY_MIN)
                     .child(activity),
             )
@@ -585,11 +594,12 @@ impl BoardView {
 const CHEVRON: gpui_kit::Rems = rems(1.75);
 const STATE: gpui_kit::Rems = rems(0.75);
 const COUNT: gpui_kit::Rems = rems(3.5);
-/// The last-activity column's width when there's room, and the least it shrinks to.
-const ACTIVITY: gpui_kit::Rems = rems(24.);
-const ACTIVITY_MIN: gpui_kit::Rems = rems(6.);
-/// The repository name never shrinks below this; the activity column gives way first.
+/// The repository name and last activity share the width the fixed columns leave, 2 : 3, at any window size and
+/// zoom, down to these minimums.
+const NAME_SHARE: f32 = 2.;
+const ACTIVITY_SHARE: f32 = 3.;
 const NAME_MIN: gpui_kit::Rems = rems(7.);
+const ACTIVITY_MIN: gpui_kit::Rems = rems(6.);
 const REFRESH: gpui_kit::Rems = rems(1.75);
 
 impl Render for BoardView {
@@ -628,9 +638,44 @@ impl Render for BoardView {
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .relative()
             .child(self.render_title_bar(cx))
             .child(content)
+            // Ctrl+wheel zooms; registered each frame in the capture phase, ahead of the table's scrolling.
+            .child(
+                canvas(|_, _, _| {}, |_, _, window, _| crate::zoom::capture_wheel(window))
+                    .absolute()
+                    .size_0(),
+            )
+            .when_some(crate::zoom::toast(cx), |this, label| this.child(zoom_toast(label, cx)))
     }
+}
+
+/// The zoom level, briefly, after it changes.
+fn zoom_toast(label: String, cx: &App) -> impl IntoElement {
+    let theme = cx.theme();
+    h_flex()
+        .absolute()
+        // At the bottom, clear of the table's header and first rows.
+        .bottom(rems(1.5))
+        .left_0()
+        .right_0()
+        .justify_center()
+        .child(
+            div()
+                .id("zoom-toast")
+                .test_support()
+                .aria_label(label.clone())
+                .px_3()
+                .py_1()
+                .rounded(theme.radius)
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.popover)
+                .text_sm()
+                .font_semibold()
+                .child(label),
+        )
 }
 
 /// Everything the receiver holds right now, and whether the refresh is complete.
@@ -703,10 +748,10 @@ fn health_row(row: &HealthRow, cx: &App) -> impl IntoElement {
     h_flex()
         .gap_2()
         .text_sm()
-        .child(div().w(px(14.)).text_color(color).child(marker))
+        .child(div().w(rems(0.875)).text_color(color).child(marker))
         .child(
             div()
-                .w(px(84.))
+                .w(rems(5.25))
                 .text_color(theme.muted_foreground)
                 .child(row.label.clone()),
         )
@@ -797,7 +842,7 @@ fn link_row(id: SharedString, url: &str, cells: Vec<AnyElement>, cx: &App) -> An
 
 fn cell(text: impl Into<SharedString>, width: f32) -> AnyElement {
     div()
-        .w(px(width))
+        .w(rems(width / 16.))
         .flex_none()
         .truncate()
         .child(text.into())
@@ -815,7 +860,7 @@ fn grow(text: impl Into<SharedString>) -> AnyElement {
 
 fn muted(text: impl Into<SharedString>, width: f32, cx: &App) -> AnyElement {
     div()
-        .w(px(width))
+        .w(rems(width / 16.))
         .flex_none()
         .truncate()
         .text_color(cx.theme().muted_foreground)
@@ -880,7 +925,7 @@ fn run_rows(ix: usize, runs: &[WorkflowRun], cx: &App) -> Vec<AnyElement> {
                 &run.url,
                 vec![
                     div()
-                        .w(px(14.))
+                        .w(rems(0.875))
                         .flex_none()
                         .text_color(color)
                         .child(mark)

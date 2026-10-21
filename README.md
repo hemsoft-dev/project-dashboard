@@ -113,6 +113,10 @@ every GitHub section loaded.
 - **Refresh all** with the title-bar button or **F5**. It uses gh-x's own cache when that is still fresh.
 - **Refresh one** repository with its row's button. It runs `gh x status --json --refresh`, bypassing gh-x's cache.
 - **Automatic refresh** runs every `refresh_minutes` (default 5).
+- **Zoom** the whole window with **Ctrl** **+** (or **Ctrl** **=**) and **Ctrl** **-**, or **Ctrl** + mouse wheel, in
+  10% steps from 50% to 200%; **Ctrl** **0** resets to 100%. Text, spacing, icons and columns scale together, and the
+  new level shows briefly at the bottom. It's remembered in `ui-state.json`, next to `config.toml`, so the next start
+  opens at the same size.
 - At startup every row shows its last result from the local cache at once, marked **Cached**, and each row updates as
   its fresh result arrives. Up to `parallelism` (default 4) `gh x status` processes run at a time.
 - A repository whose status fails shows the error in its row, in place of the last activity, and keeps its last good
@@ -145,7 +149,7 @@ root = "C:/Users/franz/github"
 
 On first run, when the file doesn't exist yet, the app creates it with every git checkout one level under `~/github`
 (or your home folder if there's no `~/github`). Edit the list and restart the app to change it. The last results are
-cached next to it in `status-cache.json`; deleting that file is always safe.
+cached next to it in `status-cache.json`, and the zoom level in `ui-state.json`; deleting either file is always safe.
 
 ## License
 

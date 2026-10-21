@@ -9,6 +9,7 @@ pub mod config;
 pub mod scheduler;
 pub mod source;
 pub mod status;
+pub mod zoom;
 
 use std::path::{Path, PathBuf};
 

@@ -15,7 +15,7 @@ use gpui_kit::test::{TestAppContextExt as _, TestWindowExt as _};
 use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext, px, size};
 
 use crate::board_view::{self, BoardView, Options, section_count};
-use crate::{demo, theme};
+use crate::{demo, theme, zoom};
 
 /// The demo's first four repositories: clean, attention, partly unavailable and failing.
 fn four() -> Vec<PathBuf> {
@@ -55,6 +55,8 @@ fn open_board_sized(
         gpui_kit::init(cx);
         theme::init(cx);
         board_view::bind_keys(cx);
+        // In memory, unless a test set up its own folder first.
+        crate::zoom::init_if_absent(cx, None);
     });
     let mut view = None;
     let handle = cx.open_window(size(px(width), px(900.)), |window, cx| {
@@ -639,4 +641,142 @@ fn rgb_of(color: gpui_kit::Hsla) -> (u8, u8, u8) {
     let rgba = color.to_rgb();
     let channel = |value: f32| (value * 255.).round() as u8;
     (channel(rgba.r), channel(rgba.g), channel(rgba.b))
+}
+
+fn press(cx: &mut TestAppContext, handle: AnyWindowHandle, key: &str) {
+    cx.update_window(handle, |_, window, cx| window.press(key, cx)).unwrap();
+    cx.run_until_parked();
+}
+
+fn font_size(cx: &mut TestAppContext) -> f32 {
+    cx.update(|cx| f32::from(cx.theme().font_size))
+}
+
+#[gpui_kit::test]
+async fn ctrl_plus_minus_and_zero_step_the_whole_ui_within_50_to_200_percent(cx: &mut TestAppContext) {
+    let (handle, _) = twelve(cx).await;
+    assert_eq!(cx.update(|cx| zoom::level(cx)), 1.0);
+    assert_eq!(font_size(cx), 16.0);
+    for key in ["ctrl-=", "ctrl-+", "ctrl-shift-="] {
+        press(cx, handle, key);
+    }
+    assert_eq!(cx.update(|cx| zoom::level(cx)), 1.3);
+    assert_eq!(font_size(cx), 16.0 * 1.3);
+    press(cx, handle, "ctrl--");
+    assert_eq!(cx.update(|cx| zoom::level(cx)), 1.2);
+    press(cx, handle, "ctrl-0");
+    assert_eq!(cx.update(|cx| zoom::level(cx)), 1.0);
+    for _ in 0..20 {
+        press(cx, handle, "ctrl-=");
+    }
+    assert_eq!(cx.update(|cx| zoom::level(cx)), 2.0);
+    for _ in 0..30 {
+        press(cx, handle, "ctrl--");
+    }
+    assert_eq!(cx.update(|cx| zoom::level(cx)), 0.5);
+    assert_eq!(font_size(cx), 8.0);
+}
+
+#[gpui_kit::test]
+async fn the_level_shows_briefly_as_a_toast(cx: &mut TestAppContext) {
+    let (handle, _) = twelve(cx).await;
+    press(cx, handle, "ctrl-=");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("zoom-toast").label(), Some("110%"));
+    })
+    .unwrap();
+    cx.executor().advance_clock(zoom::TOAST + Duration::from_millis(50));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("zoom-toast").is_none(), "gone after {:?}", zoom::TOAST);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn ctrl_wheel_zooms_and_a_plain_wheel_does_not(cx: &mut TestAppContext) {
+    use gpui_kit::{InputEvent as _, Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+    let (handle, _) = twelve(cx).await;
+    let wheel = |cx: &mut TestAppContext, control: bool, notches: f32| {
+        cx.update_window(handle, |_, window, cx| {
+            let event = ScrollWheelEvent {
+                position: point(px(500.), px(300.)),
+                delta: ScrollDelta::Lines(point(0., notches)),
+                modifiers: Modifiers {
+                    control,
+                    ..Modifiers::default()
+                },
+                touch_phase: TouchPhase::Moved,
+            };
+            window.dispatch_event(event.to_platform_input(), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    wheel(cx, true, 1.);
+    wheel(cx, true, 1.);
+    assert_eq!(cx.update(|cx| zoom::level(cx)), 1.2);
+    wheel(cx, true, -1.);
+    assert_eq!(cx.update(|cx| zoom::level(cx)), 1.1);
+    wheel(cx, false, 3.);
+    assert_eq!(
+        cx.update(|cx| zoom::level(cx)),
+        1.1,
+        "scrolling without Ctrl leaves the zoom alone"
+    );
+}
+
+#[gpui_kit::test]
+async fn the_zoom_is_saved_and_restored_on_the_next_start(cx: &mut TestAppContext) {
+    let dir = std::env::temp_dir().join(format!("project-dashboard-ui-zoom-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        theme::init(cx);
+        zoom::init_if_absent(cx, Some(dir.clone()));
+    });
+    let (handle, _) = twelve(cx).await;
+    for _ in 0..3 {
+        press(cx, handle, "ctrl-=");
+    }
+    // Saved once input settles, not on every step.
+    assert!(!dir.join(dashboard_core::zoom::STATE_FILE).exists());
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.run_until_parked();
+    assert_eq!(dashboard_core::zoom::UiState::load(&dir).zoom, 1.3);
+    // The next start reads it back.
+    cx.update(|cx| {
+        zoom::reset_for_tests(cx);
+        zoom::init_if_absent(cx, Some(dir.clone()));
+    });
+    assert_eq!(cx.update(|cx| zoom::level(cx)), 1.3);
+    assert_eq!(font_size(cx), 16.0 * 1.3);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[gpui_kit::test]
+async fn at_200_percent_the_table_still_fits_its_columns(cx: &mut TestAppContext) {
+    let (handle, _) = twelve(cx).await;
+    cx.update(|cx| zoom::set_level(2.0, cx));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        for ix in 0..12usize {
+            let refresh = window.find(("refresh", ix)).bounds();
+            assert!(refresh.origin.x + refresh.size.width <= px(1100.), "row {ix} at 200%");
+            // Rows grew with the text: a 200% row is taller than the 100% one (about 37 px).
+            assert!(
+                window.find(("row", ix)).bounds().size.height > px(60.),
+                "row {ix} height"
+            );
+            // Names keep a readable share of the width rather than their minimum alone.
+            assert!(
+                window.find(("name", ix)).bounds().size.width > px(150.),
+                "row {ix} name width"
+            );
+        }
+    })
+    .unwrap();
 }

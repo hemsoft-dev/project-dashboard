@@ -10,6 +10,7 @@ mod mark;
 mod theme;
 #[cfg(test)]
 mod ui_tests;
+mod zoom;
 
 use std::sync::Arc;
 
@@ -34,6 +35,8 @@ fn main() {
         gpui_kit::init(cx);
         theme::init(cx);
         board_view::bind_keys(cx);
+        // The demo remembers its zoom too, so a restart keeps it.
+        zoom::init(cx, Some(config::default_dir()));
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,

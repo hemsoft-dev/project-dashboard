@@ -1,0 +1,12 @@
+gh-x v0.21.2 (2026-10-19) © 2026 HemSoft Developments
+flag provided but not defined: -json
+Usage:
+  gh x status [flags]
+
+Show repository health, branches, worktrees, stashes, open issues, open pull requests,
+recently merged pull requests, and the five most recent workflow runs.
+
+Flags:
+      --merged int   Number of recently merged pull requests to show; 0 hides the section (default 5)
+      --refresh      Bypass cached GitHub data and refresh it
+Error: flag provided but not defined: -json

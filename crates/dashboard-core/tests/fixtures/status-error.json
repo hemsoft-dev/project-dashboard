@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-21T06:30:00Z",
+  "error": {
+    "code": "status_failed",
+    "message": "not a git repository (or any of the parent directories): .git"
+  }
+}

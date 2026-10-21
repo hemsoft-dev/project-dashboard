@@ -40,13 +40,24 @@ fn open_board(
     source: Arc<dyn StatusSource>,
     options: Options,
 ) -> (AnyWindowHandle, Entity<BoardView>) {
+    open_board_sized(cx, checkouts, cache, source, options, 1100.)
+}
+
+fn open_board_sized(
+    cx: &mut TestAppContext,
+    checkouts: Vec<PathBuf>,
+    cache: StatusCache,
+    source: Arc<dyn StatusSource>,
+    options: Options,
+    width: f32,
+) -> (AnyWindowHandle, Entity<BoardView>) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         theme::init(cx);
         board_view::bind_keys(cx);
     });
     let mut view = None;
-    let handle = cx.open_window(size(px(1100.), px(900.)), |window, cx| {
+    let handle = cx.open_window(size(px(width), px(900.)), |window, cx| {
         let board = cx.new(|cx| BoardView::new(&checkouts, cache, source, options, window, cx));
         view = Some(board.clone());
         Root::new(board, window, cx)
@@ -551,6 +562,56 @@ async fn clicking_the_last_activity_opens_it_without_expanding_the_row(cx: &mut 
         Some("https://github.com/hemsoft-dev/codexbar/issues/231")
     );
     assert!(!cx.update(|cx| view.read(cx).is_expanded(Path::new("/demo/project-dashboard"))));
+}
+
+#[gpui_kit::test]
+async fn at_the_minimum_width_every_row_keeps_its_refresh_button_in_view(cx: &mut TestAppContext) {
+    // 480 px is the window's minimum (main.rs).
+    let (handle, view) = open_board_sized(
+        cx,
+        demo::checkouts(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        options(),
+        480.,
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        for ix in 0..12usize {
+            let bounds = window.find(("refresh", ix)).bounds();
+            assert!(
+                bounds.origin.x + bounds.size.width <= px(480.),
+                "row {ix}: refresh button ends at {:?}",
+                bounds.origin.x + bounds.size.width
+            );
+        }
+        // The name keeps room to read, rather than collapsing to nothing.
+        // Every last-activity summary ends before its row's refresh button.
+        for ix in [0usize, 1, 4, 5, 6, 7, 8, 9, 10, 11] {
+            let summary = window.find(("activity-summary", ix)).bounds();
+            let refresh = window.find(("refresh", ix)).bounds();
+            assert!(
+                summary.origin.x + summary.size.width <= refresh.origin.x,
+                "row {ix}: summary ends at {:?}, refresh starts at {:?}",
+                summary.origin.x + summary.size.width,
+                refresh.origin.x
+            );
+        }
+        for ix in 0..12usize {
+            let name = window.find(("name", ix)).bounds();
+            // NAME_MIN is 7 rem: 112 px at the 16 px base.
+            assert!(
+                name.size.width >= px(112.),
+                "row {ix}: name is {:?} wide",
+                name.size.width
+            );
+        }
+        // The state is named for screen readers, not only colored.
+        assert_eq!(window.find("state-3-Failed").label(), Some("State: Failed"));
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]

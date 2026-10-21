@@ -329,15 +329,17 @@ impl BoardView {
             .border_color(theme.border)
             .child(div().w(CHEVRON).flex_none())
             .child(div().w(STATE).flex_none())
-            .child(div().flex_1().min_w_0().child("Repository"))
+            .child(div().flex_1().min_w(NAME_MIN).truncate().child("Repository"))
             .child(div().w(COUNT).flex_none().text_right().child("PRs"))
             .child(div().w(COUNT).flex_none().text_right().child("Issues"))
             .child(
                 h_flex()
                     .id("sort-activity")
                     .test_support()
-                    .w(ACTIVITY)
-                    .flex_none()
+                    .flex_basis(ACTIVITY)
+                    .flex_grow(0.)
+                    .flex_shrink(1.)
+                    .min_w(ACTIVITY_MIN)
                     .gap_1()
                     .cursor_pointer()
                     .when(sorted, |this| this.text_color(theme.foreground))
@@ -391,9 +393,18 @@ impl BoardView {
                         cx.stop_propagation();
                         cx.open_url(&url);
                     })
-                    .child(div().flex_none().child(activity.summary(now)))
+                    // The title only gets space the summary leaves; on a narrow window the summary truncates too.
                     .child(
                         div()
+                            .id(("activity-summary", ix))
+                            .test_support()
+                            .min_w_0()
+                            .truncate()
+                            .child(activity.summary(now)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
                             .min_w_0()
                             .truncate()
                             .text_color(theme.muted_foreground)
@@ -402,10 +413,12 @@ impl BoardView {
                     .into_any_element()
             }
             (None, None) if card.document.is_none() => div()
+                .truncate()
                 .text_color(theme.muted_foreground)
                 .child("Loading…")
                 .into_any_element(),
             (None, None) => div()
+                .truncate()
                 .text_color(theme.muted_foreground)
                 .child("No recent activity")
                 .into_any_element(),
@@ -442,8 +455,10 @@ impl BoardView {
             .child(div().w(STATE).flex_none().child(state_dot(ix, overall, cx)))
             .child(
                 h_flex()
+                    .id(("name", ix))
+                    .test_support()
                     .flex_1()
-                    .min_w_0()
+                    .min_w(NAME_MIN)
                     .gap_2()
                     .child(div().min_w_0().truncate().font_semibold().child(card.name()))
                     // Stays while a refresh runs: until a fresh result lands, the row still shows the cached copy.
@@ -477,7 +492,15 @@ impl BoardView {
                     .text_right()
                     .child(issues),
             )
-            .child(div().w(ACTIVITY).flex_none().min_w_0().child(activity))
+            // Shrinks before anything else on a narrow window, so the refresh button stays in view.
+            .child(
+                div()
+                    .flex_basis(ACTIVITY)
+                    .flex_grow(0.)
+                    .flex_shrink(1.)
+                    .min_w(ACTIVITY_MIN)
+                    .child(activity),
+            )
             .child(
                 div()
                     .w(REFRESH)
@@ -562,7 +585,11 @@ impl BoardView {
 const CHEVRON: gpui_kit::Rems = rems(1.75);
 const STATE: gpui_kit::Rems = rems(0.75);
 const COUNT: gpui_kit::Rems = rems(3.5);
+/// The last-activity column's width when there's room, and the least it shrinks to.
 const ACTIVITY: gpui_kit::Rems = rems(24.);
+const ACTIVITY_MIN: gpui_kit::Rems = rems(6.);
+/// The repository name never shrinks below this; the activity column gives way first.
+const NAME_MIN: gpui_kit::Rems = rems(7.);
 const REFRESH: gpui_kit::Rems = rems(1.75);
 
 impl Render for BoardView {
@@ -639,6 +666,8 @@ fn state_dot(ix: usize, overall: Overall, cx: &App) -> impl IntoElement {
     div()
         .id(SharedString::from(format!("state-{ix}-{label}")))
         .test_support()
+        // The color alone doesn't reach screen readers.
+        .aria_label(format!("State: {label}"))
         .size(rems(0.625))
         .rounded_full()
         .bg(color)

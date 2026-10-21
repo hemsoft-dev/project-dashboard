@@ -39,9 +39,18 @@ fn options() -> Options {
 }
 
 fn open(cx: &mut HeadlessAppContext, checkouts: Vec<PathBuf>, height: f32) -> (AnyWindowHandle, Entity<BoardView>) {
+    open_sized(cx, checkouts, 1100., height)
+}
+
+fn open_sized(
+    cx: &mut HeadlessAppContext,
+    checkouts: Vec<PathBuf>,
+    width: f32,
+    height: f32,
+) -> (AnyWindowHandle, Entity<BoardView>) {
     let mut view = None;
     let handle = cx
-        .open_window(size(px(1100.), px(height)), |window, cx| {
+        .open_window(size(px(width), px(height)), |window, cx| {
             let board = cx.new(|cx| {
                 BoardView::new(
                     &checkouts,
@@ -97,6 +106,11 @@ fn captures() {
     cx.update(|cx| view.update(cx, |view, cx| view.toggle_sort(cx)));
     cx.run_until_parked();
     save(&mut cx, board, &out, "table-sorted");
+
+    // The window at its 480 px minimum: last activity shrinks, every refresh button stays in view.
+    let (narrow, narrow_view) = open_sized(&mut cx, demo::checkouts(), 480., 560.);
+    fill(&mut cx, &narrow_view, &demo::DemoSource);
+    save(&mut cx, narrow, &out, "table-narrow");
 
     // The table with codexbar expanded: its health rows and its PR, issue, merged-PR and workflow-run tables.
     let (expanded, expanded_view) = open(&mut cx, demo::checkouts(), 980.);

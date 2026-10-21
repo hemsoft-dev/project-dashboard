@@ -37,6 +37,7 @@ fn options() -> Options {
         now: Some(demo::fixture_now()),
         columns: Default::default(),
         ui_state_dir: None,
+        threads: Arc::new(demo::DemoThreads),
     }
 }
 

@@ -33,6 +33,7 @@ fn options() -> Options {
         now: Some(demo::fixture_now()),
         columns: Default::default(),
         ui_state_dir: None,
+        threads: Arc::new(demo::DemoThreads),
     }
 }
 
@@ -1120,4 +1121,134 @@ async fn columns_wider_than_the_window_scroll_sideways_with_the_header(cx: &mut 
         );
     })
     .unwrap();
+}
+
+// The T3 Code thread button (#15).
+
+/// Counts lookups, and answers like the demo.
+struct CountingThreads(std::sync::atomic::AtomicUsize);
+
+impl dashboard_core::t3::ThreadFinder for CountingThreads {
+    fn find(&self, checkouts: &[PathBuf]) -> Vec<dashboard_core::t3::Lookup> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        demo::DemoThreads.find(checkouts)
+    }
+}
+
+#[gpui_kit::test]
+async fn each_row_has_a_t3_button_just_left_of_its_refresh_button(cx: &mut TestAppContext) {
+    for width in [1100., 480.] {
+        let (handle, view) = open_board_sized(
+            cx,
+            demo::checkouts(),
+            StatusCache::default(),
+            Arc::new(demo::DemoSource),
+            options(),
+            width,
+        );
+        cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+        settle(cx, handle, &view).await;
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            for ix in 0..12usize {
+                let t3 = window.find(("t3", ix)).bounds();
+                let refresh = window.find(("refresh", ix)).bounds();
+                // Same size, same line, directly before it, and in view.
+                assert_eq!(t3.size, refresh.size, "row {ix} at {width}");
+                assert_eq!(t3.center().y, refresh.center().y, "row {ix} at {width}");
+                assert!(t3.origin.x + t3.size.width <= refresh.origin.x, "row {ix} at {width}");
+                assert!(
+                    refresh.origin.x - (t3.origin.x + t3.size.width) < px(8.),
+                    "row {ix} at {width}"
+                );
+                assert!(
+                    t3.origin.x >= px(0.) && refresh.origin.x + refresh.size.width <= px(width),
+                    "row {ix}"
+                );
+            }
+        })
+        .unwrap();
+    }
+}
+
+#[gpui_kit::test]
+async fn the_t3_button_opens_the_checkouts_thread_without_expanding_the_row(cx: &mut TestAppContext) {
+    let (handle, view) = twelve(cx).await;
+    let gh_x = Path::new("/demo/gh-x");
+    let link = cx.update(|cx| view.read(cx).thread(gh_x).cloned()).unwrap().unwrap();
+    assert!(link.running);
+    cx.update_window(handle, |_, window, cx| window.click(("t3", 0usize), cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(cx.opened_url().as_deref(), Some(link.url.as_str()));
+    assert_eq!(link.url, "http://127.0.0.1:3773/demo-environment/demo%3Agh-x");
+    assert!(!cx.update(|cx| view.read(cx).is_expanded(gh_x)));
+}
+
+#[gpui_kit::test]
+async fn a_row_without_a_thread_has_a_disabled_t3_button_that_says_why(cx: &mut TestAppContext) {
+    use dashboard_core::t3::{NoThread, tooltip};
+    let (handle, view) = twelve(cx).await;
+    let weather = Path::new("/demo/weather-cli");
+    let minibot = Path::new("/demo/minibot");
+    let lookup = |cx: &mut TestAppContext, path: &Path| cx.update(|cx| view.read(cx).thread(path).cloned()).unwrap();
+    assert_eq!(lookup(cx, weather), Err(NoThread::NoProject));
+    assert_eq!(lookup(cx, minibot), Err(NoThread::NoOpenThread));
+    assert_eq!(tooltip(&lookup(cx, weather)), "No T3 Code project for this checkout");
+    assert_eq!(
+        tooltip(&lookup(cx, Path::new("/demo/codexbar"))),
+        "Open the T3 Code thread: codexbar: L1 audit -> issues"
+    );
+    // Clicking the disabled button opens nothing and leaves the row as it was.
+    cx.update_window(handle, |_, window, cx| window.click(("t3", 3usize), cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(cx.opened_url(), None);
+    assert!(!cx.update(|cx| view.read(cx).is_expanded(weather)));
+}
+
+#[gpui_kit::test]
+async fn threads_are_looked_up_at_start_and_again_after_each_refresh(cx: &mut TestAppContext) {
+    let counter = Arc::new(CountingThreads(std::sync::atomic::AtomicUsize::new(0)));
+    let (handle, view) = open_board(
+        cx,
+        demo::checkouts(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        Options {
+            threads: counter.clone(),
+            ..options()
+        },
+    );
+    cx.run_until_parked();
+    let count = |counter: &CountingThreads| counter.0.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(count(&counter), 1, "at start");
+    assert!(cx.update(|cx| view.read(cx).thread(Path::new("/demo/gh-x")).is_some()));
+    cx.update_window(handle, |_, window, cx| window.press("f5", cx))
+        .unwrap();
+    settle(cx, handle, &view).await;
+    // The refresh's last poll tick, which runs `finished` and starts the lookup, can come after the cards stop
+    // refreshing; keep the clock moving until it has, as `settle` does for the refresh itself.
+    for _ in 0..200 {
+        if count(&counter) == 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+    }
+    assert_eq!(count(&counter), 2, "after a refresh");
+    // Asked twice while the first lookup is still running: the second waits for it, then runs, rather than being
+    // dropped and leaving the first lookup's older answer in place.
+    cx.update(|cx| {
+        view.update(cx, |view, cx| {
+            view.find_threads(cx);
+            view.find_threads(cx);
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(count(&counter), 4, "the queued lookup ran too");
+    // Once idle, nothing more runs on its own.
+    cx.run_until_parked();
+    assert_eq!(count(&counter), 4);
 }

@@ -1,0 +1,370 @@
+//! The T3 Code thread working on a checkout (#15), for the row button that opens it.
+//!
+//! T3 Code has no supported way for another app to ask about its threads: its MCP endpoint needs the credential it
+//! gives its own agents, and nothing outside it can open a thread in its desktop window. So this reads the local T3
+//! server's state database, read-only, and links to the thread in T3's web UI (`<origin>/<environmentId>/<threadId>`).
+//! The database is T3's internal storage, so every step fails soft: any surprise becomes a reason the button shows
+//! instead of a link. The dashboard never writes to T3's files.
+//!
+//! The thread for a checkout is the newest unsettled, unarchived top-level thread of the T3 project whose workspace
+//! root is that checkout, with a running thread ahead of any other. Each machine runs its own T3 server for its own
+//! checkouts, so the local server is the one to ask.
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use rusqlite::{Connection, OpenFlags};
+use serde::Deserialize;
+
+/// The state database T3 Code's server keeps under its `userdata` folder.
+pub const STATE_DB: &str = "statev2.sqlite";
+
+/// A thread to open, and its title for the button's tooltip.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadLink {
+    pub title: String,
+    pub url: String,
+    pub running: bool,
+}
+
+/// Why a checkout has no thread to open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NoThread {
+    /// No T3 Code server data on this computer.
+    NotInstalled,
+    /// T3 Code is installed but its server isn't answering.
+    NotRunning,
+    /// T3's files couldn't be read, or weren't as expected.
+    Unreadable(String),
+    /// T3 has no project for this checkout.
+    NoProject,
+    /// The project has no open thread.
+    NoOpenThread,
+}
+
+impl std::fmt::Display for NoThread {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotInstalled => write!(f, "T3 Code isn't installed on this computer"),
+            Self::NotRunning => write!(f, "T3 Code isn't running"),
+            Self::Unreadable(reason) => write!(f, "Can't read T3 Code's threads: {reason}"),
+            Self::NoProject => write!(f, "No T3 Code project for this checkout"),
+            Self::NoOpenThread => write!(f, "No open T3 Code thread for this checkout"),
+        }
+    }
+}
+
+/// What the dashboard can find out about each checkout's thread.
+pub type Lookup = Result<ThreadLink, NoThread>;
+
+/// The T3 homes to look in, in order: the dashboard's `t3_home` setting, T3's own `T3CODE_HOME`, T3's default
+/// `~/.t3`, and `~/.t3-server`, where a server started with `--base-dir ~/.t3-server` keeps its data (as on the
+/// HemSoft machines). A server keeps its runtime files and state database in its home's `userdata` folder.
+pub fn candidate_homes(configured: Option<&Path>, t3code_home: Option<&Path>, home: &Path) -> Vec<PathBuf> {
+    let mut homes = Vec::new();
+    for dir in [configured, t3code_home].into_iter().flatten() {
+        if !dir.as_os_str().is_empty() {
+            homes.push(dir.to_owned());
+        }
+    }
+    homes.push(home.join(".t3"));
+    homes.push(home.join(".t3-server"));
+    homes.dedup();
+    homes
+}
+
+/// The `userdata` folder to read: the first home with a running server's files (`server-runtime.json` and the state
+/// database), else the first with a state database, else the first home's.
+pub fn resolve_userdata(homes: &[PathBuf]) -> PathBuf {
+    let userdata: Vec<PathBuf> = homes.iter().map(|home| home.join("userdata")).collect();
+    let has_db = |dir: &&PathBuf| dir.join(STATE_DB).is_file();
+    userdata
+        .iter()
+        .filter(has_db)
+        .find(|dir| dir.join("server-runtime.json").is_file())
+        .or_else(|| userdata.iter().find(has_db))
+        .or_else(|| userdata.first())
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The local T3 server, as its `server-runtime.json` and `environment-id` describe it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Server {
+    /// `http://127.0.0.1:3773`.
+    pub origin: String,
+    pub environment_id: String,
+    pub state_db: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct Runtime {
+    origin: String,
+}
+
+impl Server {
+    /// Reads where the server listens and which environment it is. Doesn't check that it is running.
+    pub fn locate(userdata: &Path) -> Result<Self, NoThread> {
+        let state_db = userdata.join(STATE_DB);
+        if !state_db.is_file() {
+            return Err(NoThread::NotInstalled);
+        }
+        let runtime =
+            std::fs::read_to_string(userdata.join("server-runtime.json")).map_err(|_| NoThread::NotRunning)?;
+        let runtime: Runtime = serde_json::from_str(&runtime)
+            .map_err(|err| NoThread::Unreadable(format!("server-runtime.json: {err}")))?;
+        let environment_id = std::fs::read_to_string(userdata.join("environment-id"))
+            .map_err(|err| NoThread::Unreadable(format!("environment-id: {err}")))?
+            .trim()
+            .to_owned();
+        if environment_id.is_empty() || !runtime.origin.starts_with("http") {
+            return Err(NoThread::Unreadable("unexpected server identity".to_owned()));
+        }
+        Ok(Self {
+            origin: runtime.origin.trim_end_matches('/').to_owned(),
+            environment_id,
+            state_db,
+        })
+    }
+
+    /// Whether something accepts connections at the origin's host and port, within `timeout`.
+    pub fn is_listening(&self, timeout: Duration) -> bool {
+        let Some(authority) = self.origin.split("://").nth(1) else {
+            return false;
+        };
+        let authority = authority.split('/').next().unwrap_or(authority);
+        use std::net::ToSocketAddrs as _;
+        authority
+            .to_socket_addrs()
+            .into_iter()
+            .flatten()
+            .any(|address| std::net::TcpStream::connect_timeout(&address, timeout).is_ok())
+    }
+
+    /// The web UI's address for a thread. The ID is percent-encoded as T3's router expects (`mcp:` is `mcp%3A`).
+    pub fn thread_url(&self, thread_id: &str) -> String {
+        format!("{}/{}/{}", self.origin, encode(&self.environment_id), encode(thread_id))
+    }
+}
+
+/// Percent-encodes everything but unreserved URL characters.
+fn encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// Finds each checkout's thread; the dashboard's view of T3, so tests and the demo can stand in for it.
+pub trait ThreadFinder: Send + Sync {
+    /// One result per checkout, in the order given. May block briefly: callers run it off the UI thread.
+    fn find(&self, checkouts: &[PathBuf]) -> Vec<Lookup>;
+}
+
+/// The T3 Code server on this computer. Its home is resolved on every lookup, so a server started, moved or
+/// restarted after the dashboard is still found.
+pub struct LocalT3 {
+    /// The dashboard's `t3_home` setting, if any.
+    pub home: Option<PathBuf>,
+}
+
+impl ThreadFinder for LocalT3 {
+    fn find(&self, checkouts: &[PathBuf]) -> Vec<Lookup> {
+        let t3code_home = std::env::var_os("T3CODE_HOME").map(PathBuf::from);
+        let homes = candidate_homes(
+            self.home.as_deref(),
+            t3code_home.as_deref(),
+            &dirs::home_dir().unwrap_or_default(),
+        );
+        find_in_homes(&homes, checkouts)
+    }
+}
+
+/// The row button's tooltip: the thread to open, or why there is none.
+pub fn tooltip(lookup: &Lookup) -> String {
+    match lookup {
+        Ok(link) if link.running => format!("Open the running T3 Code thread: {}", link.title),
+        Ok(link) => format!("Open the T3 Code thread: {}", link.title),
+        Err(reason) => reason.to_string(),
+    }
+}
+
+/// The thread for each checkout, in the order given, from the local T3 server in `userdata`.
+/// The thread for each checkout from the first of `homes` whose server is listening. A home left with a stale
+/// runtime file by a crashed or stopped server is passed over for a later one that is running. With none running,
+/// the reason comes from the home [`resolve_userdata`] picks.
+pub fn find_in_homes(homes: &[PathBuf], checkouts: &[PathBuf]) -> Vec<Lookup> {
+    for home in homes {
+        if let Ok(server) = Server::locate(&home.join("userdata"))
+            && server.is_listening(PROBE)
+        {
+            return lookups(&server, checkouts);
+        }
+    }
+    find(&resolve_userdata(homes), checkouts)
+}
+
+/// How long to wait for a server to accept a connection.
+const PROBE: Duration = Duration::from_millis(300);
+
+pub fn find(userdata: &Path, checkouts: &[PathBuf]) -> Vec<Lookup> {
+    let all = |reason: NoThread| checkouts.iter().map(|_| Err(reason.clone())).collect();
+    let server = match Server::locate(userdata) {
+        Ok(server) => server,
+        Err(reason) => return all(reason),
+    };
+    if !server.is_listening(PROBE) {
+        return all(NoThread::NotRunning);
+    }
+    lookups(&server, checkouts)
+}
+
+/// Every checkout's thread from a running server's database.
+fn lookups(server: &Server, checkouts: &[PathBuf]) -> Vec<Lookup> {
+    match read(&server.state_db) {
+        Ok(state) => checkouts
+            .iter()
+            .map(|checkout| state.lookup(server, checkout))
+            .collect(),
+        Err(reason) => checkouts.iter().map(|_| Err(reason.clone())).collect(),
+    }
+}
+
+/// A T3 project and its candidate threads, newest first.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct State {
+    pub projects: Vec<Project>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Project {
+    pub workspace_root: PathBuf,
+    /// Open top-level threads, running ones first, then newest first.
+    pub threads: Vec<Thread>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Thread {
+    pub id: String,
+    pub title: String,
+    pub running: bool,
+    /// T3's ISO 8601 timestamp, which sorts as text.
+    pub updated_at: String,
+}
+
+impl State {
+    /// The thread link for `checkout`, or why there isn't one.
+    pub fn lookup(&self, server: &Server, checkout: &Path) -> Lookup {
+        let projects: Vec<&Project> = self
+            .projects
+            .iter()
+            .filter(|project| same_path(&project.workspace_root, checkout))
+            .collect();
+        if projects.is_empty() {
+            return Err(NoThread::NoProject);
+        }
+        // Across every project for the checkout (T3 can register a folder twice): running first, then newest. On a
+        // tie the earlier candidate wins, so the choice never depends on the database's row order within a project.
+        let thread = projects
+            .iter()
+            .flat_map(|project| project.threads.iter())
+            .reduce(|best, thread| {
+                if (thread.running, &thread.updated_at) > (best.running, &best.updated_at) {
+                    thread
+                } else {
+                    best
+                }
+            })
+            .ok_or(NoThread::NoOpenThread)?;
+        Ok(ThreadLink {
+            title: thread.title.clone(),
+            url: server.thread_url(&thread.id),
+            running: thread.running,
+        })
+    }
+}
+
+/// Opens the database read-only and reads every live project with its open top-level threads. Any error, including
+/// a missing table or column after a T3 update, is a reason rather than a panic.
+pub fn read(state_db: &Path) -> Result<State, NoThread> {
+    let unreadable = |err: rusqlite::Error| NoThread::Unreadable(err.to_string());
+    let connection = Connection::open_with_flags(
+        state_db,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI,
+    )
+    .map_err(unreadable)?;
+    // T3 may be writing; wait briefly for its lock rather than failing at once.
+    connection
+        .busy_timeout(Duration::from_millis(500))
+        .map_err(unreadable)?;
+    let mut projects: Vec<(String, Project)> = connection
+        .prepare("SELECT project_id, workspace_root FROM projection_projects WHERE deleted_at IS NULL")
+        .map_err(unreadable)?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                Project {
+                    workspace_root: PathBuf::from(row.get::<_, String>(1)?),
+                    threads: Vec::new(),
+                },
+            ))
+        })
+        .map_err(unreadable)?
+        .collect::<Result<_, _>>()
+        .map_err(unreadable)?;
+    let threads: Vec<(String, Thread)> = connection
+        .prepare(
+            "SELECT t.project_id, t.thread_id, t.title, COALESCE(t.updated_at, ''),
+                    EXISTS (SELECT 1 FROM orchestration_v2_projection_runs r
+                            WHERE r.thread_id = t.thread_id
+                              AND r.status IN ('preparing', 'queued', 'starting', 'running', 'waiting'))
+             FROM orchestration_v2_projection_threads t
+             WHERE t.archived_at IS NULL
+               AND t.deleted_at IS NULL
+               AND json_extract(t.payload_json, '$.settledAt') IS NULL
+               AND json_extract(t.payload_json, '$.lineage.parentThreadId') IS NULL
+             ORDER BY t.updated_at DESC",
+        )
+        .map_err(unreadable)?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                Thread {
+                    id: row.get(1)?,
+                    title: row.get(2)?,
+                    updated_at: row.get(3)?,
+                    running: row.get(4)?,
+                },
+            ))
+        })
+        .map_err(unreadable)?
+        .collect::<Result<_, _>>()
+        .map_err(unreadable)?;
+    for (project_id, thread) in threads {
+        if let Some((_, project)) = projects.iter_mut().find(|(id, _)| *id == project_id) {
+            project.threads.push(thread);
+        }
+    }
+    for (_, project) in &mut projects {
+        // Stable: newest first stays within the running and the rest.
+        project.threads.sort_by_key(|thread| !thread.running);
+    }
+    Ok(State {
+        projects: projects.into_iter().map(|(_, project)| project).collect(),
+    })
+}
+
+/// Whether two paths name the same folder, ignoring separators, a trailing separator, and case on Windows.
+pub fn same_path(a: &Path, b: &Path) -> bool {
+    let normal = |path: &Path| {
+        let text = path.to_string_lossy().replace('\\', "/");
+        let text = text.trim_end_matches('/').to_owned();
+        if cfg!(windows) { text.to_lowercase() } else { text }
+    };
+    normal(a) == normal(b)
+}

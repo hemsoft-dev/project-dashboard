@@ -6,6 +6,8 @@
 //! refresh_minutes = 5
 //! parallelism = 4
 //! repositories = ["C:/Users/franz/github/hemsoft/gh-x", "C:/Users/franz/github/hemsoft/codexbar"]
+//! # Optional: the T3 Code home (its --base-dir) when it isn't T3CODE_HOME, ~/.t3 or ~/.t3-server.
+//! t3_home = "D:/t3"
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -29,6 +31,9 @@ pub struct Config {
     pub parallelism: usize,
     /// Local checkouts, in display order.
     pub repositories: Vec<PathBuf>,
+    /// Where the local T3 Code server keeps its data (its `--base-dir`), for the row's T3 button. Unset, the
+    /// dashboard looks in `T3CODE_HOME`, `~/.t3` and `~/.t3-server`.
+    pub t3_home: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -38,6 +43,7 @@ impl Default for Config {
             refresh_minutes: DEFAULT_REFRESH_MINUTES,
             parallelism: DEFAULT_PARALLELISM,
             repositories: Vec::new(),
+            t3_home: None,
         }
     }
 }

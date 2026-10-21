@@ -1227,7 +1227,16 @@ async fn threads_are_looked_up_at_start_and_again_after_each_refresh(cx: &mut Te
     cx.update_window(handle, |_, window, cx| window.press("f5", cx))
         .unwrap();
     settle(cx, handle, &view).await;
-    cx.run_until_parked();
+    // The refresh's last poll tick, which runs `finished` and starts the lookup, can come after the cards stop
+    // refreshing; keep the clock moving until it has, as `settle` does for the refresh itself.
+    for _ in 0..200 {
+        if count(&counter) == 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+    }
     assert_eq!(count(&counter), 2, "after a refresh");
     // Asked twice while the first lookup is still running: the second waits for it, then runs, rather than being
     // dropped and leaving the first lookup's older answer in place.

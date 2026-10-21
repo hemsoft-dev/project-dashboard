@@ -430,7 +430,7 @@ fn text_of(cx: &mut TestAppContext, handle: AnyWindowHandle, id: (&'static str, 
 }
 
 #[gpui_kit::test]
-async fn the_table_has_one_row_per_repository_with_counts_and_last_activity(cx: &mut TestAppContext) {
+async fn the_table_has_one_row_per_repository_with_counts_update_time_and_last_activity(cx: &mut TestAppContext) {
     let (handle, view) = twelve(cx).await;
     assert_eq!(cx.update(|cx| view.read(cx).board().cards().len()), 12);
     cx.update_window(handle, |_, window, _| {
@@ -446,25 +446,37 @@ async fn the_table_has_one_row_per_repository_with_counts_and_last_activity(cx: 
     assert_eq!(text_of(cx, handle, ("issues", 1)), "2 open issues");
     // minibot: both sections unavailable.
     assert_eq!(text_of(cx, handle, ("prs", 2)), "? open pull requests");
+    // The age has its own column; the last activity keeps the item and its title.
     assert_eq!(
         text_of(cx, handle, ("activity", 7)),
-        "Last activity: Issue #231 · 14m ago, Show the tray icon on Linux"
+        "Last activity: Issue #231, Show the tray icon on Linux"
     );
-    let activity = cx.update(|cx| {
+    assert_eq!(text_of(cx, handle, ("updated", 7)), "Updated 14m ago");
+    assert_eq!(text_of(cx, handle, ("updated", 1)), "Updated 3m ago");
+    assert_eq!(text_of(cx, handle, ("updated", 4)), "Updated 3m ago");
+    assert_eq!(text_of(cx, handle, ("updated", 0)), "Updated 2d ago");
+    // Nothing to date: minibot's sections are unavailable and weather-cli failed.
+    assert_eq!(text_of(cx, handle, ("updated", 2)), "Updated: unknown");
+    assert_eq!(text_of(cx, handle, ("updated", 3)), "Updated: unknown");
+    let labels = cx.update(|cx| {
         view.read(cx)
             .board()
             .cards()
             .iter()
-            .map(|card| {
-                card.last_activity()
-                    .map(|activity| activity.summary(demo::fixture_now()))
-            })
+            .map(|card| card.last_activity().map(|activity| activity.label))
             .collect::<Vec<_>>()
     });
-    assert_eq!(activity[1].as_deref(), Some("CI run · 3m ago"));
-    assert_eq!(activity[4].as_deref(), Some("PR #232 · 3m ago"));
-    assert_eq!(activity[7].as_deref(), Some("Issue #231 · 14m ago"));
-    assert_eq!(activity[2], None);
+    assert_eq!(labels[1].as_deref(), Some("CI run"));
+    assert_eq!(labels[4].as_deref(), Some("PR #232"));
+    assert_eq!(labels[2], None);
+    // Every row's update time starts at the same x, under its header.
+    cx.update_window(handle, |_, window, _| {
+        let header = window.find("sort-updated").bounds().origin.x;
+        for ix in [0usize, 1, 4, 7, 11] {
+            assert_eq!(window.find(("updated", ix)).bounds().origin.x, header, "row {ix}");
+        }
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]
@@ -511,7 +523,7 @@ async fn rows_expand_and_collapse_and_several_stay_open_across_refreshes(cx: &mu
 }
 
 #[gpui_kit::test]
-async fn the_last_activity_header_sorts_newest_first_and_back_to_config_order(cx: &mut TestAppContext) {
+async fn the_updated_header_sorts_newest_first_then_oldest_first_then_config_order(cx: &mut TestAppContext) {
     let (handle, view) = twelve(cx).await;
     let names = |cx: &mut TestAppContext| {
         cx.update(|cx| view.read(cx).row_order())
@@ -519,12 +531,24 @@ async fn the_last_activity_header_sorts_newest_first_and_back_to_config_order(cx
             .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
             .collect::<Vec<_>>()
     };
+    let header = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find("sort-updated").label().unwrap_or_default().to_owned()
+        })
+        .unwrap()
+    };
+    let click = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| window.click("sort-updated", cx))
+            .unwrap();
+        cx.run_until_parked();
+    };
     assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::Config);
+    assert_eq!(header(cx), "Updated, not sorted");
     assert_eq!(names(cx)[..4], ["gh-x", "codexbar", "minibot", "weather-cli"]);
-    cx.update_window(handle, |_, window, cx| window.click("sort-activity", cx))
-        .unwrap();
-    cx.run_until_parked();
-    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::LastActivity);
+    click(cx);
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::NewestFirst);
+    assert_eq!(header(cx), "Updated, newest first");
     assert_eq!(
         names(cx),
         [
@@ -545,9 +569,30 @@ async fn the_last_activity_header_sorts_newest_first_and_back_to_config_order(cx
             "weather-cli",
         ]
     );
-    cx.update_window(handle, |_, window, cx| window.click("sort-activity", cx))
-        .unwrap();
-    cx.run_until_parked();
+    click(cx);
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::OldestFirst);
+    assert_eq!(header(cx), "Updated, oldest first");
+    assert_eq!(
+        names(cx),
+        [
+            "yahtzee",
+            "gh-x",
+            "tickdown",
+            "summarist",
+            "set-it-free-loop",
+            "hs-pi-dashboard",
+            "chief",
+            "project-dashboard",
+            "codexbar",
+            "hs-buddy",
+            // Rows without an update time stay last in this direction too.
+            "minibot",
+            "weather-cli",
+        ]
+    );
+    click(cx);
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::Config);
+    assert_eq!(header(cx), "Updated, not sorted");
     assert_eq!(
         names(cx),
         demo::checkouts()
@@ -593,8 +638,7 @@ async fn at_the_minimum_width_every_row_keeps_its_refresh_button_in_view(cx: &mu
                 bounds.origin.x + bounds.size.width
             );
         }
-        // The name keeps room to read, rather than collapsing to nothing.
-        // Every last-activity summary ends before its row's refresh button.
+        // Every last-activity label ends before its row's refresh button.
         for ix in [0usize, 1, 4, 5, 6, 7, 8, 9, 10, 11] {
             let summary = window.find(("activity-summary", ix)).bounds();
             let refresh = window.find(("refresh", ix)).bounds();
@@ -605,11 +649,12 @@ async fn at_the_minimum_width_every_row_keeps_its_refresh_button_in_view(cx: &mu
                 refresh.origin.x
             );
         }
+        // The name keeps room to read, rather than collapsing to nothing.
         for ix in 0..12usize {
             let name = window.find(("name", ix)).bounds();
-            // NAME_MIN is 7 rem: 112 px at the 16 px base.
+            // NAME_MIN is 6 rem: 96 px at the 16 px base.
             assert!(
-                name.size.width >= px(112.),
+                name.size.width >= px(96.),
                 "row {ix}: name is {:?} wide",
                 name.size.width
             );
@@ -809,7 +854,7 @@ async fn at_200_percent_in_the_narrowest_window_the_table_scrolls_sideways_to_ev
             "starts off to the right at {:?}",
             refresh.origin.x
         );
-        assert!(window.find(("name", 0usize)).bounds().size.width >= px(7. * 32.));
+        assert!(window.find(("name", 0usize)).bounds().size.width >= px(6. * 32.));
         window.scroll("table", ScrollDelta::Pixels(point(px(-2000.), px(0.))), cx);
         window.render_frame(cx);
         let refresh = window.find(("refresh", 0usize)).bounds();

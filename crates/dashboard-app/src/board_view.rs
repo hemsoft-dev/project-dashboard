@@ -1,5 +1,6 @@
 //! The dashboard window's content: a title bar with the refresh controls, then a table with one row per configured
-//! checkout: its overall state, name, open PR and issue counts, and last activity (#8).
+//! checkout: its overall state, name, open PR and issue counts, when it was last updated (#13), and its last activity
+//! (#8).
 //!
 //! Expanding a row shows what `gh x status` shows for that checkout: the health rows with gh-x's clean verdicts and
 //! the open PR, open issue, merged PR and workflow run tables. Items open in the browser.
@@ -128,12 +129,9 @@ impl BoardView {
         self.sort
     }
 
-    /// Switches between config order and newest last activity first.
-    pub fn toggle_sort(&mut self, cx: &mut Context<Self>) {
-        self.sort = match self.sort {
-            SortOrder::Config => SortOrder::LastActivity,
-            SortOrder::LastActivity => SortOrder::Config,
-        };
+    /// Moves to the next order: newest updated first, oldest first, then config order.
+    pub fn cycle_sort(&mut self, cx: &mut Context<Self>) {
+        self.sort = self.sort.next();
         cx.notify();
     }
 
@@ -344,12 +342,17 @@ impl BoardView {
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let sorted = self.sort == SortOrder::LastActivity;
+        let (arrow, sort_label) = match self.sort {
+            SortOrder::Config => ("", "Updated, not sorted"),
+            SortOrder::NewestFirst => ("↓", "Updated, newest first"),
+            SortOrder::OldestFirst => ("↑", "Updated, oldest first"),
+        };
+        let sorted = self.sort != SortOrder::Config;
         h_flex()
             .id("table-header")
             .px_2()
             .py_1()
-            .gap_3()
+            .gap(GAP)
             .items_center()
             .text_xs()
             .font_semibold()
@@ -370,18 +373,27 @@ impl BoardView {
             .child(div().w(COUNT).flex_none().text_right().child("Issues"))
             .child(
                 h_flex()
-                    .id("sort-activity")
+                    .id("sort-updated")
                     .test_support()
-                    .flex_basis(px(0.))
-                    .flex_grow(ACTIVITY_SHARE)
-                    .min_w(ACTIVITY_MIN)
+                    .aria_label(sort_label)
+                    .ml(UPDATED_LEAD)
+                    .w(UPDATED)
+                    .flex_none()
                     .gap_1()
                     .cursor_pointer()
                     .when(sorted, |this| this.text_color(theme.foreground))
                     .hover(|style| style.text_color(theme.foreground))
-                    .on_click(cx.listener(|view, _, _, cx| view.toggle_sort(cx)))
-                    .child("Last activity")
-                    .child(if sorted { "↓" } else { "" }),
+                    .on_click(cx.listener(|view, _, _, cx| view.cycle_sort(cx)))
+                    .child("Updated")
+                    .child(arrow),
+            )
+            .child(
+                div()
+                    .flex_basis(px(0.))
+                    .flex_grow(ACTIVITY_SHARE)
+                    .min_w(ACTIVITY_MIN)
+                    .truncate()
+                    .child("Last activity"),
             )
             .child(div().w(REFRESH).flex_none())
     }
@@ -403,7 +415,33 @@ impl BoardView {
         let prs = count("pullRequests.open", |document| document.pull_requests.open.len());
         let issues = count("issues", |document| document.issues.len());
         let error = card.error.as_ref().filter(|error| !error.is_setup());
-        let activity: AnyElement = match (card.last_activity(), error) {
+        // Found once per row: both the Updated and Last activity columns show it.
+        let last_activity = card.last_activity();
+        // The age, with the exact local time on hover; a dash until there is something to date.
+        let updated: AnyElement = match &last_activity {
+            Some(activity) => {
+                let age = activity.age(now);
+                let time: SharedString = activity.local_time().into();
+                div()
+                    .id(("updated", ix))
+                    .test_support()
+                    .aria_label(format!("Updated {age}"))
+                    .truncate()
+                    .tooltip(move |window, cx| {
+                        gpui_kit::component::tooltip::Tooltip::new(time.clone()).build(window, cx)
+                    })
+                    .child(age)
+                    .into_any_element()
+            }
+            None => div()
+                .id(("updated", ix))
+                .test_support()
+                .aria_label("Updated: unknown")
+                .text_color(theme.muted_foreground)
+                .child("–")
+                .into_any_element(),
+        };
+        let activity: AnyElement = match (last_activity, error) {
             // A failed refresh says so in the activity column; the counts keep the last good status.
             (_, Some(error)) => div()
                 .id(("row-error", ix))
@@ -418,7 +456,7 @@ impl BoardView {
                 h_flex()
                     .id(("activity", ix))
                     .test_support()
-                    .aria_label(format!("Last activity: {}, {}", activity.summary(now), activity.title))
+                    .aria_label(format!("Last activity: {}, {}", activity.label, activity.title))
                     .min_w_0()
                     .gap_2()
                     .cursor_pointer()
@@ -428,14 +466,14 @@ impl BoardView {
                         cx.stop_propagation();
                         cx.open_url(&url);
                     })
-                    // The title only gets space the summary leaves; on a narrow window the summary truncates too.
+                    // The title only gets space the label leaves; on a narrow window the label truncates too.
                     .child(
                         div()
                             .id(("activity-summary", ix))
                             .test_support()
                             .min_w_0()
                             .truncate()
-                            .child(activity.summary(now)),
+                            .child(activity.label.clone()),
                     )
                     .child(
                         div()
@@ -475,7 +513,7 @@ impl BoardView {
             .test_support()
             .px_2()
             .py_1p5()
-            .gap_3()
+            .gap(GAP)
             .items_center()
             .text_sm()
             .cursor_pointer()
@@ -540,6 +578,7 @@ impl BoardView {
                     .text_right()
                     .child(issues),
             )
+            .child(div().ml(UPDATED_LEAD).w(UPDATED).flex_none().child(updated))
             // Shrinks before anything else on a narrow window, so the refresh button stays in view.
             .child(
                 div()
@@ -631,16 +670,23 @@ impl BoardView {
 // Table column widths, in rems so they follow the text size.
 const CHEVRON: gpui_kit::Rems = rems(1.75);
 const STATE: gpui_kit::Rems = rems(0.75);
-const COUNT: gpui_kit::Rems = rems(3.5);
+const COUNT: gpui_kit::Rems = rems(3.25);
+/// Fits "Updated ↓" and the longest age, "just now".
+const UPDATED: gpui_kit::Rems = rems(4.5);
+/// Extra space before the update time, so it doesn't read as part of the right-aligned issue count before it.
+const UPDATED_LEAD: gpui_kit::Rems = rems(0.75);
+/// The space between columns.
+const GAP: gpui_kit::Rems = rems(0.5);
 /// The repository name and last activity share the width the fixed columns leave, 2 : 3, at any window size and
 /// zoom, down to these minimums.
 const NAME_SHARE: f32 = 2.;
 const ACTIVITY_SHARE: f32 = 3.;
-const NAME_MIN: gpui_kit::Rems = rems(7.);
-const ACTIVITY_MIN: gpui_kit::Rems = rems(6.);
-/// The table's least width: the fixed columns (chevron, state, counts, refresh), the name and activity minimums, six
-/// 0.75 rem gaps and the 0.5 rem side padding. 468 px at 100%, inside the window's 480 px minimum.
-const TABLE_MIN: gpui_kit::Rems = rems(1.75 + 0.75 + 3.5 + 3.5 + 1.75 + 7. + 6. + 6. * 0.75 + 0.5);
+const NAME_MIN: gpui_kit::Rems = rems(6.);
+const ACTIVITY_MIN: gpui_kit::Rems = rems(3.25);
+/// The table's least width: the fixed columns (chevron, state, counts, updated and its lead, refresh), the name and
+/// activity minimums, seven 0.5 rem gaps and 0.5 rem padding on each side. 476 px at 100%, inside the window's 480 px
+/// minimum.
+const TABLE_MIN: gpui_kit::Rems = rems(1.75 + 0.75 + 3.25 + 3.25 + 0.75 + 4.5 + 1.75 + 6. + 3.25 + 7. * 0.5 + 2. * 0.5);
 const REFRESH: gpui_kit::Rems = rems(1.75);
 
 impl Render for BoardView {

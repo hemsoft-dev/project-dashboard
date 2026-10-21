@@ -173,19 +173,24 @@ impl Board {
             .find(|error| error.is_setup())
     }
 
-    /// The cards' indices in display order: config order, or newest last activity first with the rest after them in
-    /// config order.
+    /// The cards' indices in display order: config order, or by update time (the last activity's), newest or oldest
+    /// first. Cards without an update time come after the rest in either direction, in config order.
     pub fn order(&self, sort: SortOrder) -> Vec<usize> {
         let mut order: Vec<usize> = (0..self.cards.len()).collect();
-        if sort == SortOrder::LastActivity {
-            let activity: Vec<_> = self
-                .cards
-                .iter()
-                .map(|card| card.last_activity().map(|activity| activity.at))
-                .collect();
-            // Stable, so equal times and cards without activity keep config order; `None` sorts after any time.
-            order.sort_by(|&a, &b| activity[b].cmp(&activity[a]));
+        if sort == SortOrder::Config {
+            return order;
         }
+        let updated: Vec<_> = self
+            .cards
+            .iter()
+            .map(|card| card.last_activity().map(|activity| activity.at))
+            .collect();
+        // Stable, so equal times and cards without an update time keep config order.
+        order.sort_by(|&a, &b| match (updated[a], updated[b]) {
+            (Some(a), Some(b)) if sort == SortOrder::NewestFirst => b.cmp(&a),
+            (Some(a), Some(b)) => a.cmp(&b),
+            (a, b) => b.is_some().cmp(&a.is_some()),
+        });
         order
     }
 
@@ -200,8 +205,21 @@ pub enum SortOrder {
     /// The order of `repositories` in config.toml.
     #[default]
     Config,
-    /// Newest last activity first.
-    LastActivity,
+    /// Most recently updated first.
+    NewestFirst,
+    /// Least recently updated first.
+    OldestFirst,
+}
+
+impl SortOrder {
+    /// The order after a click on the Updated header: newest first, then oldest first, then config order again.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Config => Self::NewestFirst,
+            Self::NewestFirst => Self::OldestFirst,
+            Self::OldestFirst => Self::Config,
+        }
+    }
 }
 
 /// A headline and a hint, for a board with nothing to show.

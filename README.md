@@ -117,6 +117,14 @@ every GitHub section loaded.
   `ui-state.json`, next to `config.toml`, and scale with the zoom. On a window too narrow for them, the repository
   column gives way first, then the table scrolls sideways.
 - **Refresh all** with the title-bar button or **F5**. It uses gh-x's own cache when that is still fresh.
+- **Open the T3 Code thread** working on a repository with the robot button left of its refresh button. It opens
+  the thread in the local T3 Code server's web UI (`http://127.0.0.1:3773/<environment>/<thread>` on a default
+  install) in your browser; a browser that hasn't paired with that server shows T3's pairing page first. The thread
+  is the newest open top-level thread of the T3 project whose folder is the checkout, a running one first. The
+  dashboard finds it by reading T3's state database under `~/.t3-server/userdata` (or `T3CODE_USERDATA`) read-only,
+  at startup and after every refresh; T3 offers no other way to ask. When there is nothing to open, the button is
+  disabled and its tooltip says why: T3 isn't installed or running, has no project for the checkout, or has no open
+  thread. The T3 desktop app has no way to open a thread from outside, so the browser it is.
 - **Refresh one** repository with its row's button. It runs `gh x status --json --refresh`, bypassing gh-x's cache.
 - **Automatic refresh** runs every `refresh_minutes` (default 5).
 - **Zoom** the whole window with **Ctrl** **+** (or **Ctrl** **=**) and **Ctrl** **-**, or **Ctrl** + mouse wheel, in

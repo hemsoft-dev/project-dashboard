@@ -2,6 +2,8 @@
 //! checkout: its overall state, name, open PR and issue counts, when it was last updated (#13), and its last activity
 //! (#8).
 //!
+//! Each row's T3 button, left of its refresh button, opens the T3 Code thread working on that checkout (#15).
+//!
 //! Dragging the border between two header cells resizes the column to its left (#14); double-clicking it restores the
 //! default. The widths are remembered in `ui-state.json`.
 //!
@@ -9,7 +11,7 @@
 //! the open PR, open issue, merged PR and workflow run tables. Items open in the browser.
 
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -22,11 +24,14 @@ use dashboard_core::columns::{Column, ColumnWidths};
 use dashboard_core::scheduler::{self, Outcome};
 use dashboard_core::source::StatusSource;
 use dashboard_core::status::{HealthRow, Issue, PullRequest, RunOutcome, Section, StatusDocument, WorkflowRun};
+use dashboard_core::t3::{self, Lookup, ThreadFinder};
 use dashboard_core::ui_state::UiState;
 use dashboard_core::{APP_NAME, Board, Card, Overall, SortOrder};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, TitleBar, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, TitleBar, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, Context, FocusHandle, Hsla, InteractiveElement as _, IntoElement, KeyBinding, MouseButton,
@@ -61,6 +66,8 @@ pub struct Options {
     pub columns: ColumnWidths,
     /// The folder for `ui-state.json`, where resized columns are saved; `None` keeps them in memory.
     pub ui_state_dir: Option<PathBuf>,
+    /// Finds the T3 Code thread for each checkout.
+    pub threads: Arc<dyn ThreadFinder>,
 }
 
 /// A column border being dragged: which column, and where the drag started.
@@ -83,6 +90,9 @@ pub struct BoardView {
     resizing: Option<Resize>,
     /// The repository column's width as last laid out, which a narrow window can make less than its setting.
     repository_laid_out: Rc<Cell<Option<Pixels>>>,
+    /// Each checkout's T3 thread, once looked up.
+    threads: HashMap<PathBuf, Lookup>,
+    finding_threads: bool,
     last_refresh: Option<Instant>,
     focus: FocusHandle,
 }
@@ -101,7 +111,7 @@ impl BoardView {
         // One limit for every refresh, so overlapping refreshes never run more than `parallelism` gh processes.
         let source: Arc<dyn StatusSource> = Arc::new(scheduler::Limited::new(source, options.parallelism));
         let columns = options.columns;
-        let view = Self {
+        let mut view = Self {
             board: Board::new(checkouts, &cache),
             cache,
             source,
@@ -111,9 +121,12 @@ impl BoardView {
             columns,
             resizing: None,
             repository_laid_out: Rc::new(Cell::new(None)),
+            threads: HashMap::new(),
+            finding_threads: false,
             last_refresh: None,
             focus,
         };
+        view.find_threads(cx);
         // Keeps "Updated … ago" and the last-activity ages current between refreshes.
         cx.spawn(async move |this, cx| {
             loop {
@@ -358,8 +371,38 @@ impl BoardView {
         }
     }
 
+    /// Looks up every checkout's T3 thread off the UI thread, unless a lookup is already running.
+    pub fn find_threads(&mut self, cx: &mut Context<Self>) {
+        if self.finding_threads || self.board.is_empty() {
+            return;
+        }
+        self.finding_threads = true;
+        let finder = Arc::clone(&self.options.threads);
+        let checkouts = self.board.checkouts();
+        cx.spawn(async move |this, cx| {
+            let lookup = checkouts.clone();
+            let found = cx
+                .background_executor()
+                .spawn(async move { finder.find(&lookup) })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.finding_threads = false;
+                view.threads = checkouts.into_iter().zip(found).collect();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    #[cfg(test)]
+    pub fn thread(&self, checkout: &Path) -> Option<&Lookup> {
+        self.threads.get(checkout)
+    }
+
     fn finished(&mut self, cx: &mut Context<Self>) {
         self.last_refresh = Some(Instant::now());
+        // Threads come and go between refreshes; look again whenever the statuses are fresh.
+        self.find_threads(cx);
         if let Some(dir) = &self.options.cache_dir {
             self.cache.retain(&self.board.checkouts());
             if let Err(err) = self.cache.save(dir) {
@@ -545,7 +588,7 @@ impl BoardView {
                 ),
             )
             .child(div().flex_1().min_w(ACTIVITY_MIN).truncate().child("Last activity"))
-            .child(div().w(REFRESH).flex_none())
+            .child(div().w(ACTIONS).flex_none())
     }
 
     fn render_row(&self, ix: usize, card: &Card, cx: &mut Context<Self>) -> impl IntoElement {
@@ -734,10 +777,12 @@ impl BoardView {
             // stays in view.
             .child(div().flex_1().min_w(ACTIVITY_MIN).child(activity))
             .child(
-                div()
-                    .w(REFRESH)
+                h_flex()
+                    .w(ACTIONS)
                     .flex_none()
+                    .justify_end()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(self.thread_button(ix, &card.checkout))
                     .child(
                         Button::new(("refresh", ix))
                             .ghost()
@@ -758,6 +803,27 @@ impl BoardView {
             .border_color(theme.border)
             .child(row)
             .when(expanded, |this| this.child(self.render_details(ix, card, cx)))
+    }
+
+    /// Opens the checkout's T3 Code thread; disabled, with the reason as its tooltip, when there is none to open.
+    fn thread_button(&self, ix: usize, checkout: &Path) -> impl IntoElement + use<> {
+        let lookup = self.threads.get(checkout);
+        let tooltip = lookup.map_or_else(|| "Looking for this checkout's T3 Code thread…".to_owned(), t3::tooltip);
+        let url = lookup
+            .and_then(|lookup| lookup.as_ref().ok())
+            .map(|link| link.url.clone());
+        Button::new(("t3", ix))
+            .ghost()
+            .xsmall()
+            .icon(IconName::Bot)
+            .tooltip(tooltip)
+            .disabled(url.is_none())
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                if let Some(url) = &url {
+                    cx.open_url(url);
+                }
+            })
     }
 
     /// The expanded part of a row: the error, the health rows, unavailable sections and the four tables.
@@ -816,13 +882,15 @@ impl BoardView {
 // Table column widths, in rems so they follow the text size. The resizable columns' widths are in `ColumnWidths`.
 const CHEVRON: gpui_kit::Rems = rems(1.75);
 const STATE: gpui_kit::Rems = rems(0.75);
-const REFRESH: gpui_kit::Rems = rems(1.75);
+/// The T3 and refresh buttons at the end of each row.
+const ACTIONS: gpui_kit::Rems = rems(3.5);
 /// The space between columns.
 const GAP: gpui_kit::Rems = rems(0.5);
 /// Extra space before the update time, so it doesn't read as part of the right-aligned issue count before it.
 const UPDATED_LEAD: gpui_kit::Rems = rems(0.75);
-/// Last activity takes whatever width is left, down to this.
-const ACTIVITY_MIN: gpui_kit::Rems = rems(3.25);
+/// Last activity takes whatever width is left, down to this: on the narrowest window it is little more than an
+/// ellipsis, so the names and buttons keep their room.
+const ACTIVITY_MIN: gpui_kit::Rems = rems(1.5);
 
 fn width(column: Column, widths: &ColumnWidths) -> gpui_kit::Rems {
     rems(widths.get(column))
@@ -852,13 +920,13 @@ fn column_title(column: Column) -> &'static str {
     }
 }
 
-/// The table's least width: chevron, state and refresh; the repository column's minimum and the other resizable
+/// The table's least width: chevron, state and the two row buttons; the repository column's minimum and the other resizable
 /// columns' widths; the lead before Updated; last activity's minimum; seven gaps and 0.5 rem padding on each side. At
 /// the default widths that is 476 px at 100%, inside the window's 480 px minimum. Wider columns make the table scroll
 /// sideways instead.
 fn table_min(widths: &ColumnWidths) -> gpui_kit::Rems {
     let resizable = widths.total() - widths.get(Column::Repository) + Column::Repository.min_width();
-    rems(1.75 + 0.75 + 1.75 + resizable + 0.75 + 3.25 + 7. * 0.5 + 2. * 0.5)
+    rems(1.75 + 0.75 + 3.5 + resizable + 0.75 + 1.5 + 7. * 0.5 + 2. * 0.5)
 }
 
 impl Render for BoardView {

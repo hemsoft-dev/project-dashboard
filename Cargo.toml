@@ -20,6 +20,8 @@ serde_json = "1"
 toml = "1"
 # The user config folder, per platform.
 dirs = "6"
+# Reads T3 Code's state database, read-only, to link a checkout to its thread (#15). Bundled, so no system SQLite.
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

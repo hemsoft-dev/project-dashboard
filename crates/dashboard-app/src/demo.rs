@@ -7,6 +7,7 @@ use chrono::{DateTime, Duration, Utc};
 use dashboard_core::fixtures::{self, ATTENTION, CLEAN, UNAVAILABLE};
 use dashboard_core::source::{FetchError, StatusSource};
 use dashboard_core::status::StatusDocument;
+use dashboard_core::t3::{Lookup, NoThread, ThreadFinder, ThreadLink};
 
 /// The fixtures' own "now": the clean and attention documents were generated at 06:30 UTC.
 pub fn fixture_now() -> DateTime<Utc> {
@@ -111,5 +112,33 @@ impl StatusSource for DemoSource {
                 .map(|&(name, attention, lead, minutes, keep)| variant(name, attention, lead, minutes, keep))
                 .ok_or_else(|| FetchError::Failed(format!("no demo data for {name}"))),
         }
+    }
+}
+
+/// Demo T3 Code threads: a running one, idle ones, and the reasons a row has none.
+pub struct DemoThreads;
+
+impl ThreadFinder for DemoThreads {
+    fn find(&self, checkouts: &[PathBuf]) -> Vec<Lookup> {
+        let link = |name: &str, title: &str, running| {
+            Ok(ThreadLink {
+                title: title.to_owned(),
+                url: format!("http://127.0.0.1:3773/demo-environment/demo%3A{name}"),
+                running,
+            })
+        };
+        checkouts
+            .iter()
+            .map(
+                |checkout| match checkout.file_name().and_then(|name| name.to_str()).unwrap_or_default() {
+                    "gh-x" => link("gh-x", "gh-x: release v0.22.1", true),
+                    "codexbar" => link("codexbar", "codexbar: L1 audit -> issues", false),
+                    "hs-buddy" => link("hs-buddy", "hs-buddy: tray icon on Linux", false),
+                    "project-dashboard" => link("project-dashboard", "project-dashboard: resizable columns", true),
+                    "minibot" | "tickdown" => Err(NoThread::NoOpenThread),
+                    _ => Err(NoThread::NoProject),
+                },
+            )
+            .collect()
     }
 }

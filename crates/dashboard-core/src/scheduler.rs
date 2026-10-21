@@ -1,9 +1,10 @@
 //! Refreshing many checkouts at once with a bounded number of `gh x status` processes, reporting each result as soon
 //! as it arrives.
 
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 use crate::source::{FetchError, StatusSource};
 use crate::status::StatusDocument;
@@ -52,4 +53,43 @@ pub fn refresh(
         });
     }
     receiver
+}
+
+/// A source that lets at most `limit` fetches run at once, across every refresh that shares it. The board wraps its
+/// source in one, so a per-card refresh started during F5 or the timer still counts against `parallelism`.
+pub struct Limited {
+    inner: Arc<dyn StatusSource>,
+    limit: usize,
+    running: Mutex<usize>,
+    freed: Condvar,
+}
+
+impl Limited {
+    pub fn new(inner: Arc<dyn StatusSource>, limit: usize) -> Self {
+        Self {
+            inner,
+            limit: limit.clamp(1, MAX_PARALLELISM),
+            running: Mutex::new(0),
+            freed: Condvar::new(),
+        }
+    }
+}
+
+impl StatusSource for Limited {
+    fn fetch(&self, checkout: &Path, refresh: bool) -> Result<StatusDocument, FetchError> {
+        {
+            let mut running = self.running.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            while *running >= self.limit {
+                running = self
+                    .freed
+                    .wait(running)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            *running += 1;
+        }
+        let result = self.inner.fetch(checkout, refresh);
+        *self.running.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) -= 1;
+        self.freed.notify_one();
+        result
+    }
 }

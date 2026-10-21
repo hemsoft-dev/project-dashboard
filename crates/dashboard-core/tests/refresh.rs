@@ -82,6 +82,7 @@ fn other_failures_keep_gh_first_line() {
 fn a_missing_gh_program_is_reported_as_gh_missing() {
     let source = GhX {
         program: "gh-that-does-not-exist-anywhere".into(),
+        ..GhX::default()
     };
     let here = std::env::current_dir().unwrap();
     assert_eq!(source.fetch(&here, false), Err(FetchError::GhMissing));
@@ -186,4 +187,72 @@ fn a_huge_parallelism_still_refreshes_without_spawning_extra_threads() {
 fn an_empty_refresh_closes_at_once() {
     let receiver = scheduler::refresh(Arc::new(Fake::default()), Vec::new(), 4, false);
     assert!(receiver.recv().is_err());
+}
+
+#[test]
+fn overlapping_refreshes_share_one_limit() {
+    let fake = Arc::new(Fake::default());
+    let limited: Arc<dyn StatusSource> = Arc::new(scheduler::Limited::new(fake.clone(), 1));
+    // A full refresh and two single-card refreshes at once, as F5 plus card buttons would start them.
+    let all = scheduler::refresh(
+        limited.clone(),
+        (0..4).map(|ix| PathBuf::from(format!("/src/{ix}"))).collect(),
+        4,
+        false,
+    );
+    let one = scheduler::refresh(limited.clone(), vec![PathBuf::from("/src/x")], 4, true);
+    let two = scheduler::refresh(limited, vec![PathBuf::from("/src/y")], 4, true);
+    let total = all.iter().count() + one.iter().count() + two.iter().count();
+    assert_eq!(total, 6);
+    assert_eq!(fake.peak.load(Ordering::SeqCst), 1);
+}
+
+/// A stand-in `gh`: a shell script that ignores its arguments.
+#[cfg(unix)]
+fn fake_gh(name: &str, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = std::env::temp_dir().join(format!("project-dashboard-fake-gh-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("gh");
+    std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+#[cfg(unix)]
+#[test]
+fn a_stalled_gh_is_stopped_at_the_deadline() {
+    let source = GhX {
+        program: fake_gh("stall", "sleep 30").into(),
+        timeout: Duration::from_millis(300),
+    };
+    let started = std::time::Instant::now();
+    let result = source.fetch(&std::env::temp_dir(), false);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "returned after {:?}",
+        started.elapsed()
+    );
+    let err = result.unwrap_err();
+    assert!(err.to_string().contains("didn't finish within"), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_real_process_output_is_read_through_the_pipes() {
+    let fixture = std::env::temp_dir().join(format!("project-dashboard-fixture-{}.json", std::process::id()));
+    std::fs::write(&fixture, CLEAN).unwrap();
+    let source = GhX {
+        program: fake_gh("ok", &format!("cat '{}'", fixture.display())).into(),
+        timeout: Duration::from_secs(30),
+    };
+    assert_eq!(source.fetch(&std::env::temp_dir(), true), Ok(fixtures::document(CLEAN)));
+    let failing = GhX {
+        program: fake_gh("fail", "echo 'HTTP 401: Bad credentials' >&2; exit 1").into(),
+        timeout: Duration::from_secs(30),
+    };
+    assert_eq!(
+        failing.fetch(&std::env::temp_dir(), false),
+        Err(FetchError::Failed("HTTP 401: Bad credentials".into()))
+    );
 }

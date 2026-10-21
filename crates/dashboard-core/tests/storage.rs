@@ -51,6 +51,25 @@ fn config_parallelism_is_capped() {
 }
 
 #[test]
+fn a_huge_refresh_interval_is_capped_at_a_day_instead_of_overflowing() {
+    let config = Config::parse("refresh_minutes = 4611686018427387904", Path::new("config.toml")).unwrap();
+    assert_eq!(config.refresh_minutes, config::MAX_REFRESH_MINUTES);
+    assert_eq!(
+        config.refresh_interval(),
+        Some(std::time::Duration::from_secs(24 * 60 * 60))
+    );
+    // Built directly (not parsed), the interval still can't overflow.
+    let direct = Config {
+        refresh_minutes: u64::MAX,
+        ..Config::default()
+    };
+    assert_eq!(
+        direct.refresh_interval(),
+        Some(std::time::Duration::from_secs(24 * 60 * 60))
+    );
+}
+
+#[test]
 fn invalid_config_names_the_file() {
     let err = Config::parse("repositories = 3", Path::new("/cfg/config.toml")).unwrap_err();
     assert!(err.to_string().starts_with("/cfg/config.toml is not valid"), "{err}");

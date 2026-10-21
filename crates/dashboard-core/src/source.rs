@@ -1,7 +1,8 @@
 //! Running `gh x status --json` in a checkout: the only way the app learns a repository's status.
 
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::status::{ParseError, StatusDocument};
 
@@ -49,16 +50,25 @@ pub trait StatusSource: Send + Sync {
     fn fetch(&self, checkout: &Path, refresh: bool) -> Result<StatusDocument, FetchError>;
 }
 
+/// How long one `gh x status` may run before it is stopped and its card shows a failure.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// The real source: `gh x status --json`, run in the checkout.
 #[derive(Clone, Debug)]
 pub struct GhX {
     /// The `gh` executable; `gh` on PATH by default.
     pub program: std::ffi::OsString,
+    /// Each run is stopped after this long, so a stalled network call or credential prompt can't hold a card (and a
+    /// worker) forever.
+    pub timeout: Duration,
 }
 
 impl Default for GhX {
     fn default() -> Self {
-        Self { program: "gh".into() }
+        Self {
+            program: "gh".into(),
+            timeout: DEFAULT_TIMEOUT,
+        }
     }
 }
 
@@ -92,12 +102,45 @@ impl StatusSource for GhX {
             // CREATE_NO_WINDOW: no console window flashes up for each repository.
             command.creation_flags(0x0800_0000);
         }
-        let output = command.output().map_err(|err| match err.kind() {
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = command.spawn().map_err(|err| match err.kind() {
             std::io::ErrorKind::NotFound => FetchError::GhMissing,
             _ => FetchError::Failed(format!("couldn't start gh: {err}")),
         })?;
-        interpret(&output.stdout, &output.stderr, output.status.success())
+        // Both pipes are drained on their own threads, so a full pipe can't stall the process while it is watched.
+        let stdout = drain(child.stdout.take());
+        let stderr = drain(child.stderr.take());
+        let deadline = Instant::now() + self.timeout;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(FetchError::Failed(format!(
+                        "gh x status didn't finish within {} s and was stopped.",
+                        self.timeout.as_secs()
+                    )));
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+                Err(err) => return Err(FetchError::Failed(format!("couldn't wait for gh: {err}"))),
+            }
+        };
+        let stdout = stdout.join().unwrap_or_default();
+        let stderr = stderr.join().unwrap_or_default();
+        interpret(&stdout, &stderr, status.success())
     }
+}
+
+/// Reads a child's pipe to the end on its own thread.
+fn drain(pipe: Option<impl std::io::Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        bytes
+    })
 }
 
 /// Turns gh's output into a document or an error. gh-x prints a JSON error object (and exits non-zero) when it can't

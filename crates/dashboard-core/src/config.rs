@@ -15,13 +15,15 @@ use serde::{Deserialize, Serialize};
 pub const FILE_NAME: &str = "config.toml";
 pub const DEFAULT_REFRESH_MINUTES: u64 = 5;
 pub const DEFAULT_PARALLELISM: usize = 4;
+/// The longest automatic refresh interval: one day.
+pub const MAX_REFRESH_MINUTES: u64 = 24 * 60;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// The folder scanned for checkouts when the config file is first created.
     pub root: Option<PathBuf>,
-    /// Minutes between automatic refreshes; 0 turns them off.
+    /// Minutes between automatic refreshes (at most a day); 0 turns them off.
     pub refresh_minutes: u64,
     /// How many `gh x status` processes run at once (1 to 16).
     pub parallelism: usize,
@@ -85,6 +87,7 @@ impl Config {
         let mut config: Self =
             toml::from_str(text).map_err(|err| ConfigError::Parse(path.to_owned(), err.to_string()))?;
         config.parallelism = config.parallelism.clamp(1, crate::scheduler::MAX_PARALLELISM);
+        config.refresh_minutes = config.refresh_minutes.min(MAX_REFRESH_MINUTES);
         Ok(config)
     }
 
@@ -123,7 +126,8 @@ impl Config {
     }
 
     pub fn refresh_interval(&self) -> Option<std::time::Duration> {
-        (self.refresh_minutes > 0).then(|| std::time::Duration::from_secs(self.refresh_minutes * 60))
+        let minutes = self.refresh_minutes.min(MAX_REFRESH_MINUTES);
+        (minutes > 0).then(|| std::time::Duration::from_secs(minutes * 60))
     }
 }
 

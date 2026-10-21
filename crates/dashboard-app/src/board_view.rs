@@ -67,6 +67,8 @@ impl BoardView {
     ) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        // One limit for every refresh, so overlapping refreshes never run more than `parallelism` gh processes.
+        let source: Arc<dyn StatusSource> = Arc::new(scheduler::Limited::new(source, options.parallelism));
         let view = Self {
             board: Board::new(checkouts, &cache),
             cache,

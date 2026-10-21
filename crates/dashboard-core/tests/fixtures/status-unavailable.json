@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-21T06:30:00Z",
+  "repository": {
+    "nameWithOwner": "hemsoft-dev/minibot",
+    "rootPath": "/home/franz/github/hemsoft/minibot",
+    "defaultBranch": "main"
+  },
+  "health": {
+    "defaultBranch": {
+      "status": "available",
+      "reason": "",
+      "clean": true,
+      "name": "main",
+      "checkedOut": true,
+      "upstream": "origin/main",
+      "synced": true,
+      "ahead": 0,
+      "behind": 0,
+      "changes": {
+        "clean": true,
+        "staged": 0,
+        "modified": 0,
+        "deleted": 0,
+        "renamed": 0,
+        "untracked": 0,
+        "conflicted": 0
+      }
+    },
+    "currentBranch": {
+      "status": "available",
+      "reason": "",
+      "clean": true,
+      "name": "main",
+      "checkedOut": true,
+      "upstream": "origin/main",
+      "synced": true,
+      "ahead": 0,
+      "behind": 0,
+      "changes": {
+        "clean": true,
+        "staged": 0,
+        "modified": 0,
+        "deleted": 0,
+        "renamed": 0,
+        "untracked": 0,
+        "conflicted": 0
+      }
+    },
+    "branches": {
+      "status": "available",
+      "reason": "",
+      "clean": true,
+      "local": 1,
+      "remote": 1,
+      "dangling": 0
+    },
+    "worktrees": {
+      "status": "available",
+      "reason": "",
+      "clean": true,
+      "total": 1,
+      "cleanupCandidates": 0,
+      "items": [
+        {
+          "path": "/home/franz/github/hemsoft/gh-x",
+          "head": "f74ca35c0c1b5c1f0d0f0ad3e1e0f2b7c9a8d6e1",
+          "branch": "main",
+          "detached": false,
+          "detachedMerged": false,
+          "locked": false,
+          "prunable": false,
+          "prunableReason": "",
+          "primary": true,
+          "current": true,
+          "exists": true,
+          "clean": true,
+          "cleanKnown": true,
+          "cleanupCandidate": false,
+          "cleanupReason": ""
+        }
+      ]
+    },
+    "stashes": {
+      "status": "unavailable",
+      "reason": "git stash list: exit status 128",
+      "clean": false,
+      "count": 0
+    }
+  },
+  "issues": [],
+  "pullRequests": {
+    "open": [],
+    "merged": [],
+    "mergedLimit": 5
+  },
+  "workflowRuns": [],
+  "sections": [
+    {
+      "name": "issues",
+      "status": "unavailable",
+      "reason": "HTTP 502: Bad Gateway (https://api.github.com/graphql)",
+      "cached": false,
+      "fetchedAt": null,
+      "cacheAgeSeconds": 0
+    },
+    {
+      "name": "pullRequests.open",
+      "status": "unavailable",
+      "reason": "HTTP 502: Bad Gateway (https://api.github.com/graphql)",
+      "cached": false,
+      "fetchedAt": null,
+      "cacheAgeSeconds": 0
+    },
+    {
+      "name": "pullRequests.merged",
+      "status": "available",
+      "reason": "",
+      "cached": true,
+      "fetchedAt": "2026-10-21T06:29:18Z",
+      "cacheAgeSeconds": 42.0
+    },
+    {
+      "name": "workflowRuns",
+      "status": "available",
+      "reason": "",
+      "cached": true,
+      "fetchedAt": "2026-10-21T06:29:18Z",
+      "cacheAgeSeconds": 42.0
+    }
+  ]
+}

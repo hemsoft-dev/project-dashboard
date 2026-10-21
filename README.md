@@ -52,6 +52,57 @@ cargo test --workspace --locked
 
 See [AGENTS.md](AGENTS.md) for the stack, the workspace layout and the conventions.
 
+## Usage
+
+Project Dashboard needs the [GitHub CLI](https://cli.github.com) signed in (`gh auth login`) and the
+[gh-x](https://github.com/hemsoft-dev/gh-x) extension with `gh x status --json`:
+
+```sh
+gh extension install hemsoft-dev/gh-x   # or: gh extension upgrade gh-x
+```
+
+The window shows one card per repository: its name, a **Clean**, **Attention**, **Failed** or **Loading** badge,
+the counts of open PRs, open issues, recently merged PRs and workflow runs, and the health rows `gs` prints (default
+branch, branches, worktrees, stashes, and the current branch when it isn't the default), each with gh-x's own clean
+verdict. A card is Clean when every row is clean and every GitHub section loaded.
+
+- **Expand** a card (the chevron) to see its open pull requests, open issues, recently merged pull requests and
+  workflow runs. Click a row to open it in your browser.
+- **Refresh all** with the title-bar button or **F5**. It uses gh-x's own cache when that is still fresh.
+- **Refresh one** card with its own button. It runs `gh x status --json --refresh`, bypassing gh-x's cache.
+- **Automatic refresh** runs every `refresh_minutes` (default 5).
+- At startup every card shows its last result from the local cache at once, marked **Cached**, and each card updates as
+  its fresh result arrives. Up to `parallelism` (default 4) `gh x status` processes run at a time.
+- A repository whose status fails shows the error on its own card; the others keep working. A GitHub section gh-x
+  couldn't load shows its reason on the card, and its count reads `?`. A missing `gh` or gh-x shows one setup message
+  at the top.
+
+`cargo run -p dashboard-app -- --demo` shows sample data from the checked-in fixtures, without the config file,
+the cache or gh.
+
+### Config file
+
+`config.toml`, in `%APPDATA%\ProjectDashboard` on Windows and `~/.config/project-dashboard` on Linux (or the folder
+in `PROJECT_DASHBOARD_CONFIG_DIR`):
+
+```toml
+# Local checkouts, in display order.
+repositories = [
+  "C:/Users/franz/github/hemsoft/gh-x",
+  "C:/Users/franz/github/hemsoft/codexbar",
+]
+# Minutes between automatic refreshes; 0 turns them off.
+refresh_minutes = 5
+# How many gh x status processes run at once.
+parallelism = 4
+# The folder scanned on first run.
+root = "C:/Users/franz/github"
+```
+
+On first run, when the file doesn't exist yet, the app creates it with every git checkout one level under `~/github`
+(or your home folder if there's no `~/github`). Edit the list and restart the app to change it. The last results are
+cached next to it in `status-cache.json`; deleting that file is always safe.
+
 ## License
 
 [MIT](LICENSE)

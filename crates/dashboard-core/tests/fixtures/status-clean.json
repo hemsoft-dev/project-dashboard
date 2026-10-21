@@ -1,0 +1,189 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-21T06:30:00Z",
+  "repository": {
+    "nameWithOwner": "hemsoft-dev/gh-x",
+    "rootPath": "/home/franz/github/hemsoft/gh-x",
+    "defaultBranch": "main"
+  },
+  "health": {
+    "defaultBranch": {
+      "status": "available",
+      "reason": "",
+      "clean": true,
+      "name": "main",
+      "checkedOut": true,
+      "upstream": "origin/main",
+      "synced": true,
+      "ahead": 0,
+      "behind": 0,
+      "changes": {
+        "clean": true,
+        "staged": 0,
+        "modified": 0,
+        "deleted": 0,
+        "renamed": 0,
+        "untracked": 0,
+        "conflicted": 0
+      }
+    },
+    "currentBranch": {
+      "status": "available",
+      "reason": "",
+      "clean": true,
+      "name": "main",
+      "checkedOut": true,
+      "upstream": "origin/main",
+      "synced": true,
+      "ahead": 0,
+      "behind": 0,
+      "changes": {
+        "clean": true,
+        "staged": 0,
+        "modified": 0,
+        "deleted": 0,
+        "renamed": 0,
+        "untracked": 0,
+        "conflicted": 0
+      }
+    },
+    "branches": {
+      "status": "available",
+      "reason": "",
+      "clean": true,
+      "local": 1,
+      "remote": 1,
+      "dangling": 0
+    },
+    "worktrees": {
+      "status": "available",
+      "reason": "",
+      "clean": true,
+      "total": 1,
+      "cleanupCandidates": 0,
+      "items": [
+        {
+          "path": "/home/franz/github/hemsoft/gh-x",
+          "head": "f74ca35c0c1b5c1f0d0f0ad3e1e0f2b7c9a8d6e1",
+          "branch": "main",
+          "detached": false,
+          "detachedMerged": false,
+          "locked": false,
+          "prunable": false,
+          "prunableReason": "",
+          "primary": true,
+          "current": true,
+          "exists": true,
+          "clean": true,
+          "cleanKnown": true,
+          "cleanupCandidate": false,
+          "cleanupReason": ""
+        }
+      ]
+    },
+    "stashes": {
+      "status": "available",
+      "reason": "",
+      "clean": true,
+      "count": 0
+    }
+  },
+  "issues": [],
+  "pullRequests": {
+    "open": [],
+    "merged": [
+      {
+        "number": 229,
+        "issues": "-",
+        "title": "docs: record v0.21.2 release",
+        "author": "HemSoft",
+        "state": "merged",
+        "review": "-",
+        "approvals": 0,
+        "approvers": [],
+        "approvalsIncomplete": false,
+        "checks": "✓ 6/6",
+        "comments": "0",
+        "aiReview": "-",
+        "aiClean": null,
+        "branch": "chore/changelog-0.21.2",
+        "updated": "2d",
+        "updatedAt": "2026-10-19T04:12:00Z",
+        "mergedAt": "2026-10-19T04:12:00Z",
+        "url": "https://github.com/hemsoft-dev/gh-x/pull/229"
+      },
+      {
+        "number": 228,
+        "issues": "-",
+        "title": "docs: record v0.21.1 release",
+        "author": "HemSoft",
+        "state": "merged",
+        "review": "-",
+        "approvals": 0,
+        "approvers": [],
+        "approvalsIncomplete": false,
+        "checks": "✓ 6/6",
+        "comments": "0",
+        "aiReview": "-",
+        "aiClean": null,
+        "branch": "docs/record-v0.21.1",
+        "updated": "3d",
+        "updatedAt": "2026-10-18T02:40:00Z",
+        "mergedAt": "2026-10-18T02:40:00Z",
+        "url": "https://github.com/hemsoft-dev/gh-x/pull/228"
+      }
+    ],
+    "mergedLimit": 5
+  },
+  "workflowRuns": [
+    {
+      "id": "18311000001",
+      "url": "https://github.com/hemsoft-dev/gh-x/actions/runs/18311000001",
+      "status": "success",
+      "rawStatus": "completed/success",
+      "title": "docs: record v0.21.2 release",
+      "workflow": "CI",
+      "branch": "main",
+      "event": "push",
+      "elapsed": "2m 41s",
+      "age": "2d",
+      "createdAt": "2026-10-19T04:12:30Z",
+      "startedAt": "2026-10-19T04:12:35Z",
+      "updatedAt": "2026-10-19T04:15:16Z"
+    }
+  ],
+  "sections": [
+    {
+      "name": "issues",
+      "status": "available",
+      "reason": "",
+      "cached": true,
+      "fetchedAt": "2026-10-21T06:29:18Z",
+      "cacheAgeSeconds": 42.0
+    },
+    {
+      "name": "pullRequests.open",
+      "status": "available",
+      "reason": "",
+      "cached": true,
+      "fetchedAt": "2026-10-21T06:29:18Z",
+      "cacheAgeSeconds": 42.0
+    },
+    {
+      "name": "pullRequests.merged",
+      "status": "available",
+      "reason": "",
+      "cached": true,
+      "fetchedAt": "2026-10-21T06:29:18Z",
+      "cacheAgeSeconds": 42.0
+    },
+    {
+      "name": "workflowRuns",
+      "status": "available",
+      "reason": "",
+      "cached": true,
+      "fetchedAt": "2026-10-21T06:29:18Z",
+      "cacheAgeSeconds": 42.0
+    }
+  ]
+}

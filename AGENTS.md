@@ -22,8 +22,10 @@ That way the app and `gs` can never disagree.
 
 ```text
 crates/
-  dashboard-core/   # Data model: board, repositories, status document. No UI, no GPUI dependency.
-  dashboard-app/    # GPUI views and the `project-dashboard` binary.
+  dashboard-core/   # Data model, no UI: the gh x status --json schema (status.rs), the config file (config.rs),
+                    # the status cache (cache.rs), running gh (source.rs), the parallel refresh (scheduler.rs)
+                    # and the board (lib.rs). Fixtures: tests/fixtures/status-*.json.
+  dashboard-app/    # GPUI views and the `project-dashboard` binary. `--demo` shows the fixtures.
 ```
 
 Keep logic that can be tested without a window in `dashboard-core`.
@@ -54,6 +56,8 @@ window opens on anyone's desktop.
 
 ## Tests
 
+- The status fixtures follow gh-x's `--json` schema version 1. When gh-x changes the schema, update the fixtures
+  from real `gh x status --json` output and the structs in `status.rs` together.
 - UI tests use `#[gpui_kit::test]` and in-process test windows (`src/ui_tests.rs`); they never open a desktop window
   or send OS input.
 - Name tests after the behavior they check (`empty_board_renders_its_empty_state`).

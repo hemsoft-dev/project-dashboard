@@ -1,0 +1,271 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-21T06:30:00Z",
+  "repository": {
+    "nameWithOwner": "hemsoft-dev/codexbar",
+    "rootPath": "/home/franz/github/hemsoft/codexbar",
+    "defaultBranch": "main"
+  },
+  "health": {
+    "defaultBranch": {
+      "status": "available",
+      "reason": "",
+      "clean": false,
+      "name": "main",
+      "checkedOut": true,
+      "upstream": "origin/main",
+      "synced": false,
+      "ahead": 0,
+      "behind": 3,
+      "changes": {
+        "clean": false,
+        "staged": 0,
+        "modified": 2,
+        "deleted": 0,
+        "renamed": 0,
+        "untracked": 1,
+        "conflicted": 0
+      }
+    },
+    "currentBranch": {
+      "status": "available",
+      "reason": "",
+      "clean": false,
+      "name": "feature/issue-231-tray",
+      "checkedOut": true,
+      "upstream": "origin/feature/issue-231-tray",
+      "synced": false,
+      "ahead": 2,
+      "behind": 0,
+      "changes": {
+        "clean": false,
+        "staged": 0,
+        "modified": 2,
+        "deleted": 0,
+        "renamed": 0,
+        "untracked": 1,
+        "conflicted": 0
+      }
+    },
+    "branches": {
+      "status": "available",
+      "reason": "",
+      "clean": false,
+      "local": 3,
+      "remote": 4,
+      "dangling": 1
+    },
+    "worktrees": {
+      "status": "available",
+      "reason": "",
+      "clean": false,
+      "total": 2,
+      "cleanupCandidates": 1,
+      "items": [
+        {
+          "path": "/home/franz/github/hemsoft/codexbar",
+          "head": "f74ca35c0c1b5c1f0d0f0ad3e1e0f2b7c9a8d6e1",
+          "branch": "feature/issue-231-tray",
+          "detached": false,
+          "detachedMerged": false,
+          "locked": false,
+          "prunable": false,
+          "prunableReason": "",
+          "primary": true,
+          "current": true,
+          "exists": true,
+          "clean": true,
+          "cleanKnown": true,
+          "cleanupCandidate": false,
+          "cleanupReason": ""
+        },
+        {
+          "path": "/home/franz/github/hemsoft/codexbar.worktrees/pr-224",
+          "head": "f74ca35c0c1b5c1f0d0f0ad3e1e0f2b7c9a8d6e1",
+          "branch": "fix/old",
+          "detached": false,
+          "detachedMerged": false,
+          "locked": false,
+          "prunable": false,
+          "prunableReason": "",
+          "primary": false,
+          "current": false,
+          "exists": true,
+          "clean": true,
+          "cleanKnown": true,
+          "cleanupCandidate": true,
+          "cleanupReason": "branch merged"
+        }
+      ]
+    },
+    "stashes": {
+      "status": "available",
+      "reason": "",
+      "clean": false,
+      "count": 2
+    }
+  },
+  "issues": [
+    {
+      "number": 231,
+      "pullRequests": "#232",
+      "parent": "-",
+      "subIssues": "-",
+      "title": "Show the tray icon on Linux",
+      "author": "Franz Hemmer",
+      "state": "open",
+      "labels": "enhancement",
+      "assignees": "",
+      "updated": "5m",
+      "updatedAt": "2026-10-21T06:25:00Z",
+      "url": "https://github.com/hemsoft-dev/codexbar/issues/231"
+    },
+    {
+      "number": 219,
+      "pullRequests": "-",
+      "parent": "#200",
+      "subIssues": "-",
+      "title": "Remember the window placement per display",
+      "author": "Franz Hemmer",
+      "state": "open",
+      "labels": "bug",
+      "assignees": "HemSoft",
+      "updated": "1d",
+      "updatedAt": "2026-10-20T06:00:00Z",
+      "url": "https://github.com/hemsoft-dev/codexbar/issues/219"
+    }
+  ],
+  "pullRequests": {
+    "open": [
+      {
+        "number": 232,
+        "issues": "#231",
+        "title": "feat: show the tray icon on Linux",
+        "author": "HemSoft",
+        "state": "open",
+        "review": "changes requested",
+        "approvals": 0,
+        "approvers": [],
+        "approvalsIncomplete": false,
+        "checks": "✗ 4/6",
+        "comments": "3",
+        "aiReview": "✗ 2 open",
+        "aiClean": false,
+        "branch": "feature/issue-231-tray",
+        "updated": "7m",
+        "updatedAt": "2026-10-21T06:23:00Z",
+        "mergedAt": null,
+        "url": "https://github.com/hemsoft-dev/codexbar/pull/232"
+      },
+      {
+        "number": 230,
+        "issues": "-",
+        "title": "chore(deps): bump the cargo group with 3 updates",
+        "author": "dependabot",
+        "state": "open",
+        "review": "-",
+        "approvals": 0,
+        "approvers": [],
+        "approvalsIncomplete": false,
+        "checks": "● 2/6",
+        "comments": "0",
+        "aiReview": "✓ clean",
+        "aiClean": true,
+        "branch": "dependabot/cargo/cargo-1a2b3c",
+        "updated": "1h",
+        "updatedAt": "2026-10-21T05:30:00Z",
+        "mergedAt": null,
+        "url": "https://github.com/hemsoft-dev/codexbar/pull/230"
+      }
+    ],
+    "merged": [
+      {
+        "number": 229,
+        "issues": "#228",
+        "title": "fix: keep the window on its display",
+        "author": "HemSoft",
+        "state": "merged",
+        "review": "approved",
+        "approvals": 1,
+        "approvers": [],
+        "approvalsIncomplete": false,
+        "checks": "✓ 6/6",
+        "comments": "2",
+        "aiReview": "✓ clean",
+        "aiClean": true,
+        "branch": "fix/issue-228-display",
+        "updated": "5h",
+        "updatedAt": "2026-10-21T01:30:00Z",
+        "mergedAt": "2026-10-21T01:30:00Z",
+        "url": "https://github.com/hemsoft-dev/codexbar/pull/229"
+      }
+    ],
+    "mergedLimit": 5
+  },
+  "workflowRuns": [
+    {
+      "id": "18312000002",
+      "url": "https://github.com/hemsoft-dev/codexbar/actions/runs/18312000002",
+      "status": "failure",
+      "rawStatus": "completed/failure",
+      "title": "feat: show the tray icon on Linux",
+      "workflow": "CI",
+      "branch": "feature/issue-231-tray",
+      "event": "pull_request",
+      "elapsed": "6m 02s",
+      "age": "7m",
+      "createdAt": "2026-10-21T06:23:00Z",
+      "startedAt": "2026-10-21T06:23:05Z",
+      "updatedAt": "2026-10-21T06:29:07Z"
+    },
+    {
+      "id": "18312000001",
+      "url": "https://github.com/hemsoft-dev/codexbar/actions/runs/18312000001",
+      "status": "in_progress",
+      "rawStatus": "in_progress",
+      "title": "chore(deps): bump the cargo group with 3 updates",
+      "workflow": "CI",
+      "branch": "dependabot/cargo/cargo-1a2b3c",
+      "event": "pull_request",
+      "elapsed": "4m 10s",
+      "age": "4m",
+      "createdAt": "2026-10-21T06:26:00Z",
+      "startedAt": "2026-10-21T06:26:02Z",
+      "updatedAt": "2026-10-21T06:30:00Z"
+    }
+  ],
+  "sections": [
+    {
+      "name": "issues",
+      "status": "available",
+      "reason": "",
+      "cached": false,
+      "fetchedAt": "2026-10-21T06:29:18Z",
+      "cacheAgeSeconds": 0
+    },
+    {
+      "name": "pullRequests.open",
+      "status": "available",
+      "reason": "",
+      "cached": false,
+      "fetchedAt": "2026-10-21T06:29:18Z",
+      "cacheAgeSeconds": 0
+    },
+    {
+      "name": "pullRequests.merged",
+      "status": "available",
+      "reason": "",
+      "cached": false,
+      "fetchedAt": "2026-10-21T06:29:18Z",
+      "cacheAgeSeconds": 0
+    },
+    {
+      "name": "workflowRuns",
+      "status": "available",
+      "reason": "",
+      "cached": false,
+      "fetchedAt": "2026-10-21T06:29:18Z",
+      "cacheAgeSeconds": 0
+    }
+  ]
+}

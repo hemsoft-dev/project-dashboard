@@ -431,6 +431,45 @@ fn find_links_each_checkout_while_the_server_is_listening() {
 }
 
 #[test]
+fn homes_are_searched_from_the_setting_to_t3s_defaults() {
+    let home = Path::new("/home/franz");
+    assert_eq!(
+        t3::candidate_homes(Some(Path::new("/cfg/t3")), Some(Path::new("/env/t3")), home),
+        [
+            PathBuf::from("/cfg/t3"),
+            PathBuf::from("/env/t3"),
+            home.join(".t3"),
+            home.join(".t3-server"),
+        ]
+    );
+    assert_eq!(
+        t3::candidate_homes(None, None, home),
+        [home.join(".t3"), home.join(".t3-server")]
+    );
+}
+
+#[test]
+fn the_home_with_a_running_server_wins() {
+    let scratch = Scratch::new("homes");
+    let default = scratch.0.join(".t3");
+    let server = scratch.0.join(".t3-server");
+    // A stock ~/.t3 with only logs (as on this laptop), and a --base-dir home with the server's files.
+    std::fs::create_dir_all(default.join("userdata").join("logs")).unwrap();
+    std::fs::create_dir_all(server.join("userdata")).unwrap();
+    database(&server.join("userdata"), &[], &[]);
+    let homes = [default.clone(), server.clone()];
+    assert_eq!(t3::resolve_userdata(&homes), server.join("userdata"));
+    // When both have a database, the one with a running server's runtime file wins, wherever it is in the order.
+    database(&default.join("userdata"), &[], &[]);
+    assert_eq!(t3::resolve_userdata(&homes), default.join("userdata"));
+    userdata(&server.join("userdata"), "http://127.0.0.1:3773");
+    assert_eq!(t3::resolve_userdata(&homes), server.join("userdata"));
+    // Nothing anywhere: the first home, which find() then reports as not installed.
+    let empty = [scratch.0.join("nothing")];
+    assert_eq!(t3::resolve_userdata(&empty), scratch.0.join("nothing").join("userdata"));
+}
+
+#[test]
 fn reasons_read_as_tooltips() {
     assert_eq!(NoThread::NotRunning.to_string(), "T3 Code isn't running");
     assert_eq!(

@@ -94,7 +94,7 @@ fn live_view(window: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<BoardView
             columns: UiState::load(&dir).columns,
             ui_state_dir: Some(dir.clone()),
             threads: Arc::new(t3::LocalT3 {
-                userdata: t3::default_userdata(),
+                home: config.t3_home.clone(),
             }),
         },
         window,

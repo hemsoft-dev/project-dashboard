@@ -120,9 +120,10 @@ every GitHub section loaded.
 - **Open the T3 Code thread** working on a repository with the robot button left of its refresh button. It opens
   the thread in the local T3 Code server's web UI (`http://127.0.0.1:3773/<environment>/<thread>` on a default
   install) in your browser; a browser that hasn't paired with that server shows T3's pairing page first. The thread
-  is the newest open top-level thread of the T3 project whose folder is the checkout, a running one first. The
-  dashboard finds it by reading T3's state database under `~/.t3-server/userdata` (or `T3CODE_USERDATA`) read-only,
-  at startup and after every refresh; T3 offers no other way to ask. When there is nothing to open, the button is
+  is the newest open top-level thread of the T3 project whose folder is the checkout, a running one first. T3 offers
+  no other way to ask, so at startup and after every refresh the dashboard reads the state database in T3's
+  `userdata` folder, read-only. It looks in `t3_home` from `config.toml`, then T3's own `T3CODE_HOME`, then `~/.t3`
+  and `~/.t3-server`, preferring the one a server is running from. When there is nothing to open, the button is
   disabled and its tooltip says why: T3 isn't installed or running, has no project for the checkout, or has no open
   thread. The T3 desktop app has no way to open a thread from outside, so the browser it is.
 - **Refresh one** repository with its row's button. It runs `gh x status --json --refresh`, bypassing gh-x's cache.

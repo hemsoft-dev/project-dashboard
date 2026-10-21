@@ -57,12 +57,35 @@ impl std::fmt::Display for NoThread {
 /// What the dashboard can find out about each checkout's thread.
 pub type Lookup = Result<ThreadLink, NoThread>;
 
-/// T3's `userdata` folder: `T3CODE_USERDATA` when set (tests, other layouts), else `~/.t3-server/userdata`.
-pub fn default_userdata() -> PathBuf {
-    if let Some(dir) = std::env::var_os("T3CODE_USERDATA").filter(|dir| !dir.is_empty()) {
-        return PathBuf::from(dir);
+/// The T3 homes to look in, in order: the dashboard's `t3_home` setting, T3's own `T3CODE_HOME`, T3's default
+/// `~/.t3`, and `~/.t3-server`, where a server started with `--base-dir ~/.t3-server` keeps its data (as on the
+/// HemSoft machines). A server keeps its runtime files and state database in its home's `userdata` folder.
+pub fn candidate_homes(configured: Option<&Path>, t3code_home: Option<&Path>, home: &Path) -> Vec<PathBuf> {
+    let mut homes = Vec::new();
+    for dir in [configured, t3code_home].into_iter().flatten() {
+        if !dir.as_os_str().is_empty() {
+            homes.push(dir.to_owned());
+        }
     }
-    dirs::home_dir().unwrap_or_default().join(".t3-server").join("userdata")
+    homes.push(home.join(".t3"));
+    homes.push(home.join(".t3-server"));
+    homes.dedup();
+    homes
+}
+
+/// The `userdata` folder to read: the first home with a running server's files (`server-runtime.json` and the state
+/// database), else the first with a state database, else the first home's.
+pub fn resolve_userdata(homes: &[PathBuf]) -> PathBuf {
+    let userdata: Vec<PathBuf> = homes.iter().map(|home| home.join("userdata")).collect();
+    let has_db = |dir: &&PathBuf| dir.join(STATE_DB).is_file();
+    userdata
+        .iter()
+        .filter(has_db)
+        .find(|dir| dir.join("server-runtime.json").is_file())
+        .or_else(|| userdata.iter().find(has_db))
+        .or_else(|| userdata.first())
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// The local T3 server, as its `server-runtime.json` and `environment-id` describe it.
@@ -143,14 +166,22 @@ pub trait ThreadFinder: Send + Sync {
     fn find(&self, checkouts: &[PathBuf]) -> Vec<Lookup>;
 }
 
-/// The T3 Code server on this computer.
+/// The T3 Code server on this computer. Its home is resolved on every lookup, so a server started, moved or
+/// restarted after the dashboard is still found.
 pub struct LocalT3 {
-    pub userdata: PathBuf,
+    /// The dashboard's `t3_home` setting, if any.
+    pub home: Option<PathBuf>,
 }
 
 impl ThreadFinder for LocalT3 {
     fn find(&self, checkouts: &[PathBuf]) -> Vec<Lookup> {
-        find(&self.userdata, checkouts)
+        let t3code_home = std::env::var_os("T3CODE_HOME").map(PathBuf::from);
+        let homes = candidate_homes(
+            self.home.as_deref(),
+            t3code_home.as_deref(),
+            &dirs::home_dir().unwrap_or_default(),
+        );
+        find(&resolve_userdata(&homes), checkouts)
     }
 }
 

@@ -80,6 +80,7 @@ fn other_failures_keep_gh_first_line() {
 
 #[test]
 fn a_missing_gh_program_is_reported_as_gh_missing() {
+    let _processes = processes();
     let source = GhX {
         program: "gh-that-does-not-exist-anywhere".into(),
         ..GhX::default()
@@ -207,6 +208,14 @@ fn overlapping_refreshes_share_one_limit() {
     assert_eq!(fake.peak.load(Ordering::SeqCst), 1);
 }
 
+/// Held by every test that starts a process. Writing a script while another test forks lets the child inherit the
+/// still-open write handle, and executing the script then fails with "Text file busy" (ETXTBSY).
+static PROCESSES: Mutex<()> = Mutex::new(());
+
+fn processes() -> std::sync::MutexGuard<'static, ()> {
+    PROCESSES.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// A stand-in `gh`: a shell script that ignores its arguments.
 #[cfg(unix)]
 fn fake_gh(name: &str, body: &str) -> PathBuf {
@@ -222,6 +231,7 @@ fn fake_gh(name: &str, body: &str) -> PathBuf {
 #[cfg(unix)]
 #[test]
 fn a_stalled_gh_is_stopped_at_the_deadline() {
+    let _processes = processes();
     let source = GhX {
         program: fake_gh("stall", "sleep 30").into(),
         timeout: Duration::from_millis(300),
@@ -240,6 +250,7 @@ fn a_stalled_gh_is_stopped_at_the_deadline() {
 #[cfg(unix)]
 #[test]
 fn a_real_process_output_is_read_through_the_pipes() {
+    let _processes = processes();
     let fixture = std::env::temp_dir().join(format!("project-dashboard-fixture-{}.json", std::process::id()));
     std::fs::write(&fixture, CLEAN).unwrap();
     let source = GhX {

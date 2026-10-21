@@ -112,6 +112,10 @@ every GitHub section loaded.
   item, or a row's last activity, to open it in your browser.
 - **Sort** by update time with the **Updated** column header: newest first, then oldest first, then config order
   again. Repositories with nothing to date stay at the bottom either way.
+- **Resize** a column by dragging the border to the right of its header (Repository, PRs, Issues, Updated); last
+  activity takes the rest. Double-click a border to restore that column's default width. Widths are remembered in
+  `ui-state.json`, next to `config.toml`, and scale with the zoom. On a window too narrow for them, the repository
+  column gives way first, then the table scrolls sideways.
 - **Refresh all** with the title-bar button or **F5**. It uses gh-x's own cache when that is still fresh.
 - **Refresh one** repository with its row's button. It runs `gh x status --json --refresh`, bypassing gh-x's cache.
 - **Automatic refresh** runs every `refresh_minutes` (default 5).

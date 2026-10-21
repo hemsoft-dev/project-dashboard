@@ -18,6 +18,7 @@ use dashboard_core::APP_NAME;
 use dashboard_core::cache::StatusCache;
 use dashboard_core::config::{self, Config};
 use dashboard_core::source::{GhX, StatusSource};
+use dashboard_core::ui_state::UiState;
 use gpui_kit::component::TitleBar;
 use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
 
@@ -89,6 +90,8 @@ fn live_view(window: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<BoardView
             config_problem,
             config_path: Some(dir.join(config::FILE_NAME)),
             now: None,
+            columns: UiState::load(&dir).columns,
+            ui_state_dir: Some(dir.clone()),
         },
         window,
         cx,
@@ -109,6 +112,9 @@ fn demo_view(window: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<BoardView
             config_path: None,
             // The fixtures' clock, so the demo's ages read the same whenever it runs.
             now: Some(demo::fixture_now()),
+            // Like the zoom, the demo remembers its column widths.
+            columns: UiState::load(&config::default_dir()).columns,
+            ui_state_dir: Some(config::default_dir()),
         },
         window,
         cx,

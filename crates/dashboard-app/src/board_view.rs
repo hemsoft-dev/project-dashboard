@@ -192,7 +192,7 @@ impl BoardView {
         };
         // The button came up outside the window: the drag is over.
         if event.pressed_button != Some(MouseButton::Left) {
-            self.end_resize();
+            self.end_resize(cx);
             return;
         }
         let delta = (event.position.x - resize.start_x) / window.rem_size();
@@ -200,9 +200,11 @@ impl BoardView {
         cx.notify();
     }
 
-    fn end_resize(&mut self) {
+    /// Saves the widths and repaints, so the handle drops its dragging color.
+    fn end_resize(&mut self, cx: &mut Context<Self>) {
         if self.resizing.take().is_some() {
             self.save_columns();
+            cx.notify();
         }
     }
 
@@ -910,7 +912,7 @@ impl Render for BoardView {
             .on_action(cx.listener(|view, _: &Refresh, _, cx| view.refresh_all(cx)))
             // A column border drag follows the pointer anywhere in the window.
             .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, window, cx| view.drag_resize(event, window, cx)))
-            .on_mouse_up(MouseButton::Left, cx.listener(|view, _, _, _| view.end_resize()))
+            .on_mouse_up(MouseButton::Left, cx.listener(|view, _, _, cx| view.end_resize(cx)))
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)

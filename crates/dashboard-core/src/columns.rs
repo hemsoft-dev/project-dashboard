@@ -112,6 +112,8 @@ impl ColumnWidths {
         let mut widths = Self::default();
         for column in Column::ALL {
             if let Some(width) = value.and_then(|value| value.get(column.key())).and_then(Value::as_f64) {
+                // Bounded before the cast, so a huge saved width clamps to the maximum instead of becoming infinite.
+                let width = width.clamp(f64::from(-MAX_WIDTH), f64::from(MAX_WIDTH));
                 widths.set(column, width as f32);
             }
         }

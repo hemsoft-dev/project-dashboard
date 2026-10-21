@@ -148,6 +148,15 @@ fn a_malformed_or_out_of_range_column_width_falls_back_on_its_own() {
     );
     assert_eq!(state.columns.get(Column::Issues), MAX_WIDTH);
     assert_eq!(state.columns.get(Column::Updated), 7.0);
+    // Beyond what an f32 can hold: still the maximum, not the default.
+    std::fs::write(
+        scratch.0.join(STATE_FILE),
+        r#"{"columns": {"issues": 1e39, "updated": -1e39}}"#,
+    )
+    .unwrap();
+    let state = UiState::load(&scratch.0);
+    assert_eq!(state.columns.get(Column::Issues), MAX_WIDTH);
+    assert_eq!(state.columns.get(Column::Updated), Column::Updated.min_width());
     // Columns that aren't an object, and a file that isn't JSON at all, are the defaults.
     std::fs::write(scratch.0.join(STATE_FILE), r#"{"zoom": 1.1, "columns": [1, 2]}"#).unwrap();
     assert_eq!(UiState::load(&scratch.0).columns, ColumnWidths::default());

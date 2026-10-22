@@ -51,10 +51,12 @@ changed.
 
 ### Release a new version (maintainers)
 
-Set `version` under `[workspace.package]` in `Cargo.toml`, merge, then push a matching tag:
+Set `version` under `[workspace.package]` in `Cargo.toml`, merge, then push a matching tag from the merged `main`.
+This reads the version from `Cargo.toml`, so the tag always matches:
 
 ```sh
-git tag v0.2.0 && git push origin v0.2.0
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+git tag "v$version" && git push origin "v$version"
 ```
 
 The [Release workflow](.github/workflows/release.yml) builds `project-dashboard.exe` on `windows-latest`, checks it

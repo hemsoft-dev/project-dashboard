@@ -92,6 +92,19 @@ impl Limited {
 
 impl StatusSource for Limited {
     fn fetch(&self, checkout: &Path, refresh: bool) -> Result<StatusDocument, FetchError> {
+        self.fetch_if(checkout, refresh, &|| true)
+    }
+}
+
+impl Limited {
+    /// Waits for a slot, then fetches only if `still_wanted` holds at that moment: work queued behind the limit can
+    /// have become unwanted while it waited. An unwanted fetch gives its slot straight back and reports [`SKIPPED`].
+    pub fn fetch_if(
+        &self,
+        checkout: &Path,
+        refresh: bool,
+        still_wanted: &dyn Fn() -> bool,
+    ) -> Result<StatusDocument, FetchError> {
         {
             let mut running = self.running.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             while *running >= self.limit() {
@@ -99,6 +112,12 @@ impl StatusSource for Limited {
                     .freed
                     .wait(running)
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            if !still_wanted() {
+                // Unwanted after the wait: the slot was never taken, so the next waiter can have it.
+                drop(running);
+                self.freed.notify_one();
+                return Err(FetchError::Failed(SKIPPED.to_owned()));
             }
             *running += 1;
         }
@@ -134,21 +153,23 @@ impl Wanted {
 /// The error a skipped fetch reports; its outcome is for a card that is gone, so nothing shows it.
 pub const SKIPPED: &str = "no longer in the config";
 
-/// A source that runs `inner` only for checkouts still wanted: as the card generations a refresh started with, when
-/// given, else simply still on the board. The board puts one inside its limiter, so a fetch waiting for a slot is
-/// skipped too, and one per refresh outside it, so queued work never takes a slot.
+/// A refresh's view of the limiter: each fetch runs only if its checkout is still on the board as the card generation
+/// the refresh started with, checked before it queues for a slot and again once it has one, so a removed or replaced
+/// card's work never runs gh or holds a slot.
 pub struct OnlyWanted {
-    pub inner: Arc<dyn StatusSource>,
+    pub limiter: Arc<Limited>,
     pub wanted: Wanted,
-    /// The generations the refresh started with; empty means any generation.
+    /// The generations the refresh started with.
     pub generations: std::collections::HashMap<PathBuf, u64>,
 }
 
 impl StatusSource for OnlyWanted {
     fn fetch(&self, checkout: &Path, refresh: bool) -> Result<StatusDocument, FetchError> {
-        if !self.wanted.wants(checkout, self.generations.get(checkout).copied()) {
+        let generation = self.generations.get(checkout).copied();
+        let still_wanted = || self.wanted.wants(checkout, generation);
+        if !still_wanted() {
             return Err(FetchError::Failed(SKIPPED.to_owned()));
         }
-        self.inner.fetch(checkout, refresh)
+        self.limiter.fetch_if(checkout, refresh, &still_wanted)
     }
 }

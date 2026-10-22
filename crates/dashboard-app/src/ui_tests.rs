@@ -1304,10 +1304,13 @@ fn open_watching(
     )
 }
 
-/// Lets the config poll and any refresh it starts run to the end.
+/// Lets two config polls (a change applies once two polls read it the same) and any refresh they start run to the
+/// end.
 async fn after_poll(cx: &mut TestAppContext, handle: AnyWindowHandle, view: &Entity<BoardView>) {
-    cx.executor().advance_clock(Duration::from_secs(3));
-    cx.run_until_parked();
+    for _ in 0..3 {
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+    }
     settle(cx, handle, view).await;
 }
 
@@ -1494,6 +1497,30 @@ async fn a_shorter_refresh_interval_applies_without_waiting_out_the_old_one(cx: 
         1,
         "refreshed on the new one-minute schedule"
     );
+}
+
+#[gpui_kit::test]
+async fn a_momentarily_empty_config_does_not_empty_the_table(cx: &mut TestAppContext) {
+    let config = ConfigDir::new("transient", &["/demo/gh-x", "/demo/codexbar"]);
+    let (handle, view) = open_watching(cx, &config, &["/demo/gh-x", "/demo/codexbar"]);
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    // An editor truncates the file and a poll catches it empty, which is valid TOML with no repositories.
+    std::fs::write(config.0.join("config.toml"), "").unwrap();
+    cx.executor().advance_clock(Duration::from_secs(2));
+    cx.run_until_parked();
+    // The save completes before the next poll: the empty read was never applied.
+    config.write(&["/demo/gh-x", "/demo/codexbar", "/demo/minibot"]);
+    after_poll(cx, handle, &view).await;
+    assert_eq!(listed(cx, &view), ["gh-x", "codexbar", "minibot"]);
+    assert!(cx.update(|cx| {
+        view.read(cx)
+            .board()
+            .card(Path::new("/demo/gh-x"))
+            .unwrap()
+            .document
+            .is_some()
+    }));
 }
 
 #[gpui_kit::test]

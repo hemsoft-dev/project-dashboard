@@ -299,8 +299,9 @@ fn queued_work_for_a_removed_or_replaced_checkout_never_runs() {
     let wanted = scheduler::Wanted::default();
     wanted.set([(PathBuf::from("/src/a"), 1), (PathBuf::from("/src/b"), 1)]);
     let started: HashMap<PathBuf, u64> = [(PathBuf::from("/src/a"), 1), (PathBuf::from("/src/b"), 1)].into();
+    let limiter = Arc::new(scheduler::Limited::new(fake.clone(), 1));
     let gated = scheduler::OnlyWanted {
-        inner: fake.clone(),
+        limiter: limiter.clone(),
         wanted: wanted.clone(),
         generations: started,
     };
@@ -311,13 +312,23 @@ fn queued_work_for_a_removed_or_replaced_checkout_never_runs() {
         assert!(matches!(result, Err(FetchError::Failed(reason)) if reason == scheduler::SKIPPED));
     }
     assert!(fake.refreshes.lock().unwrap().is_empty(), "gh never ran");
-    // With no starting generations, only presence counts (the check inside the limiter).
-    let present = scheduler::OnlyWanted {
-        inner: fake.clone(),
-        wanted,
-        generations: HashMap::new(),
+    // A refresh for the new card runs.
+    let current = scheduler::OnlyWanted {
+        limiter: limiter.clone(),
+        wanted: wanted.clone(),
+        generations: [(PathBuf::from("/src/a"), 2)].into(),
     };
-    assert!(present.fetch(std::path::Path::new("/src/a"), false).is_ok());
-    assert!(present.fetch(std::path::Path::new("/src/b"), false).is_err());
+    assert!(current.fetch(std::path::Path::new("/src/a"), false).is_ok());
     assert_eq!(fake.refreshes.lock().unwrap().len(), 1);
+    // Work that becomes unwanted while it waits for a slot is skipped once it gets one, and frees it at once.
+    let became_unwanted = std::sync::atomic::AtomicBool::new(false);
+    let result = limiter.fetch_if(std::path::Path::new("/src/a"), false, &|| {
+        !became_unwanted.swap(true, Ordering::SeqCst)
+    });
+    assert!(result.is_ok(), "first check passes");
+    let result = limiter.fetch_if(std::path::Path::new("/src/a"), false, &|| false);
+    assert!(matches!(result, Err(FetchError::Failed(reason)) if reason == scheduler::SKIPPED));
+    assert_eq!(fake.refreshes.lock().unwrap().len(), 2, "the skipped fetch never ran");
+    // Its slot is free: with a limit of 1, another fetch still runs.
+    assert!(limiter.fetch(std::path::Path::new("/src/a"), false).is_ok());
 }

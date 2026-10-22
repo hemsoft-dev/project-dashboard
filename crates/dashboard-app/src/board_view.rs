@@ -98,8 +98,7 @@ struct Resize {
 pub struct BoardView {
     board: Board,
     cache: StatusCache,
-    /// The status source behind `limiter`, which caps every refresh at `parallelism` gh processes together.
-    source: Arc<dyn StatusSource>,
+    /// Caps every refresh, together, at `parallelism` gh processes.
     limiter: Arc<scheduler::Limited>,
     /// The cards on the board, shared with running refreshes so they skip removed checkouts.
     wanted: scheduler::Wanted,
@@ -136,20 +135,12 @@ impl BoardView {
         window.focus(&focus, cx);
         // One limit for every refresh, so overlapping refreshes never run more than `parallelism` gh processes.
         let wanted = scheduler::Wanted::default();
-        // Inside the limiter, a fetch that waited for a slot is skipped if its checkout left the board meanwhile.
-        let source: Arc<dyn StatusSource> = Arc::new(scheduler::OnlyWanted {
-            inner: source,
-            wanted: wanted.clone(),
-            generations: Default::default(),
-        });
         let limiter = Arc::new(scheduler::Limited::new(source, options.parallelism));
-        let source: Arc<dyn StatusSource> = limiter.clone();
         let columns = options.columns;
         let config_file = options.config_dir.as_deref().map(ConfigFile::new);
         let mut view = Self {
             board: Board::new(checkouts, &cache),
             cache,
-            source,
             limiter,
             wanted,
             auto_schedule: 0,
@@ -383,9 +374,15 @@ impl BoardView {
             loop {
                 cx.background_executor().timer(interval).await;
                 let Ok(current) = this.update(cx, |view, cx| {
+                    if view.auto_schedule != schedule {
+                        return false;
+                    }
+                    // An edit saved since the last poll can change the interval: read it first, and refresh only if
+                    // this timer is still the current schedule afterwards.
+                    view.reload_config(cx);
                     let current = view.auto_schedule == schedule;
                     if current {
-                        view.refresh_all(cx);
+                        view.refresh_idle(cx);
                     }
                     current
                 }) else {
@@ -454,9 +451,19 @@ impl BoardView {
     /// Refreshes every card that isn't already refreshing, from gh-x's own cache when it is fresh. The config file is
     /// read first, so the refresh covers the current list.
     pub fn refresh_all(&mut self, cx: &mut Context<Self>) {
-        if let Some(result) = self.config_file.as_mut().map(ConfigFile::reload) {
+        self.reload_config(cx);
+        self.refresh_idle(cx);
+    }
+
+    /// Applies config.toml now if it changed, for a refresh that's about to start.
+    fn reload_config(&mut self, cx: &mut Context<Self>) {
+        if let Some(result) = self.config_file.as_mut().and_then(ConfigFile::reload) {
             self.apply_config(result, cx);
         }
+    }
+
+    /// Refreshes every card that isn't already refreshing.
+    fn refresh_idle(&mut self, cx: &mut Context<Self>) {
         let idle: Vec<PathBuf> = self
             .board
             .cards()
@@ -479,10 +486,10 @@ impl BoardView {
             return;
         }
         let generations = self.board.start_refresh(&checkouts);
-        // Outside the limiter, queued work for a checkout removed (or removed and added back) since now is skipped
-        // without taking a slot.
+        // Work for a checkout removed (or removed and added back) since now is skipped, before it queues for a slot
+        // and again once it has one, so it never runs gh or holds a slot.
         let source: Arc<dyn StatusSource> = Arc::new(scheduler::OnlyWanted {
-            inner: Arc::clone(&self.source),
+            limiter: Arc::clone(&self.limiter),
             wanted: self.wanted.clone(),
             generations: generations.clone(),
         });

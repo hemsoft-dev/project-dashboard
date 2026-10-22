@@ -160,14 +160,24 @@ pub fn discover(root: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// Notices edits to `config.toml` while the app runs (#21) by comparing its bytes with the last read. The file is a
-/// few hundred bytes, so reading it every couple of seconds is cheap, and unlike a timestamp and size it can't miss a
-/// same-length edit on a file system with coarse timestamps. An unchanged file is never parsed again.
+/// Notices edits to `config.toml` while the app runs (#21) by comparing its bytes with the last applied read. The
+/// file is a few hundred bytes, so reading it every couple of seconds is cheap, and unlike a timestamp and size it
+/// can't miss a same-length edit. An unchanged file is never parsed again.
+///
+/// A change is applied only once it reads the same twice, so an editor that saves by truncating the file and then
+/// writing it can't have its momentary empty file (valid TOML with no repositories) taken as the new config and empty
+/// the table. The poll confirms on its next read; a refresh, which can't wait, reads again after a short pause.
 #[derive(Debug)]
 pub struct ConfigFile {
     dir: PathBuf,
+    /// The bytes last applied; `None` when the file couldn't be read.
     last: Option<Vec<u8>>,
+    /// A different read waiting for the next poll to confirm it.
+    pending: Option<Option<Vec<u8>>>,
 }
+
+/// How long a refresh waits before reading a changed file a second time.
+pub const CONFIRM_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
 impl ConfigFile {
     /// Watches `dir/config.toml`, taking the file as it is now as already read.
@@ -175,6 +185,7 @@ impl ConfigFile {
         let mut file = Self {
             dir: dir.to_owned(),
             last: None,
+            pending: None,
         };
         file.last = file.contents();
         file
@@ -184,37 +195,51 @@ impl ConfigFile {
         std::fs::read(self.dir.join(FILE_NAME)).ok()
     }
 
-    /// The file's new contents if it changed (or appeared, or went away) since the last call, else `None`.
+    /// For the periodic poll: the file's new config once a change has read the same on two polls in a row, else
+    /// `None`.
     pub fn changed(&mut self) -> Option<Result<Config, ConfigError>> {
-        let read = std::fs::read(self.dir.join(FILE_NAME));
-        if read.as_ref().ok() == self.last.as_ref() {
+        let read = self.contents();
+        if read == self.last {
+            self.pending = None;
             return None;
         }
+        if self.pending.as_ref() != Some(&read) {
+            self.pending = Some(read);
+            return None;
+        }
+        self.pending = None;
         Some(self.take(read))
     }
 
-    /// The file's contents now, whether or not it changed, for a refresh to start from.
-    pub fn reload(&mut self) -> Result<Config, ConfigError> {
-        let read = std::fs::read(self.dir.join(FILE_NAME));
-        self.take(read)
+    /// For a refresh: the file's new config if it changed and reads the same again after [`CONFIRM_DELAY`], else
+    /// `None`. A change still being written is left for the poll to confirm.
+    pub fn reload(&mut self) -> Option<Result<Config, ConfigError>> {
+        let read = self.contents();
+        if read == self.last {
+            return None;
+        }
+        std::thread::sleep(CONFIRM_DELAY);
+        if self.contents() != read {
+            return None;
+        }
+        self.pending = None;
+        Some(self.take(read))
     }
 
-    /// Parses exactly the bytes that were read and remembers them, so a save that overlaps the read can't leave the
-    /// remembered contents and the reported result describing different versions of the file.
-    fn take(&mut self, read: std::io::Result<Vec<u8>>) -> Result<Config, ConfigError> {
+    /// Parses exactly the bytes that were compared and remembers them as applied.
+    fn take(&mut self, read: Option<Vec<u8>>) -> Result<Config, ConfigError> {
         let path = self.dir.join(FILE_NAME);
-        let bytes = match read {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                self.last = None;
-                return Err(ConfigError::Read(path, err));
-            }
+        self.last = read.clone();
+        let Some(bytes) = read else {
+            // Read once more for the reason; the bytes compared were "unreadable", whatever the reason now.
+            let err = std::fs::read(&path)
+                .err()
+                .unwrap_or_else(|| std::io::Error::other("the file changed while being read"));
+            return Err(ConfigError::Read(path, err));
         };
-        let result = match std::str::from_utf8(&bytes) {
+        match std::str::from_utf8(&bytes) {
             Ok(text) => Config::parse(text, &path),
             Err(err) => Err(ConfigError::Parse(path, err.to_string())),
-        };
-        self.last = Some(bytes);
-        result
+        }
     }
 }

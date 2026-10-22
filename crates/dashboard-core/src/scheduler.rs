@@ -108,3 +108,47 @@ impl StatusSource for Limited {
         result
     }
 }
+
+/// The checkouts the board currently shows, by card generation, shared with running refreshes (#21). A refresh
+/// started before a config edit skips the checkouts the edit removed instead of running gh for them.
+#[derive(Clone, Debug, Default)]
+pub struct Wanted(Arc<Mutex<std::collections::HashMap<PathBuf, u64>>>);
+
+impl Wanted {
+    /// Replaces the wanted set with these (checkout, generation) pairs.
+    pub fn set(&self, cards: impl IntoIterator<Item = (PathBuf, u64)>) {
+        *self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = cards.into_iter().collect();
+    }
+
+    /// Whether `checkout` is still on the board, as card `generation` when one is given.
+    pub fn wants(&self, checkout: &Path, generation: Option<u64>) -> bool {
+        let wanted = self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        match (wanted.get(checkout), generation) {
+            (Some(current), Some(generation)) => *current == generation,
+            (Some(_), None) => true,
+            (None, _) => false,
+        }
+    }
+}
+
+/// The error a skipped fetch reports; its outcome is for a card that is gone, so nothing shows it.
+pub const SKIPPED: &str = "no longer in the config";
+
+/// A source that runs `inner` only for checkouts still wanted: as the card generations a refresh started with, when
+/// given, else simply still on the board. The board puts one inside its limiter, so a fetch waiting for a slot is
+/// skipped too, and one per refresh outside it, so queued work never takes a slot.
+pub struct OnlyWanted {
+    pub inner: Arc<dyn StatusSource>,
+    pub wanted: Wanted,
+    /// The generations the refresh started with; empty means any generation.
+    pub generations: std::collections::HashMap<PathBuf, u64>,
+}
+
+impl StatusSource for OnlyWanted {
+    fn fetch(&self, checkout: &Path, refresh: bool) -> Result<StatusDocument, FetchError> {
+        if !self.wanted.wants(checkout, self.generations.get(checkout).copied()) {
+            return Err(FetchError::Failed(SKIPPED.to_owned()));
+        }
+        self.inner.fetch(checkout, refresh)
+    }
+}

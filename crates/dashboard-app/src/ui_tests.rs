@@ -1311,6 +1311,20 @@ async fn after_poll(cx: &mut TestAppContext, handle: AnyWindowHandle, view: &Ent
     settle(cx, handle, view).await;
 }
 
+/// Keeps the test clock and the real fetch threads going until `done` holds, for up to about ten seconds of real
+/// time: under a loaded test run the fetch threads can outlast `settle`'s budget.
+fn until(cx: &mut TestAppContext, mut done: impl FnMut(&mut TestAppContext) -> bool) {
+    for _ in 0..2000 {
+        if done(cx) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+    }
+    assert!(done(cx), "timed out waiting");
+}
+
 fn listed(cx: &mut TestAppContext, view: &Entity<BoardView>) -> Vec<String> {
     cx.update(|cx| view.read(cx).board().checkouts())
         .iter()
@@ -1399,11 +1413,15 @@ async fn a_removed_repository_leaves_the_status_cache_at_once(cx: &mut TestAppCo
     );
     cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
     settle(cx, handle, &view).await;
-    after_poll(cx, handle, &view).await;
-    assert!(StatusCache::load(&config.0).get(Path::new("/demo/codexbar")).is_some());
+    until(cx, |_| {
+        StatusCache::load(&config.0).get(Path::new("/demo/codexbar")).is_some()
+    });
     // Automatic refresh is off in this config: removing a repository alone must still prune the cache file.
     config.write(&["/demo/gh-x"]);
     after_poll(cx, handle, &view).await;
+    until(cx, |_| {
+        StatusCache::load(&config.0).get(Path::new("/demo/codexbar")).is_none()
+    });
     let cache = StatusCache::load(&config.0);
     assert!(cache.get(Path::new("/demo/codexbar")).is_none());
     assert!(cache.get(Path::new("/demo/gh-x")).is_some());
@@ -1443,6 +1461,39 @@ repositories = [\"/demo/gh-x\"]
     }
     settle(cx, handle, &view).await;
     assert!(source.0.lock().unwrap().is_empty(), "no refresh at the old deadline");
+}
+
+#[gpui_kit::test]
+async fn a_shorter_refresh_interval_applies_without_waiting_out_the_old_one(cx: &mut TestAppContext) {
+    let config = ConfigDir::new("interval", &[]);
+    config.write_text("refresh_minutes = 5\nrepositories = [\"/demo/gh-x\"]\n");
+    let source = Arc::new(Recording::default());
+    let (handle, view) = open_board(
+        cx,
+        vec![PathBuf::from("/demo/gh-x")],
+        StatusCache::default(),
+        source.clone(),
+        Options {
+            config_dir: Some(config.0.clone()),
+            auto_refresh: Some(Duration::from_secs(300)),
+            ..options()
+        },
+    );
+    cx.run_until_parked();
+    // During the five-minute wait the file asks for one minute.
+    config.write_text("refresh_minutes = 1\nrepositories = [\"/demo/gh-x\"]\n");
+    after_poll(cx, handle, &view).await;
+    for _ in 0..14 {
+        cx.executor().advance_clock(Duration::from_secs(5));
+        cx.run_until_parked();
+    }
+    settle(cx, handle, &view).await;
+    until(cx, |_| !source.0.lock().unwrap().is_empty());
+    assert_eq!(
+        source.0.lock().unwrap().len(),
+        1,
+        "refreshed on the new one-minute schedule"
+    );
 }
 
 #[gpui_kit::test]

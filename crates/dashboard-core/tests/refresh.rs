@@ -291,3 +291,33 @@ fn a_changed_limit_applies_to_every_refresh_that_shares_it() {
     limited.set_limit(10_000);
     assert_eq!(limited.limit(), scheduler::MAX_PARALLELISM);
 }
+
+#[test]
+fn queued_work_for_a_removed_or_replaced_checkout_never_runs() {
+    use std::collections::HashMap;
+    let fake = Arc::new(Fake::default());
+    let wanted = scheduler::Wanted::default();
+    wanted.set([(PathBuf::from("/src/a"), 1), (PathBuf::from("/src/b"), 1)]);
+    let started: HashMap<PathBuf, u64> = [(PathBuf::from("/src/a"), 1), (PathBuf::from("/src/b"), 1)].into();
+    let gated = scheduler::OnlyWanted {
+        inner: fake.clone(),
+        wanted: wanted.clone(),
+        generations: started,
+    };
+    // The config drops b, and a is removed and added back as a new card.
+    wanted.set([(PathBuf::from("/src/a"), 2)]);
+    for checkout in ["/src/a", "/src/b"] {
+        let result = gated.fetch(std::path::Path::new(checkout), false);
+        assert!(matches!(result, Err(FetchError::Failed(reason)) if reason == scheduler::SKIPPED));
+    }
+    assert!(fake.refreshes.lock().unwrap().is_empty(), "gh never ran");
+    // With no starting generations, only presence counts (the check inside the limiter).
+    let present = scheduler::OnlyWanted {
+        inner: fake.clone(),
+        wanted,
+        generations: HashMap::new(),
+    };
+    assert!(present.fetch(std::path::Path::new("/src/a"), false).is_ok());
+    assert!(present.fetch(std::path::Path::new("/src/b"), false).is_err());
+    assert_eq!(fake.refreshes.lock().unwrap().len(), 1);
+}

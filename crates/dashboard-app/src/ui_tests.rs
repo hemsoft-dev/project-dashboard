@@ -1366,6 +1366,24 @@ async fn a_repository_removed_from_the_config_disappears(cx: &mut TestAppContext
 }
 
 #[gpui_kit::test]
+async fn a_lookup_running_during_a_removal_does_not_bring_the_repository_back(cx: &mut TestAppContext) {
+    let config = ConfigDir::new("removal-lookup", &["/demo/gh-x", "/demo/codexbar"]);
+    let (handle, view) = open_watching(cx, &config, &["/demo/gh-x", "/demo/codexbar"]);
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    // Start a lookup, then remove codexbar before it lands.
+    cx.update(|cx| view.update(cx, |view, cx| view.find_threads(cx)));
+    config.write(&["/demo/gh-x"]);
+    cx.update(|cx| view.update(cx, |view, cx| view.check_config(cx)));
+    after_poll(cx, handle, &view).await;
+    cx.update(|cx| {
+        let view = view.read(cx);
+        assert!(view.thread(Path::new("/demo/codexbar")).is_none());
+        assert!(view.thread(Path::new("/demo/gh-x")).is_some());
+    });
+}
+
+#[gpui_kit::test]
 async fn refresh_all_reads_the_config_first(cx: &mut TestAppContext) {
     let config = ConfigDir::new("refresh", &["/demo/gh-x"]);
     let (handle, view) = open_watching(cx, &config, &["/demo/gh-x"]);

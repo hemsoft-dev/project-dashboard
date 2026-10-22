@@ -100,9 +100,9 @@ struct Resize {
 pub struct BoardView {
     board: Board,
     cache: StatusCache,
-    /// `inner`, limited to `parallelism` gh processes at once.
+    /// The status source behind `limiter`, which caps every refresh at `parallelism` gh processes together.
     source: Arc<dyn StatusSource>,
-    inner: Arc<dyn StatusSource>,
+    limiter: Arc<scheduler::Limited>,
     config_file: Option<ConfigFile>,
     options: Options,
     /// Expanded rows, by checkout, so expansion survives refreshes and re-sorting.
@@ -133,15 +133,15 @@ impl BoardView {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         // One limit for every refresh, so overlapping refreshes never run more than `parallelism` gh processes.
-        let inner = source;
-        let source: Arc<dyn StatusSource> = Arc::new(scheduler::Limited::new(Arc::clone(&inner), options.parallelism));
+        let limiter = Arc::new(scheduler::Limited::new(source, options.parallelism));
+        let source: Arc<dyn StatusSource> = limiter.clone();
         let columns = options.columns;
         let config_file = options.config_dir.as_deref().map(ConfigFile::new);
         let mut view = Self {
             board: Board::new(checkouts, &cache),
             cache,
             source,
-            inner,
+            limiter,
             config_file,
             options,
             expanded: HashSet::new(),
@@ -388,17 +388,23 @@ impl BoardView {
             }
         };
         self.options.config_problem = None;
+        let before = self.board.cards().len();
         let added = self.board.set_checkouts(&config.repositories, &self.cache);
         let present: HashSet<PathBuf> = self.board.checkouts().into_iter().collect();
         self.expanded.retain(|checkout| present.contains(checkout));
         self.threads.retain(|checkout, _| present.contains(checkout));
+        // One limiter for all refreshes, old and new, so a lower limit holds as soon as running fetches finish.
         if config.parallelism != self.options.parallelism {
             self.options.parallelism = config.parallelism;
-            self.source = Arc::new(scheduler::Limited::new(Arc::clone(&self.inner), config.parallelism));
+            self.limiter.set_limit(config.parallelism);
         }
         self.options.auto_refresh = config.refresh_interval();
+        let changed = !added.is_empty() || present.len() != before;
         if !added.is_empty() {
             self.start(added, false, cx);
+        }
+        // Any change to the list gets a fresh lookup; if one is running, it runs again after that one lands.
+        if changed {
             self.find_threads(cx);
         }
         cx.notify();
@@ -487,7 +493,13 @@ impl BoardView {
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.finding_threads = false;
-                view.threads = checkouts.into_iter().zip(found).collect();
+                // Checkouts removed while the lookup ran don't come back with its answer.
+                let present: HashSet<PathBuf> = view.board.checkouts().into_iter().collect();
+                view.threads = checkouts
+                    .into_iter()
+                    .zip(found)
+                    .filter(|(checkout, _)| present.contains(checkout))
+                    .collect();
                 if std::mem::take(&mut view.threads_wanted) {
                     view.find_threads(cx);
                 }

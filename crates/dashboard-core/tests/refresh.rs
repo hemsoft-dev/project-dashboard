@@ -267,3 +267,27 @@ fn a_real_process_output_is_read_through_the_pipes() {
         Err(FetchError::Failed("HTTP 401: Bad credentials".into()))
     );
 }
+
+#[test]
+fn a_changed_limit_applies_to_every_refresh_that_shares_it() {
+    let fake = Arc::new(Fake::default());
+    let limited = Arc::new(scheduler::Limited::new(fake.clone(), 4));
+    // Lowered, as a config edit from 4 to 1 would: overlapping refreshes together stay at one fetch.
+    limited.set_limit(1);
+    assert_eq!(limited.limit(), 1);
+    let source: Arc<dyn StatusSource> = limited.clone();
+    let all = scheduler::refresh(
+        source.clone(),
+        (0..4).map(|ix| PathBuf::from(format!("/src/{ix}"))).collect(),
+        4,
+        false,
+    );
+    let one = scheduler::refresh(source, vec![PathBuf::from("/src/x")], 4, true);
+    assert_eq!(all.iter().count() + one.iter().count(), 5);
+    assert_eq!(fake.peak.load(Ordering::SeqCst), 1);
+    // Out-of-range limits are clamped like the config's.
+    limited.set_limit(0);
+    assert_eq!(limited.limit(), 1);
+    limited.set_limit(10_000);
+    assert_eq!(limited.limit(), scheduler::MAX_PARALLELISM);
+}

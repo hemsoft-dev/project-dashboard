@@ -1524,6 +1524,15 @@ async fn a_momentarily_empty_config_does_not_empty_the_table(cx: &mut TestAppCon
 }
 
 #[gpui_kit::test]
+async fn an_edit_saved_while_the_app_starts_is_not_lost(cx: &mut TestAppContext) {
+    // The app read a two-repository config at startup; by the time the watcher starts, the file has a third.
+    let config = ConfigDir::new("startup-race", &["/demo/gh-x", "/demo/codexbar", "/demo/minibot"]);
+    let (handle, view) = open_watching(cx, &config, &["/demo/gh-x", "/demo/codexbar"]);
+    after_poll(cx, handle, &view).await;
+    assert_eq!(listed(cx, &view), ["gh-x", "codexbar", "minibot"]);
+}
+
+#[gpui_kit::test]
 async fn refresh_all_reads_the_config_first(cx: &mut TestAppContext) {
     let config = ConfigDir::new("refresh", &["/demo/gh-x"]);
     let (handle, view) = open_watching(cx, &config, &["/demo/gh-x"]);

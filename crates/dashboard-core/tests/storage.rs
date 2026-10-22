@@ -141,7 +141,13 @@ fn the_config_file_reports_each_edit_once() {
     let file = scratch.path().join(config::FILE_NAME);
     std::fs::write(&file, r#"repositories = ["/src/a"]"#).unwrap();
     let mut watch = ConfigFile::new(scratch.path());
-    // Already read at startup: nothing to report until it changes.
+    // The first stable read is applied even though the app read the same file at startup: it may have changed in
+    // between. After that, nothing to report until it changes.
+    assert!(watch.changed().is_none());
+    assert_eq!(
+        watch.changed().unwrap().unwrap().repositories,
+        [PathBuf::from("/src/a")]
+    );
     assert!(watch.changed().is_none());
     std::fs::write(&file, r#"repositories = ["/src/a", "/src/bb"]"#).unwrap();
     // A change applies once two polls read it the same, so a half-written save is never applied.

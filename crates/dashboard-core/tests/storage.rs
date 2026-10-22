@@ -147,6 +147,10 @@ fn the_config_file_reports_each_edit_once() {
     let config = watch.changed().expect("an edit").unwrap();
     assert_eq!(config.repositories, [PathBuf::from("/src/a"), PathBuf::from("/src/bb")]);
     assert!(watch.changed().is_none(), "reported once");
+    // A same-length edit right after, which a timestamp-and-size check could miss.
+    std::fs::write(&file, r#"repositories = ["/src/a", "/src/cc"]"#).unwrap();
+    let config = watch.changed().expect("a same-length edit").unwrap();
+    assert_eq!(config.repositories[1], PathBuf::from("/src/cc"));
     // An invalid edit is an error, not a panic, and is reported once too.
     std::fs::write(&file, "repositories = 3").unwrap();
     assert!(matches!(watch.changed(), Some(Err(config::ConfigError::Parse(..)))));

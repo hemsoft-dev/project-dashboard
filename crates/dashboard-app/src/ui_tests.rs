@@ -1384,6 +1384,32 @@ async fn a_lookup_running_during_a_removal_does_not_bring_the_repository_back(cx
 }
 
 #[gpui_kit::test]
+async fn a_removed_repository_leaves_the_status_cache_at_once(cx: &mut TestAppContext) {
+    let config = ConfigDir::new("cache-prune", &["/demo/gh-x", "/demo/codexbar"]);
+    let (handle, view) = open_board(
+        cx,
+        vec![PathBuf::from("/demo/gh-x"), PathBuf::from("/demo/codexbar")],
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        Options {
+            config_dir: Some(config.0.clone()),
+            cache_dir: Some(config.0.clone()),
+            ..options()
+        },
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    after_poll(cx, handle, &view).await;
+    assert!(StatusCache::load(&config.0).get(Path::new("/demo/codexbar")).is_some());
+    // Automatic refresh is off in this config: removing a repository alone must still prune the cache file.
+    config.write(&["/demo/gh-x"]);
+    after_poll(cx, handle, &view).await;
+    let cache = StatusCache::load(&config.0);
+    assert!(cache.get(Path::new("/demo/codexbar")).is_none());
+    assert!(cache.get(Path::new("/demo/gh-x")).is_some());
+}
+
+#[gpui_kit::test]
 async fn refresh_all_reads_the_config_first(cx: &mut TestAppContext) {
     let config = ConfigDir::new("refresh", &["/demo/gh-x"]);
     let (handle, view) = open_watching(cx, &config, &["/demo/gh-x"]);

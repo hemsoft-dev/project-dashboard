@@ -37,6 +37,9 @@ pub struct Card {
     pub refreshing: bool,
     /// The latest refresh's failure. The last good document stays alongside it.
     pub error: Option<FetchError>,
+    /// Which time this checkout joined the board. A checkout removed from the config and added back is a new card,
+    /// and a refresh started for the old one must not land on it.
+    pub generation: u64,
 }
 
 /// A card's overall state, for its badge.
@@ -60,6 +63,7 @@ impl Card {
             from_cache: false,
             refreshing: false,
             error: None,
+            generation: 0,
         }
     }
 
@@ -98,6 +102,8 @@ fn folder_name(path: &Path) -> String {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Board {
     cards: Vec<Card>,
+    /// The generation the next new card gets.
+    next_generation: u64,
 }
 
 impl Board {
@@ -121,6 +127,8 @@ impl Board {
                 Some(ix) => self.cards.push(old.swap_remove(ix)),
                 None => {
                     let mut card = Card::new(checkout.clone());
+                    card.generation = self.next_generation;
+                    self.next_generation += 1;
                     if let Some(document) = cache.get(checkout) {
                         card.document = Some(document.clone());
                         card.from_cache = true;
@@ -150,13 +158,30 @@ impl Board {
         self.is_empty().then_some(EmptyState::NO_REPOSITORIES)
     }
 
-    /// Marks these checkouts as refreshing.
-    pub fn start_refresh(&mut self, checkouts: &[PathBuf]) {
+    /// Marks these checkouts as refreshing, and returns each one's card generation for [`Board::apply_started`].
+    pub fn start_refresh(&mut self, checkouts: &[PathBuf]) -> std::collections::HashMap<PathBuf, u64> {
+        let mut started = std::collections::HashMap::new();
         for card in &mut self.cards {
             if checkouts.contains(&card.checkout) {
                 card.refreshing = true;
+                started.insert(card.checkout.clone(), card.generation);
             }
         }
+        started
+    }
+
+    /// [`Board::apply`] for a refresh started for card `generation`: an outcome for a card that has since been
+    /// removed and added back is ignored, so old work can't mark the new card idle or overwrite a newer result.
+    pub fn apply_started(&mut self, outcome: Outcome, generation: u64, cache: &mut StatusCache) -> bool {
+        let current = self
+            .cards
+            .iter()
+            .find(|card| card.checkout == outcome.checkout)
+            .map(|card| card.generation);
+        if current != Some(generation) {
+            return false;
+        }
+        self.apply(outcome, cache)
     }
 
     /// Applies one refresh result to its card and the cache. Returns false for a checkout no longer on the board.

@@ -160,12 +160,13 @@ pub fn discover(root: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// Notices edits to `config.toml` while the app runs (#21), by its modification time and size, so checking it often
-/// costs one metadata read and an unchanged file is never parsed again.
+/// Notices edits to `config.toml` while the app runs (#21) by comparing its bytes with the last read. The file is a
+/// few hundred bytes, so reading it every couple of seconds is cheap, and unlike a timestamp and size it can't miss a
+/// same-length edit on a file system with coarse timestamps. An unchanged file is never parsed again.
 #[derive(Debug)]
 pub struct ConfigFile {
     dir: PathBuf,
-    stamp: Option<(std::time::SystemTime, u64)>,
+    last: Option<Vec<u8>>,
 }
 
 impl ConfigFile {
@@ -173,30 +174,29 @@ impl ConfigFile {
     pub fn new(dir: &Path) -> Self {
         let mut file = Self {
             dir: dir.to_owned(),
-            stamp: None,
+            last: None,
         };
-        file.stamp = file.current_stamp();
+        file.last = file.contents();
         file
     }
 
-    fn current_stamp(&self) -> Option<(std::time::SystemTime, u64)> {
-        let metadata = std::fs::metadata(self.dir.join(FILE_NAME)).ok()?;
-        Some((metadata.modified().ok()?, metadata.len()))
+    fn contents(&self) -> Option<Vec<u8>> {
+        std::fs::read(self.dir.join(FILE_NAME)).ok()
     }
 
     /// The file's new contents if it changed (or appeared, or went away) since the last call, else `None`.
     pub fn changed(&mut self) -> Option<Result<Config, ConfigError>> {
-        let stamp = self.current_stamp();
-        if stamp == self.stamp {
+        let contents = self.contents();
+        if contents == self.last {
             return None;
         }
-        self.stamp = stamp;
+        self.last = contents;
         Some(Config::load(&self.dir))
     }
 
     /// The file's contents now, whether or not it changed, for a refresh to start from.
     pub fn reload(&mut self) -> Result<Config, ConfigError> {
-        self.stamp = self.current_stamp();
+        self.last = self.contents();
         Config::load(&self.dir)
     }
 }

@@ -170,7 +170,8 @@ root = "C:/Users/franz/github"
 ```
 
 On first run, when the file doesn't exist yet, the app creates it with every git checkout one level under `~/github`
-(or your home folder if there's no `~/github`). Edit the list and restart the app to change it. The last results are
+(or your home folder if there's no `~/github`). Edit the list to change it; the running app picks up the change when
+the file is saved. The last results are
 cached next to it in `status-cache.json`, and the zoom level in `ui-state.json`; deleting either file is always safe.
 
 ## License

@@ -49,7 +49,7 @@ pub fn bind_keys(cx: &mut App) {
 
 /// How often a running refresh is checked for results.
 const POLL: Duration = Duration::from_millis(100);
-/// How often config.toml is checked for edits: one metadata read.
+/// How often config.toml is checked for edits: one read of a small file.
 const CONFIG_POLL: Duration = Duration::from_secs(2);
 /// With automatic refresh off, how often to look again in case config.toml turned it on.
 const CONFIG_POLL_WITHOUT_REFRESH: Duration = Duration::from_secs(30);
@@ -400,6 +400,13 @@ impl BoardView {
         }
         self.options.auto_refresh = config.refresh_interval();
         let changed = !added.is_empty() || present.len() != before;
+        // Removed repositories leave the status cache now, not only after the next refresh.
+        if changed && let Some(dir) = &self.options.cache_dir {
+            self.cache.retain(&self.board.checkouts());
+            if let Err(err) = self.cache.save(dir) {
+                eprintln!("project-dashboard: can't save the status cache: {err}");
+            }
+        }
         if !added.is_empty() {
             self.start(added, false, cx);
         }
@@ -437,7 +444,7 @@ impl BoardView {
         if checkouts.is_empty() {
             return;
         }
-        self.board.start_refresh(&checkouts);
+        let generations = self.board.start_refresh(&checkouts);
         let receiver = scheduler::refresh(
             Arc::clone(&self.source),
             checkouts,
@@ -450,7 +457,13 @@ impl BoardView {
                 let (outcomes, done) = drain(&receiver);
                 let alive = this.update(cx, |view, cx| {
                     for outcome in outcomes {
-                        view.apply(outcome, cx);
+                        // A card removed and added back while this ran is a new card; this result isn't for it.
+                        let Some(&generation) = generations.get(&outcome.checkout) else {
+                            continue;
+                        };
+                        if view.board.apply_started(outcome, generation, &mut view.cache) {
+                            cx.notify();
+                        }
                     }
                     if done {
                         view.finished(cx);
@@ -465,7 +478,8 @@ impl BoardView {
         cx.notify();
     }
 
-    /// Shows one refresh result on its card as soon as it arrives.
+    /// Shows one refresh result on its card, for the screenshot captures (which only run on Linux).
+    #[cfg(all(test, target_os = "linux"))]
     pub fn apply(&mut self, outcome: Outcome, cx: &mut Context<Self>) {
         if self.board.apply(outcome, &mut self.cache) {
             cx.notify();

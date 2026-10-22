@@ -179,3 +179,33 @@ fn an_edited_list_keeps_known_cards_adds_new_ones_and_drops_the_rest() {
     assert!(board.set_checkouts(&board.checkouts(), &cache).is_empty());
     assert_eq!(board, before);
 }
+
+#[test]
+fn a_refresh_for_a_removed_card_does_not_land_on_its_replacement() {
+    let mut cache = StatusCache::default();
+    let mut board = Board::new(&paths(), &cache);
+    // A refresh starts for gh-x, then gh-x is removed and added back before it finishes.
+    let old = board.start_refresh(&[PathBuf::from("/src/gh-x")]);
+    board.set_checkouts(&["/src/codexbar".into()], &cache);
+    board.set_checkouts(&paths(), &cache);
+    let new = board.start_refresh(&[PathBuf::from("/src/gh-x")]);
+    assert_ne!(
+        old["/src/gh-x".as_ref() as &std::path::Path],
+        new[std::path::Path::new("/src/gh-x")]
+    );
+    let outcome = || Outcome {
+        checkout: "/src/gh-x".into(),
+        result: Ok(fixtures::document(CLEAN)),
+    };
+    // The old refresh's result is ignored: the new card is still refreshing and has no status.
+    assert!(!board.apply_started(outcome(), old[std::path::Path::new("/src/gh-x")], &mut cache));
+    let card = board.card(std::path::Path::new("/src/gh-x")).unwrap();
+    assert!(card.refreshing);
+    assert!(card.document.is_none());
+    // Its own refresh lands.
+    assert!(board.apply_started(outcome(), new[std::path::Path::new("/src/gh-x")], &mut cache));
+    assert_eq!(
+        board.card(std::path::Path::new("/src/gh-x")).unwrap().overall(),
+        Overall::Clean
+    );
+}

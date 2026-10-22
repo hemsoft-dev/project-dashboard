@@ -186,17 +186,35 @@ impl ConfigFile {
 
     /// The file's new contents if it changed (or appeared, or went away) since the last call, else `None`.
     pub fn changed(&mut self) -> Option<Result<Config, ConfigError>> {
-        let contents = self.contents();
-        if contents == self.last {
+        let read = std::fs::read(self.dir.join(FILE_NAME));
+        if read.as_ref().ok() == self.last.as_ref() {
             return None;
         }
-        self.last = contents;
-        Some(Config::load(&self.dir))
+        Some(self.take(read))
     }
 
     /// The file's contents now, whether or not it changed, for a refresh to start from.
     pub fn reload(&mut self) -> Result<Config, ConfigError> {
-        self.last = self.contents();
-        Config::load(&self.dir)
+        let read = std::fs::read(self.dir.join(FILE_NAME));
+        self.take(read)
+    }
+
+    /// Parses exactly the bytes that were read and remembers them, so a save that overlaps the read can't leave the
+    /// remembered contents and the reported result describing different versions of the file.
+    fn take(&mut self, read: std::io::Result<Vec<u8>>) -> Result<Config, ConfigError> {
+        let path = self.dir.join(FILE_NAME);
+        let bytes = match read {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                self.last = None;
+                return Err(ConfigError::Read(path, err));
+            }
+        };
+        let result = match std::str::from_utf8(&bytes) {
+            Ok(text) => Config::parse(text, &path),
+            Err(err) => Err(ConfigError::Parse(path, err.to_string())),
+        };
+        self.last = Some(bytes);
+        result
     }
 }

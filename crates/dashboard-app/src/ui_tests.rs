@@ -1410,6 +1410,42 @@ async fn a_removed_repository_leaves_the_status_cache_at_once(cx: &mut TestAppCo
 }
 
 #[gpui_kit::test]
+async fn turning_automatic_refresh_off_stops_the_refresh_already_waiting(cx: &mut TestAppContext) {
+    let config = ConfigDir::new("auto-off", &[]);
+    config.write_text(
+        "refresh_minutes = 1
+repositories = [\"/demo/gh-x\"]
+",
+    );
+    let source = Arc::new(Recording::default());
+    let (handle, view) = open_board(
+        cx,
+        vec![PathBuf::from("/demo/gh-x")],
+        StatusCache::default(),
+        source.clone(),
+        Options {
+            config_dir: Some(config.0.clone()),
+            auto_refresh: Some(Duration::from_secs(60)),
+            ..options()
+        },
+    );
+    cx.run_until_parked();
+    // While the one-minute wait runs, the file turns automatic refresh off.
+    config.write_text(
+        "refresh_minutes = 0
+repositories = [\"/demo/gh-x\"]
+",
+    );
+    after_poll(cx, handle, &view).await;
+    for _ in 0..30 {
+        cx.executor().advance_clock(Duration::from_secs(5));
+        cx.run_until_parked();
+    }
+    settle(cx, handle, &view).await;
+    assert!(source.0.lock().unwrap().is_empty(), "no refresh at the old deadline");
+}
+
+#[gpui_kit::test]
 async fn refresh_all_reads_the_config_first(cx: &mut TestAppContext) {
     let config = ConfigDir::new("refresh", &["/demo/gh-x"]);
     let (handle, view) = open_watching(cx, &config, &["/demo/gh-x"]);

@@ -180,8 +180,9 @@ impl BoardView {
                     cx.background_executor()
                         .timer(interval.unwrap_or(CONFIG_POLL_WITHOUT_REFRESH))
                         .await;
+                    // Checked again after the wait: a config edit may have turned automatic refresh off meanwhile.
                     let Ok(()) = this.update(cx, |view, cx| {
-                        if interval.is_some() {
+                        if view.options.auto_refresh.is_some() {
                             view.refresh_all(cx)
                         }
                     }) else {

@@ -155,6 +155,10 @@ fn the_config_file_reports_each_edit_once() {
     std::fs::write(&file, "repositories = 3").unwrap();
     assert!(matches!(watch.changed(), Some(Err(config::ConfigError::Parse(..)))));
     assert!(watch.changed().is_none());
+    // Bytes that aren't UTF-8 are a parse error from those very bytes, reported once.
+    std::fs::write(&file, [0xff, 0xfe, b'x']).unwrap();
+    assert!(matches!(watch.changed(), Some(Err(config::ConfigError::Parse(..)))));
+    assert!(watch.changed().is_none());
     // A deleted file is an error rather than a fresh, rediscovered config.
     std::fs::remove_file(&file).unwrap();
     assert!(matches!(watch.changed(), Some(Err(config::ConfigError::Read(..)))));

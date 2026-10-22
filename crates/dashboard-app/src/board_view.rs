@@ -56,7 +56,13 @@ const CONFIG_POLL_WITHOUT_REFRESH: Duration = Duration::from_secs(30);
 
 /// The banner text for a config file that can't be used.
 pub fn config_problem(err: &ConfigError) -> String {
-    format!("{err}. The dashboard keeps showing the last good list and reads the file again when it is saved.")
+    // TOML's own message ends with a line break; the advice goes on a line of its own after it.
+    let err = err.to_string();
+    format!(
+        "{}
+The dashboard keeps showing the last good list and reads the file again when it is saved.",
+        err.trim_end().trim_end_matches('.')
+    )
 }
 
 /// Where the board's settings and cache live, and how it refreshes.

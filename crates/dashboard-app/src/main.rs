@@ -77,7 +77,7 @@ fn live_view(window: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<BoardView
     let dir = config::default_dir();
     let (config, config_problem) = match Config::load_or_create(&dir) {
         Ok(config) => (config, None),
-        Err(err) => (Config::default(), Some(format!("{err}. Fix the file and restart."))),
+        Err(err) => (Config::default(), Some(board_view::config_problem(&err))),
     };
     let source: Arc<dyn StatusSource> = Arc::new(GhX::default());
     BoardView::new(
@@ -90,6 +90,7 @@ fn live_view(window: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<BoardView
             auto_refresh: config.refresh_interval(),
             config_problem,
             config_path: Some(dir.join(config::FILE_NAME)),
+            config_dir: Some(dir.clone()),
             now: None,
             columns: UiState::load(&dir).columns,
             ui_state_dir: Some(dir.clone()),
@@ -114,6 +115,7 @@ fn demo_view(window: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<BoardView
             auto_refresh: None,
             config_problem: None,
             config_path: None,
+            config_dir: None,
             // The fixtures' clock, so the demo's ages read the same whenever it runs.
             now: Some(demo::fixture_now()),
             // Like the zoom, the demo remembers its column widths.

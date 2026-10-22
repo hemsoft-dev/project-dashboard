@@ -130,6 +130,11 @@ every GitHub section loaded.
   thread. The T3 desktop app has no way to open a thread from outside, so the browser it is.
 - **Refresh one** repository with its row's button. It runs `gh x status --json --refresh`, bypassing gh-x's cache.
 - **Automatic refresh** runs every `refresh_minutes` (default 5).
+- **Config changes apply while it runs.** Save `config.toml` and, within a couple of seconds, added repositories
+  appear and load, removed ones disappear, and the rest keep their status. A new `parallelism` applies to the next
+  refresh and a new `refresh_minutes` from the next scheduled one. **Refresh all** reads the file first too. If an
+  edit leaves the file invalid, the table keeps the last good list and a banner says what's wrong until you fix it.
+  `t3_home` is read at startup only.
 - **Zoom** the whole window with **Ctrl** **+** (or **Ctrl** **=**) and **Ctrl** **-**, or **Ctrl** + mouse wheel, in
   10% steps from 50% to 200%; **Ctrl** **0** resets to 100%. Text, spacing, icons and columns scale together, and the
   new level shows briefly at the bottom. It's remembered in `ui-state.json`, next to `config.toml`, so the next start
@@ -165,7 +170,8 @@ root = "C:/Users/franz/github"
 ```
 
 On first run, when the file doesn't exist yet, the app creates it with every git checkout one level under `~/github`
-(or your home folder if there's no `~/github`). Edit the list and restart the app to change it. The last results are
+(or your home folder if there's no `~/github`). Edit the list to change it; the running app picks up the change when
+the file is saved. The last results are
 cached next to it in `status-cache.json`, and the zoom level in `ui-state.json`; deleting either file is always safe.
 
 ## License

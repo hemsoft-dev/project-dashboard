@@ -133,3 +133,61 @@ fn a_missing_corrupt_or_other_version_cache_is_empty() {
     .unwrap();
     assert!(StatusCache::load(scratch.path()).is_empty());
 }
+
+#[test]
+fn the_config_file_reports_each_edit_once() {
+    use dashboard_core::config::ConfigFile;
+    let scratch = Scratch::new("config-watch");
+    let file = scratch.path().join(config::FILE_NAME);
+    std::fs::write(&file, r#"repositories = ["/src/a"]"#).unwrap();
+    let mut watch = ConfigFile::new(scratch.path());
+    // The first stable read is applied even though the app read the same file at startup: it may have changed in
+    // between. After that, nothing to report until it changes.
+    assert!(watch.changed().is_none());
+    assert_eq!(
+        watch.changed().unwrap().unwrap().repositories,
+        [PathBuf::from("/src/a")]
+    );
+    assert!(watch.changed().is_none());
+    std::fs::write(&file, r#"repositories = ["/src/a", "/src/bb"]"#).unwrap();
+    // A change applies once two polls read it the same, so a half-written save is never applied.
+    assert!(watch.changed().is_none(), "first sight");
+    let config = watch.changed().expect("an edit").unwrap();
+    assert_eq!(config.repositories, [PathBuf::from("/src/a"), PathBuf::from("/src/bb")]);
+    assert!(watch.changed().is_none(), "reported once");
+    // A same-length edit right after, which a timestamp-and-size check could miss.
+    std::fs::write(&file, r#"repositories = ["/src/a", "/src/cc"]"#).unwrap();
+    assert!(watch.changed().is_none());
+    let config = watch.changed().expect("a same-length edit").unwrap();
+    assert_eq!(config.repositories[1], PathBuf::from("/src/cc"));
+    // An invalid edit is an error, not a panic, and is reported once too.
+    std::fs::write(&file, "repositories = 3").unwrap();
+    assert!(watch.changed().is_none());
+    assert!(matches!(watch.changed(), Some(Err(config::ConfigError::Parse(..)))));
+    assert!(watch.changed().is_none());
+    // Bytes that aren't UTF-8 are a parse error from those very bytes, reported once.
+    std::fs::write(&file, [0xff, 0xfe, b'x']).unwrap();
+    assert!(watch.changed().is_none());
+    assert!(matches!(watch.changed(), Some(Err(config::ConfigError::Parse(..)))));
+    assert!(watch.changed().is_none());
+    // A deleted file is an error rather than a fresh, rediscovered config.
+    std::fs::remove_file(&file).unwrap();
+    assert!(watch.changed().is_none());
+    assert!(matches!(watch.changed(), Some(Err(config::ConfigError::Read(..)))));
+    assert!(!file.exists(), "nothing was written");
+    // reload(), for a refresh, applies a change at once when a second read a moment later agrees, and nothing when
+    // the file is unchanged.
+    std::fs::write(&file, r#"repositories = ["/src/c"]"#).unwrap();
+    assert_eq!(watch.reload().unwrap().unwrap().repositories, [PathBuf::from("/src/c")]);
+    assert!(watch.reload().is_none());
+    assert!(watch.changed().is_none());
+    // A poll that first saw a momentary empty file, followed by the finished save, applies only the finished save.
+    std::fs::write(&file, "").unwrap();
+    assert!(watch.changed().is_none());
+    std::fs::write(&file, r#"repositories = ["/src/d"]"#).unwrap();
+    assert!(watch.changed().is_none());
+    assert_eq!(
+        watch.changed().unwrap().unwrap().repositories,
+        [PathBuf::from("/src/d")]
+    );
+}

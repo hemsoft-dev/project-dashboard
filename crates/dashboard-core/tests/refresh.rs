@@ -267,3 +267,68 @@ fn a_real_process_output_is_read_through_the_pipes() {
         Err(FetchError::Failed("HTTP 401: Bad credentials".into()))
     );
 }
+
+#[test]
+fn a_changed_limit_applies_to_every_refresh_that_shares_it() {
+    let fake = Arc::new(Fake::default());
+    let limited = Arc::new(scheduler::Limited::new(fake.clone(), 4));
+    // Lowered, as a config edit from 4 to 1 would: overlapping refreshes together stay at one fetch.
+    limited.set_limit(1);
+    assert_eq!(limited.limit(), 1);
+    let source: Arc<dyn StatusSource> = limited.clone();
+    let all = scheduler::refresh(
+        source.clone(),
+        (0..4).map(|ix| PathBuf::from(format!("/src/{ix}"))).collect(),
+        4,
+        false,
+    );
+    let one = scheduler::refresh(source, vec![PathBuf::from("/src/x")], 4, true);
+    assert_eq!(all.iter().count() + one.iter().count(), 5);
+    assert_eq!(fake.peak.load(Ordering::SeqCst), 1);
+    // Out-of-range limits are clamped like the config's.
+    limited.set_limit(0);
+    assert_eq!(limited.limit(), 1);
+    limited.set_limit(10_000);
+    assert_eq!(limited.limit(), scheduler::MAX_PARALLELISM);
+}
+
+#[test]
+fn queued_work_for_a_removed_or_replaced_checkout_never_runs() {
+    use std::collections::HashMap;
+    let fake = Arc::new(Fake::default());
+    let wanted = scheduler::Wanted::default();
+    wanted.set([(PathBuf::from("/src/a"), 1), (PathBuf::from("/src/b"), 1)]);
+    let started: HashMap<PathBuf, u64> = [(PathBuf::from("/src/a"), 1), (PathBuf::from("/src/b"), 1)].into();
+    let limiter = Arc::new(scheduler::Limited::new(fake.clone(), 1));
+    let gated = scheduler::OnlyWanted {
+        limiter: limiter.clone(),
+        wanted: wanted.clone(),
+        generations: started,
+    };
+    // The config drops b, and a is removed and added back as a new card.
+    wanted.set([(PathBuf::from("/src/a"), 2)]);
+    for checkout in ["/src/a", "/src/b"] {
+        let result = gated.fetch(std::path::Path::new(checkout), false);
+        assert!(matches!(result, Err(FetchError::Failed(reason)) if reason == scheduler::SKIPPED));
+    }
+    assert!(fake.refreshes.lock().unwrap().is_empty(), "gh never ran");
+    // A refresh for the new card runs.
+    let current = scheduler::OnlyWanted {
+        limiter: limiter.clone(),
+        wanted: wanted.clone(),
+        generations: [(PathBuf::from("/src/a"), 2)].into(),
+    };
+    assert!(current.fetch(std::path::Path::new("/src/a"), false).is_ok());
+    assert_eq!(fake.refreshes.lock().unwrap().len(), 1);
+    // Work that becomes unwanted while it waits for a slot is skipped once it gets one, and frees it at once.
+    let became_unwanted = std::sync::atomic::AtomicBool::new(false);
+    let result = limiter.fetch_if(std::path::Path::new("/src/a"), false, &|| {
+        !became_unwanted.swap(true, Ordering::SeqCst)
+    });
+    assert!(result.is_ok(), "first check passes");
+    let result = limiter.fetch_if(std::path::Path::new("/src/a"), false, &|| false);
+    assert!(matches!(result, Err(FetchError::Failed(reason)) if reason == scheduler::SKIPPED));
+    assert_eq!(fake.refreshes.lock().unwrap().len(), 2, "the skipped fetch never ran");
+    // Its slot is free: with a limit of 1, another fetch still runs.
+    assert!(limiter.fetch(std::path::Path::new("/src/a"), false).is_ok());
+}

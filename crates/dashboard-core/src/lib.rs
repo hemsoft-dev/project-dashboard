@@ -104,20 +104,33 @@ impl Board {
     /// One card per checkout, showing its cached status (if any) until the first refresh lands. A checkout listed
     /// twice gets one card, at its first position.
     pub fn new(checkouts: &[PathBuf], cache: &StatusCache) -> Self {
+        let mut board = Self::default();
+        board.set_checkouts(checkouts, cache);
+        board
+    }
+
+    /// Follows an edited checkout list (#21): cards for checkouts still listed keep everything they know, in the new
+    /// order; new checkouts get a card from the cache, as at startup; the rest are dropped. A checkout listed twice
+    /// gets one card, at its first position. Returns the checkouts that are new to the board.
+    pub fn set_checkouts(&mut self, checkouts: &[PathBuf], cache: &StatusCache) -> Vec<PathBuf> {
         let mut seen = std::collections::HashSet::new();
-        let cards = checkouts
-            .iter()
-            .filter(|checkout| seen.insert(*checkout))
-            .map(|checkout| {
-                let mut card = Card::new(checkout.clone());
-                if let Some(document) = cache.get(checkout) {
-                    card.document = Some(document.clone());
-                    card.from_cache = true;
+        let mut old = std::mem::take(&mut self.cards);
+        let mut added = Vec::new();
+        for checkout in checkouts.iter().filter(|checkout| seen.insert(*checkout)) {
+            match old.iter().position(|card| &card.checkout == checkout) {
+                Some(ix) => self.cards.push(old.swap_remove(ix)),
+                None => {
+                    let mut card = Card::new(checkout.clone());
+                    if let Some(document) = cache.get(checkout) {
+                        card.document = Some(document.clone());
+                        card.from_cache = true;
+                    }
+                    self.cards.push(card);
+                    added.push(checkout.clone());
                 }
-                card
-            })
-            .collect();
-        Self { cards }
+            }
+        }
+        added
     }
 
     pub fn cards(&self) -> &[Card] {

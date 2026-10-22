@@ -130,6 +130,11 @@ every GitHub section loaded.
   thread. The T3 desktop app has no way to open a thread from outside, so the browser it is.
 - **Refresh one** repository with its row's button. It runs `gh x status --json --refresh`, bypassing gh-x's cache.
 - **Automatic refresh** runs every `refresh_minutes` (default 5).
+- **Config changes apply while it runs.** Save `config.toml` and, within a couple of seconds, added repositories
+  appear and load, removed ones disappear, and the rest keep their status. A new `parallelism` applies to the next
+  refresh and a new `refresh_minutes` from the next scheduled one. **Refresh all** reads the file first too. If an
+  edit leaves the file invalid, the table keeps the last good list and a banner says what's wrong until you fix it.
+  `t3_home` is read at startup only.
 - **Zoom** the whole window with **Ctrl** **+** (or **Ctrl** **=**) and **Ctrl** **-**, or **Ctrl** + mouse wheel, in
   10% steps from 50% to 200%; **Ctrl** **0** resets to 100%. Text, spacing, icons and columns scale together, and the
   new level shows briefly at the bottom. It's remembered in `ui-state.json`, next to `config.toml`, so the next start

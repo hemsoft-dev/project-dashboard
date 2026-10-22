@@ -133,3 +133,30 @@ fn a_missing_corrupt_or_other_version_cache_is_empty() {
     .unwrap();
     assert!(StatusCache::load(scratch.path()).is_empty());
 }
+
+#[test]
+fn the_config_file_reports_each_edit_once() {
+    use dashboard_core::config::ConfigFile;
+    let scratch = Scratch::new("config-watch");
+    let file = scratch.path().join(config::FILE_NAME);
+    std::fs::write(&file, r#"repositories = ["/src/a"]"#).unwrap();
+    let mut watch = ConfigFile::new(scratch.path());
+    // Already read at startup: nothing to report until it changes.
+    assert!(watch.changed().is_none());
+    std::fs::write(&file, r#"repositories = ["/src/a", "/src/bb"]"#).unwrap();
+    let config = watch.changed().expect("an edit").unwrap();
+    assert_eq!(config.repositories, [PathBuf::from("/src/a"), PathBuf::from("/src/bb")]);
+    assert!(watch.changed().is_none(), "reported once");
+    // An invalid edit is an error, not a panic, and is reported once too.
+    std::fs::write(&file, "repositories = 3").unwrap();
+    assert!(matches!(watch.changed(), Some(Err(config::ConfigError::Parse(..)))));
+    assert!(watch.changed().is_none());
+    // A deleted file is an error rather than a fresh, rediscovered config.
+    std::fs::remove_file(&file).unwrap();
+    assert!(matches!(watch.changed(), Some(Err(config::ConfigError::Read(..)))));
+    assert!(!file.exists(), "nothing was written");
+    // reload() reads the file whether or not it changed.
+    std::fs::write(&file, r#"repositories = ["/src/c"]"#).unwrap();
+    assert_eq!(watch.reload().unwrap().repositories, [PathBuf::from("/src/c")]);
+    assert!(watch.changed().is_none());
+}

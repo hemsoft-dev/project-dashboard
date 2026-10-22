@@ -125,6 +125,14 @@ impl Config {
         }
     }
 
+    /// Reads `dir/config.toml` as it is now. Unlike [`Config::load_or_create`], a missing file is an error rather than
+    /// a reason to discover checkouts and write a new one: while the app runs, a missing file is a mistake to report.
+    pub fn load(dir: &Path) -> Result<Self, ConfigError> {
+        let path = dir.join(FILE_NAME);
+        let text = std::fs::read_to_string(&path).map_err(|err| ConfigError::Read(path.clone(), err))?;
+        Self::parse(&text, &path)
+    }
+
     pub fn save(&self, dir: &Path) -> Result<(), ConfigError> {
         let path = dir.join(FILE_NAME);
         std::fs::create_dir_all(dir).map_err(|err| ConfigError::Write(path.clone(), err))?;
@@ -150,4 +158,45 @@ pub fn discover(root: &Path) -> Vec<PathBuf> {
         .collect();
     found.sort();
     found
+}
+
+/// Notices edits to `config.toml` while the app runs (#21), by its modification time and size, so checking it often
+/// costs one metadata read and an unchanged file is never parsed again.
+#[derive(Debug)]
+pub struct ConfigFile {
+    dir: PathBuf,
+    stamp: Option<(std::time::SystemTime, u64)>,
+}
+
+impl ConfigFile {
+    /// Watches `dir/config.toml`, taking the file as it is now as already read.
+    pub fn new(dir: &Path) -> Self {
+        let mut file = Self {
+            dir: dir.to_owned(),
+            stamp: None,
+        };
+        file.stamp = file.current_stamp();
+        file
+    }
+
+    fn current_stamp(&self) -> Option<(std::time::SystemTime, u64)> {
+        let metadata = std::fs::metadata(self.dir.join(FILE_NAME)).ok()?;
+        Some((metadata.modified().ok()?, metadata.len()))
+    }
+
+    /// The file's new contents if it changed (or appeared, or went away) since the last call, else `None`.
+    pub fn changed(&mut self) -> Option<Result<Config, ConfigError>> {
+        let stamp = self.current_stamp();
+        if stamp == self.stamp {
+            return None;
+        }
+        self.stamp = stamp;
+        Some(Config::load(&self.dir))
+    }
+
+    /// The file's contents now, whether or not it changed, for a refresh to start from.
+    pub fn reload(&mut self) -> Result<Config, ConfigError> {
+        self.stamp = self.current_stamp();
+        Config::load(&self.dir)
+    }
 }

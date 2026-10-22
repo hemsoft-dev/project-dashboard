@@ -130,3 +130,52 @@ fn a_checkout_listed_twice_gets_one_card_and_finishes_refreshing() {
     }
     assert!(!board.is_refreshing());
 }
+
+#[test]
+fn an_edited_list_keeps_known_cards_adds_new_ones_and_drops_the_rest() {
+    let mut cache = StatusCache::default();
+    let mut board = Board::new(&paths(), &cache);
+    board.apply(
+        Outcome {
+            checkout: "/src/gh-x".into(),
+            result: Ok(fixtures::document(CLEAN)),
+        },
+        &mut cache,
+    );
+    // minibot has a cached status from an earlier run; weather-cli has nothing yet.
+    cache.insert("/src/minibot".into(), fixtures::document(ATTENTION));
+    let added = board.set_checkouts(
+        &[
+            "/src/minibot".into(),
+            "/src/gh-x".into(),
+            "/src/weather-cli".into(),
+            "/src/minibot".into(),
+        ],
+        &cache,
+    );
+    assert_eq!(
+        added,
+        [PathBuf::from("/src/minibot"), PathBuf::from("/src/weather-cli")]
+    );
+    // The new order, codexbar gone, a repeated checkout once.
+    assert_eq!(
+        board.checkouts(),
+        [
+            PathBuf::from("/src/minibot"),
+            PathBuf::from("/src/gh-x"),
+            PathBuf::from("/src/weather-cli")
+        ]
+    );
+    let [minibot, gh_x, weather] = board.cards() else {
+        panic!()
+    };
+    // gh-x keeps its fresh status; minibot starts from the cache, weather-cli from nothing.
+    assert_eq!(gh_x.overall(), Overall::Clean);
+    assert!(!gh_x.from_cache);
+    assert!(minibot.from_cache);
+    assert_eq!(weather.overall(), Overall::Loading);
+    // The same list again changes nothing and adds nothing.
+    let before = board.clone();
+    assert!(board.set_checkouts(&board.checkouts(), &cache).is_empty());
+    assert_eq!(board, before);
+}

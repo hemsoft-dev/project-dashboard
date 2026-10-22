@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use dashboard_core::cache::StatusCache;
 use dashboard_core::columns::{Column, ColumnWidths};
+use dashboard_core::config::{Config, ConfigError, ConfigFile};
 use dashboard_core::scheduler::{self, Outcome};
 use dashboard_core::source::StatusSource;
 use dashboard_core::status::{HealthRow, Issue, PullRequest, RunOutcome, Section, StatusDocument, WorkflowRun};
@@ -48,6 +49,15 @@ pub fn bind_keys(cx: &mut App) {
 
 /// How often a running refresh is checked for results.
 const POLL: Duration = Duration::from_millis(100);
+/// How often config.toml is checked for edits: one metadata read.
+const CONFIG_POLL: Duration = Duration::from_secs(2);
+/// With automatic refresh off, how often to look again in case config.toml turned it on.
+const CONFIG_POLL_WITHOUT_REFRESH: Duration = Duration::from_secs(30);
+
+/// The banner text for a config file that can't be used.
+pub fn config_problem(err: &ConfigError) -> String {
+    format!("{err}. The dashboard keeps showing the last good list and reads the file again when it is saved.")
+}
 
 /// Where the board's settings and cache live, and how it refreshes.
 pub struct Options {
@@ -60,6 +70,9 @@ pub struct Options {
     pub config_problem: Option<String>,
     /// The config file, named in the empty state.
     pub config_path: Option<PathBuf>,
+    /// The folder whose `config.toml` is watched and re-read while the app runs (#21); `None` keeps the list given
+    /// at startup (the demo, tests and screenshots).
+    pub config_dir: Option<PathBuf>,
     /// A fixed "now" for last-activity ages, for tests and screenshots; `None` reads the clock.
     pub now: Option<DateTime<Utc>>,
     /// The column widths to start with, as `ui-state.json` remembers them.
@@ -81,7 +94,10 @@ struct Resize {
 pub struct BoardView {
     board: Board,
     cache: StatusCache,
+    /// `inner`, limited to `parallelism` gh processes at once.
     source: Arc<dyn StatusSource>,
+    inner: Arc<dyn StatusSource>,
+    config_file: Option<ConfigFile>,
     options: Options,
     /// Expanded rows, by checkout, so expansion survives refreshes and re-sorting.
     expanded: HashSet<PathBuf>,
@@ -111,12 +127,16 @@ impl BoardView {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         // One limit for every refresh, so overlapping refreshes never run more than `parallelism` gh processes.
-        let source: Arc<dyn StatusSource> = Arc::new(scheduler::Limited::new(source, options.parallelism));
+        let inner = source;
+        let source: Arc<dyn StatusSource> = Arc::new(scheduler::Limited::new(Arc::clone(&inner), options.parallelism));
         let columns = options.columns;
+        let config_file = options.config_dir.as_deref().map(ConfigFile::new);
         let mut view = Self {
             board: Board::new(checkouts, &cache),
             cache,
             source,
+            inner,
+            config_file,
             options,
             expanded: HashSet::new(),
             sort: SortOrder::default(),
@@ -144,11 +164,33 @@ impl BoardView {
             }
         })
         .detach();
-        if let Some(interval) = view.options.auto_refresh {
+        // The interval is read for each wait, so a new `refresh_minutes` applies from the next one.
+        if view.options.auto_refresh.is_some() || view.config_file.is_some() {
             cx.spawn(async move |this, cx| {
                 loop {
-                    cx.background_executor().timer(interval).await;
-                    let Ok(()) = this.update(cx, |view, cx| view.refresh_all(cx)) else {
+                    let Ok(interval) = this.update(cx, |view, _| view.options.auto_refresh) else {
+                        break;
+                    };
+                    cx.background_executor()
+                        .timer(interval.unwrap_or(CONFIG_POLL_WITHOUT_REFRESH))
+                        .await;
+                    let Ok(()) = this.update(cx, |view, cx| {
+                        if interval.is_some() {
+                            view.refresh_all(cx)
+                        }
+                    }) else {
+                        break;
+                    };
+                }
+            })
+            .detach();
+        }
+        // Edits to config.toml show up within a couple of seconds, without a refresh.
+        if view.config_file.is_some() {
+            cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(CONFIG_POLL).await;
+                    let Ok(()) = this.update(cx, |view, cx| view.check_config(cx)) else {
                         break;
                     };
                 }
@@ -316,8 +358,52 @@ impl BoardView {
         cx.notify();
     }
 
-    /// Refreshes every card that isn't already refreshing, from gh-x's own cache when it is fresh.
+    #[cfg(test)]
+    pub fn config_problem(&self) -> Option<&str> {
+        self.options.config_problem.as_deref()
+    }
+
+    /// Applies config.toml if it changed since it was last read.
+    pub fn check_config(&mut self, cx: &mut Context<Self>) {
+        if let Some(result) = self.config_file.as_mut().and_then(ConfigFile::changed) {
+            self.apply_config(result, cx);
+        }
+    }
+
+    /// Follows the config file: the repository list, parallelism and the refresh interval. A file that can't be read
+    /// keeps the last good list and says why in the banner until it is fixed.
+    fn apply_config(&mut self, result: Result<Config, ConfigError>, cx: &mut Context<Self>) {
+        let config = match result {
+            Ok(config) => config,
+            Err(err) => {
+                self.options.config_problem = Some(config_problem(&err));
+                cx.notify();
+                return;
+            }
+        };
+        self.options.config_problem = None;
+        let added = self.board.set_checkouts(&config.repositories, &self.cache);
+        let present: HashSet<PathBuf> = self.board.checkouts().into_iter().collect();
+        self.expanded.retain(|checkout| present.contains(checkout));
+        self.threads.retain(|checkout, _| present.contains(checkout));
+        if config.parallelism != self.options.parallelism {
+            self.options.parallelism = config.parallelism;
+            self.source = Arc::new(scheduler::Limited::new(Arc::clone(&self.inner), config.parallelism));
+        }
+        self.options.auto_refresh = config.refresh_interval();
+        if !added.is_empty() {
+            self.start(added, false, cx);
+            self.find_threads(cx);
+        }
+        cx.notify();
+    }
+
+    /// Refreshes every card that isn't already refreshing, from gh-x's own cache when it is fresh. The config file is
+    /// read first, so the refresh covers the current list.
     pub fn refresh_all(&mut self, cx: &mut Context<Self>) {
+        if let Some(result) = self.config_file.as_mut().map(ConfigFile::reload) {
+            self.apply_config(result, cx);
+        }
         let idle: Vec<PathBuf> = self
             .board
             .cards()

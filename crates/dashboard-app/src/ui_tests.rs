@@ -30,6 +30,7 @@ fn options() -> Options {
         auto_refresh: None,
         config_problem: None,
         config_path: None,
+        config_dir: None,
         now: Some(demo::fixture_now()),
         columns: Default::default(),
         ui_state_dir: None,
@@ -1251,4 +1252,183 @@ async fn threads_are_looked_up_at_start_and_again_after_each_refresh(cx: &mut Te
     // Once idle, nothing more runs on its own.
     cx.run_until_parked();
     assert_eq!(count(&counter), 4);
+}
+
+// Reloading config.toml while the app runs (#21).
+
+/// A config folder for one test, removed when it ends.
+struct ConfigDir(PathBuf);
+
+impl ConfigDir {
+    fn new(name: &str, repositories: &[&str]) -> Self {
+        let dir = std::env::temp_dir().join(format!("project-dashboard-ui-config-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Self(dir);
+        config.write(repositories);
+        config
+    }
+
+    fn write(&self, repositories: &[&str]) {
+        let list: Vec<String> = repositories.iter().map(|repo| format!("\"{repo}\"")).collect();
+        self.write_text(&format!("refresh_minutes = 0\nrepositories = [{}]\n", list.join(", ")));
+    }
+
+    fn write_text(&self, text: &str) {
+        // A different length from the last write, so the edit is noticed even within one timestamp tick.
+        let padding = " ".repeat(std::fs::metadata(self.0.join("config.toml")).map_or(0, |m| m.len() as usize % 7 + 1));
+        std::fs::write(self.0.join("config.toml"), format!("{text}#{padding}\n")).unwrap();
+    }
+}
+
+impl Drop for ConfigDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn open_watching(
+    cx: &mut TestAppContext,
+    config: &ConfigDir,
+    startup: &[&str],
+) -> (AnyWindowHandle, Entity<BoardView>) {
+    open_board(
+        cx,
+        startup.iter().map(PathBuf::from).collect(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        Options {
+            config_dir: Some(config.0.clone()),
+            ..options()
+        },
+    )
+}
+
+/// Lets the config poll and any refresh it starts run to the end.
+async fn after_poll(cx: &mut TestAppContext, handle: AnyWindowHandle, view: &Entity<BoardView>) {
+    cx.executor().advance_clock(Duration::from_secs(3));
+    cx.run_until_parked();
+    settle(cx, handle, view).await;
+}
+
+fn listed(cx: &mut TestAppContext, view: &Entity<BoardView>) -> Vec<String> {
+    cx.update(|cx| view.read(cx).board().checkouts())
+        .iter()
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect()
+}
+
+fn banner(cx: &mut TestAppContext, handle: AnyWindowHandle) -> bool {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.try_find("banner").is_some()
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+async fn a_repository_added_to_the_config_appears_without_a_restart(cx: &mut TestAppContext) {
+    let config = ConfigDir::new("add", &["/demo/gh-x", "/demo/codexbar"]);
+    let (handle, view) = open_watching(cx, &config, &["/demo/gh-x", "/demo/codexbar"]);
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    cx.update(|cx| view.update(cx, |view, cx| view.toggle_expanded(Path::new("/demo/gh-x"), cx)));
+    // Edit the file, as Franz did: no refresh, no restart.
+    config.write(&["/demo/gh-x", "/demo/minibot", "/demo/codexbar"]);
+    after_poll(cx, handle, &view).await;
+    assert_eq!(listed(cx, &view), ["gh-x", "minibot", "codexbar"]);
+    cx.update(|cx| {
+        let view = view.read(cx);
+        let minibot = view.board().card(Path::new("/demo/minibot")).unwrap();
+        assert!(minibot.document.is_some(), "the new repository was fetched");
+        // gh-x kept its status and stayed expanded.
+        assert!(view.board().card(Path::new("/demo/gh-x")).unwrap().document.is_some());
+        assert!(view.is_expanded(Path::new("/demo/gh-x")));
+        // Its T3 lookup covers the new row too.
+        assert!(view.thread(Path::new("/demo/minibot")).is_some());
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("row", 1usize)).is_some());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn a_repository_removed_from_the_config_disappears(cx: &mut TestAppContext) {
+    let config = ConfigDir::new("remove", &["/demo/gh-x", "/demo/codexbar"]);
+    let (handle, view) = open_watching(cx, &config, &["/demo/gh-x", "/demo/codexbar"]);
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    config.write(&["/demo/codexbar"]);
+    after_poll(cx, handle, &view).await;
+    assert_eq!(listed(cx, &view), ["codexbar"]);
+}
+
+#[gpui_kit::test]
+async fn refresh_all_reads_the_config_first(cx: &mut TestAppContext) {
+    let config = ConfigDir::new("refresh", &["/demo/gh-x"]);
+    let (handle, view) = open_watching(cx, &config, &["/demo/gh-x"]);
+    config.write(&["/demo/gh-x", "/demo/codexbar"]);
+    // F5 before the poll has run: the refresh still covers the new list.
+    cx.update_window(handle, |_, window, cx| window.press("f5", cx))
+        .unwrap();
+    settle(cx, handle, &view).await;
+    assert_eq!(listed(cx, &view), ["gh-x", "codexbar"]);
+    assert!(cx.update(|cx| {
+        view.read(cx)
+            .board()
+            .card(Path::new("/demo/codexbar"))
+            .unwrap()
+            .document
+            .is_some()
+    }));
+}
+
+#[gpui_kit::test]
+async fn a_broken_config_keeps_the_table_and_says_so_until_it_is_fixed(cx: &mut TestAppContext) {
+    let config = ConfigDir::new("broken", &["/demo/gh-x", "/demo/codexbar"]);
+    let (handle, view) = open_watching(cx, &config, &["/demo/gh-x", "/demo/codexbar"]);
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    assert!(!banner(cx, handle));
+    config.write_text("repositories = [\"/demo/gh-x\"");
+    after_poll(cx, handle, &view).await;
+    // The last good list stays, and the banner names the file and says it will be read again.
+    assert_eq!(listed(cx, &view), ["gh-x", "codexbar"]);
+    assert!(banner(cx, handle));
+    let problem = cx
+        .update(|cx| view.read(cx).config_problem().map(str::to_owned))
+        .unwrap();
+    assert!(problem.contains("config.toml is not valid"), "{problem}");
+    assert!(problem.contains("reads the file again when it is saved"), "{problem}");
+    assert!(!problem.contains("restart"), "{problem}");
+    // Fixed: the banner goes and the new list applies.
+    config.write(&["/demo/codexbar"]);
+    after_poll(cx, handle, &view).await;
+    assert!(!banner(cx, handle));
+    assert_eq!(listed(cx, &view), ["codexbar"]);
+}
+
+#[gpui_kit::test]
+async fn an_unchanged_config_starts_no_extra_fetches(cx: &mut TestAppContext) {
+    let config = ConfigDir::new("unchanged", &["/demo/gh-x"]);
+    let source = Arc::new(Recording::default());
+    let (handle, view) = open_board(
+        cx,
+        vec![PathBuf::from("/demo/gh-x")],
+        StatusCache::default(),
+        source.clone(),
+        Options {
+            config_dir: Some(config.0.clone()),
+            ..options()
+        },
+    );
+    for _ in 0..5 {
+        after_poll(cx, handle, &view).await;
+    }
+    assert!(
+        source.0.lock().unwrap().is_empty(),
+        "polling an unchanged file fetches nothing"
+    );
 }

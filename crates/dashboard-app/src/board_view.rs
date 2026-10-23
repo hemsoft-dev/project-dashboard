@@ -210,7 +210,7 @@ impl BoardView {
         self.finding_priorities
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub fn apply_priorities(&mut self, priorities: Priorities, cx: &mut Context<Self>) {
         self.board.set_priorities(priorities);
         cx.notify();

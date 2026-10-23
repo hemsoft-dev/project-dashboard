@@ -94,6 +94,8 @@ fn live_view(window: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<BoardView
             now: None,
             columns: UiState::load(&dir).columns,
             ui_state_dir: Some(dir.clone()),
+            priorities: Arc::new(dashboard_core::priority::Pmd::from_config(&config, &dir)),
+            pmd: Some(dashboard_core::priority::Pmd::from_config(&config, &dir)),
             threads: Arc::new(t3::LocalT3 {
                 home: config.t3_home.clone(),
             }),
@@ -122,6 +124,8 @@ fn demo_view(window: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<BoardView
             columns: UiState::load(&config::default_dir()).columns,
             ui_state_dir: Some(config::default_dir()),
             threads: Arc::new(demo::DemoThreads),
+            priorities: Arc::new(demo::DemoPriorities),
+            pmd: None,
         },
         window,
         cx,

@@ -13,18 +13,26 @@ pub const MAX_WIDTH: f32 = 60.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Column {
     Repository,
+    Priority,
     PullRequests,
     Issues,
     Updated,
 }
 
 impl Column {
-    pub const ALL: [Column; 4] = [Self::Repository, Self::PullRequests, Self::Issues, Self::Updated];
+    pub const ALL: [Column; 5] = [
+        Self::Repository,
+        Self::Priority,
+        Self::PullRequests,
+        Self::Issues,
+        Self::Updated,
+    ];
 
     /// The width before any drag, in rems. The repository column fits a typical `owner/name` and its Cached tag.
     pub fn default_width(self) -> f32 {
         match self {
             Self::Repository => 18.0,
+            Self::Priority => 4.5,
             Self::PullRequests | Self::Issues => 3.25,
             Self::Updated => 4.5,
         }
@@ -34,6 +42,7 @@ impl Column {
     pub fn min_width(self) -> f32 {
         match self {
             Self::Repository => 6.0,
+            Self::Priority => 4.5,
             Self::PullRequests => 2.5,
             Self::Issues => 3.0,
             Self::Updated => 4.25,
@@ -44,6 +53,7 @@ impl Column {
     pub fn key(self) -> &'static str {
         match self {
             Self::Repository => "repository",
+            Self::Priority => "priority",
             Self::PullRequests => "pullRequests",
             Self::Issues => "issues",
             Self::Updated => "updated",
@@ -65,6 +75,7 @@ impl Column {
 #[serde(rename_all = "camelCase")]
 pub struct ColumnWidths {
     repository: f32,
+    priority: f32,
     pull_requests: f32,
     issues: f32,
     updated: f32,
@@ -74,6 +85,7 @@ impl Default for ColumnWidths {
     fn default() -> Self {
         Self {
             repository: Column::Repository.default_width(),
+            priority: Column::Priority.default_width(),
             pull_requests: Column::PullRequests.default_width(),
             issues: Column::Issues.default_width(),
             updated: Column::Updated.default_width(),
@@ -85,6 +97,7 @@ impl ColumnWidths {
     pub fn get(&self, column: Column) -> f32 {
         match column {
             Column::Repository => self.repository,
+            Column::Priority => self.priority,
             Column::PullRequests => self.pull_requests,
             Column::Issues => self.issues,
             Column::Updated => self.updated,
@@ -96,6 +109,7 @@ impl ColumnWidths {
         let width = column.clamp(width);
         match column {
             Column::Repository => self.repository = width,
+            Column::Priority => self.priority = width,
             Column::PullRequests => self.pull_requests = width,
             Column::Issues => self.issues = width,
             Column::Updated => self.updated = width,

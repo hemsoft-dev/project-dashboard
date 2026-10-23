@@ -13,6 +13,7 @@ toml.workspace = true
 dirs.workspace = true
 chrono.workspace = true
 rusqlite.workspace = true
+reqwest.workspace = true
 
 [lints]
 workspace = true

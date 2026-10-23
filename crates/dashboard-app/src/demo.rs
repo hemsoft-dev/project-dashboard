@@ -142,3 +142,22 @@ impl ThreadFinder for DemoThreads {
             .collect()
     }
 }
+
+/// Illustrative pmd values; demo mode never reads a token or calls the API.
+pub struct DemoPriorities;
+
+impl dashboard_core::priority::PrioritySource for DemoPriorities {
+    fn fetch(&self) -> dashboard_core::priority::Priorities {
+        dashboard_core::priority::Priorities::parse(
+            br#"{"projects":[
+            {"slug":"gh-x","priority":3,"tracked":true},
+            {"slug":"codexbar","priority":3,"tracked":true},
+            {"slug":"hs-buddy","priority":2,"tracked":true},
+            {"slug":"project-dashboard","priority":3,"tracked":true},
+            {"slug":"set-it-free-loop","priority":1,"tracked":true},
+            {"slug":"hs-pi-dashboard","priority":3,"tracked":true}
+        ]}"#,
+        )
+        .unwrap()
+    }
+}

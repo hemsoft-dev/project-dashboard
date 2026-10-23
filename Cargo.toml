@@ -4,7 +4,7 @@ members = ["crates/*"]
 
 [workspace.package]
 edition = "2024"
-version = "0.3.0"
+version = "0.4.0"
 license = "MIT"
 publish = false
 
@@ -22,6 +22,7 @@ toml = "1"
 dirs = "6"
 # Reads T3 Code's state database, read-only, to link a checkout to its thread (#15). Bundled, so no system SQLite.
 rusqlite = { version = "0.40", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

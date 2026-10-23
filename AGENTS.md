@@ -18,6 +18,10 @@ renders that document. It never calls the GitHub API or git for status itself, a
 (clean, attention, cleanup candidate). If the dashboard needs something gh-x doesn't report, add it to gh-x first.
 That way the app and `gs` can never disagree.
 
+Project priority is the exception: it comes only from the [project-manager read API](https://github.com/hemsoft-dev/project-manager#read-api),
+matched by repository name. Fetch it independently of gh-x so missing credentials or an unavailable pmd never delay
+status refreshes. Never log or commit the bearer token. Unknown priorities render as `—`.
+
 ## Workspace
 
 ```text

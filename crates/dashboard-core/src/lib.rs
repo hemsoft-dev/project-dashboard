@@ -2,11 +2,13 @@
 //!
 //! Status data always comes from `gh x status --json` (gh-x is the single source of truth): [`source`] runs it,
 //! [`status`] reads its document, and the board only arranges and aggregates gh-x's own verdicts.
+//! Project priority is separate, read from pmd by [`priority`].
 
 pub mod activity;
 pub mod cache;
 pub mod columns;
 pub mod config;
+pub mod priority;
 pub mod scheduler;
 pub mod source;
 pub mod status;
@@ -102,6 +104,7 @@ fn folder_name(path: &Path) -> String {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Board {
     cards: Vec<Card>,
+    priorities: priority::Priorities,
     /// The generation the next new card gets.
     next_generation: u64,
 }
@@ -214,11 +217,21 @@ impl Board {
             .find(|error| error.is_setup())
     }
 
-    /// The cards' indices in display order: config order, or by update time (the last activity's), newest or oldest
-    /// first. Cards without an update time come after the rest in either direction, in config order.
+    /// The cards' indices in config, update-time, or priority order. Unknown values sort last in either direction;
+    /// ties retain config order.
     pub fn order(&self, sort: SortOrder) -> Vec<usize> {
         let mut order: Vec<usize> = (0..self.cards.len()).collect();
         if sort == SortOrder::Config {
+            return order;
+        }
+        if matches!(sort, SortOrder::PriorityFirst | SortOrder::PriorityLast) {
+            order.sort_by(
+                |&a, &b| match (self.priority(&self.cards[a]), self.priority(&self.cards[b])) {
+                    (Some(a), Some(b)) if sort == SortOrder::PriorityFirst => a.cmp(&b),
+                    (Some(a), Some(b)) => b.cmp(&a),
+                    (a, b) => b.is_some().cmp(&a.is_some()),
+                },
+            );
             return order;
         }
         let updated: Vec<_> = self
@@ -238,6 +251,14 @@ impl Board {
     pub fn checkouts(&self) -> Vec<PathBuf> {
         self.cards.iter().map(|card| card.checkout.clone()).collect()
     }
+
+    pub fn set_priorities(&mut self, priorities: priority::Priorities) {
+        self.priorities = priorities;
+    }
+
+    pub fn priority(&self, card: &Card) -> Option<u8> {
+        self.priorities.for_card(card)
+    }
 }
 
 /// How the table orders its rows.
@@ -250,15 +271,27 @@ pub enum SortOrder {
     NewestFirst,
     /// Least recently updated first.
     OldestFirst,
+    /// P0 first, unknown priorities last; ties keep config order.
+    PriorityFirst,
+    /// Highest priority number first, unknown priorities last; ties keep config order.
+    PriorityLast,
 }
 
 impl SortOrder {
     /// The order after a click on the Updated header: newest first, then oldest first, then config order again.
     pub fn next(self) -> Self {
         match self {
-            Self::Config => Self::NewestFirst,
+            Self::Config | Self::PriorityFirst | Self::PriorityLast => Self::NewestFirst,
             Self::NewestFirst => Self::OldestFirst,
             Self::OldestFirst => Self::Config,
+        }
+    }
+
+    pub fn next_priority(self) -> Self {
+        match self {
+            Self::PriorityFirst => Self::PriorityLast,
+            Self::PriorityLast => Self::Config,
+            _ => Self::PriorityFirst,
         }
     }
 }

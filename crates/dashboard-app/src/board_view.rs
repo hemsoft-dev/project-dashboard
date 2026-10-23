@@ -22,6 +22,7 @@ use chrono::{DateTime, Utc};
 use dashboard_core::cache::StatusCache;
 use dashboard_core::columns::{Column, ColumnWidths};
 use dashboard_core::config::{Config, ConfigError, ConfigFile};
+use dashboard_core::priority::{Pmd, Priorities, PrioritySource};
 use dashboard_core::scheduler::{self, Outcome};
 use dashboard_core::source::StatusSource;
 use dashboard_core::status::{HealthRow, Issue, PullRequest, RunOutcome, Section, StatusDocument, WorkflowRun};
@@ -85,6 +86,9 @@ pub struct Options {
     pub ui_state_dir: Option<PathBuf>,
     /// Finds the T3 Code thread for each checkout.
     pub threads: Arc<dyn ThreadFinder>,
+    pub priorities: Arc<dyn PrioritySource>,
+    /// Live pmd settings, for config reload; `None` uses the supplied fixture source.
+    pub pmd: Option<Pmd>,
 }
 
 /// A column border being dragged: which column, and where the drag started.
@@ -118,6 +122,9 @@ pub struct BoardView {
     finding_threads: bool,
     /// Another lookup was asked for while one ran; it starts when that one lands, so its result is never stale.
     threads_wanted: bool,
+    finding_priorities: bool,
+    priorities_wanted: bool,
+    priority_generation: u64,
     last_refresh: Option<Instant>,
     focus: FocusHandle,
 }
@@ -154,10 +161,14 @@ impl BoardView {
             threads: HashMap::new(),
             finding_threads: false,
             threads_wanted: false,
+            finding_priorities: false,
+            priorities_wanted: false,
+            priority_generation: 0,
             last_refresh: None,
             focus,
         };
         view.find_threads(cx);
+        view.refresh_priorities(cx);
         // Keeps "Updated … ago" and the last-activity ages current between refreshes.
         cx.spawn(async move |this, cx| {
             loop {
@@ -192,6 +203,17 @@ impl BoardView {
     #[cfg(test)]
     pub fn board(&self) -> &Board {
         &self.board
+    }
+
+    #[cfg(test)]
+    pub fn priorities_pending(&self) -> bool {
+        self.finding_priorities
+    }
+
+    #[cfg(test)]
+    pub fn apply_priorities(&mut self, priorities: Priorities, cx: &mut Context<Self>) {
+        self.board.set_priorities(priorities);
+        cx.notify();
     }
 
     pub fn is_expanded(&self, checkout: &Path) -> bool {
@@ -325,6 +347,48 @@ impl BoardView {
         cx.notify();
     }
 
+    pub fn cycle_priority_sort(&mut self, cx: &mut Context<Self>) {
+        self.sort = self.sort.next_priority();
+        cx.notify();
+    }
+
+    /// pmd never occupies a gh-x worker or delays the UI. Coalesce repeated requests and ignore an old config's result.
+    pub fn refresh_priorities(&mut self, cx: &mut Context<Self>) {
+        if self.finding_priorities {
+            self.priorities_wanted = true;
+            return;
+        }
+        self.finding_priorities = true;
+        let generation = self.priority_generation;
+        let source = Arc::clone(&self.options.priorities);
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = send.send(source.fetch());
+        });
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(POLL).await;
+                let priorities = match receive.try_recv() {
+                    Ok(priorities) => priorities,
+                    Err(TryRecvError::Empty) => continue,
+                    Err(TryRecvError::Disconnected) => Priorities::default(),
+                };
+                let _ = this.update(cx, |view, cx| {
+                    view.finding_priorities = false;
+                    if view.priority_generation == generation {
+                        view.board.set_priorities(priorities);
+                    }
+                    if std::mem::take(&mut view.priorities_wanted) {
+                        view.refresh_priorities(cx);
+                    }
+                    cx.notify();
+                });
+                break;
+            }
+        })
+        .detach();
+    }
+
     /// The checkouts in the order the table shows them.
     #[cfg(test)]
     pub fn row_order(&self) -> Vec<PathBuf> {
@@ -415,6 +479,21 @@ impl BoardView {
             }
         };
         self.options.config_problem = None;
+        if self.options.pmd.is_some() {
+            let dir = self
+                .options
+                .config_dir
+                .as_deref()
+                .expect("live pmd has a config directory");
+            let pmd = Pmd::from_config(&config, dir);
+            if self.options.pmd.as_ref() != Some(&pmd) {
+                self.priority_generation += 1;
+                self.options.priorities = Arc::new(pmd.clone());
+                self.options.pmd = Some(pmd);
+                self.board.set_priorities(Priorities::default());
+                self.refresh_priorities(cx);
+            }
+        }
         let before = self.board.cards().len();
         let added = self.board.set_checkouts(&config.repositories, &self.cache);
         self.sync_wanted();
@@ -464,6 +543,7 @@ impl BoardView {
 
     /// Refreshes every card that isn't already refreshing.
     fn refresh_idle(&mut self, cx: &mut Context<Self>) {
+        self.refresh_priorities(cx);
         let idle: Vec<PathBuf> = self
             .board
             .cards()
@@ -476,6 +556,7 @@ impl BoardView {
 
     /// Refreshes one card with `--refresh`, bypassing gh-x's cache.
     pub fn refresh_one(&mut self, checkout: &Path, cx: &mut Context<Self>) {
+        self.refresh_priorities(cx);
         if self.board.card(checkout).is_some_and(|card| !card.refreshing) {
             self.start(vec![checkout.to_owned()], true, cx);
         }
@@ -702,11 +783,16 @@ impl BoardView {
         let theme = cx.theme();
         let foreground = theme.foreground;
         let (arrow, sort_label) = match self.sort {
-            SortOrder::Config => ("", "Updated, not sorted"),
+            SortOrder::Config | SortOrder::PriorityFirst | SortOrder::PriorityLast => ("", "Updated, not sorted"),
             SortOrder::NewestFirst => ("↓", "Updated, newest first"),
             SortOrder::OldestFirst => ("↑", "Updated, oldest first"),
         };
-        let sorted = self.sort != SortOrder::Config;
+        let sorted = matches!(self.sort, SortOrder::NewestFirst | SortOrder::OldestFirst);
+        let (priority_arrow, priority_label) = match self.sort {
+            SortOrder::PriorityFirst => ("↑", "Priority, highest first"),
+            SortOrder::PriorityLast => ("↓", "Priority, lowest first"),
+            _ => ("", "Priority, not sorted"),
+        };
         h_flex()
             .id("table-header")
             .px_2()
@@ -728,6 +814,24 @@ impl BoardView {
                         .test_support()
                         .truncate()
                         .child(column_title(Column::Repository)),
+                    cx,
+                ),
+            )
+            .child(
+                self.header_cell(
+                    Column::Priority,
+                    h_flex()
+                        .id("sort-priority")
+                        .test_support()
+                        .aria_label(priority_label)
+                        .size_full()
+                        .gap_1()
+                        .cursor_pointer()
+                        .when(!priority_arrow.is_empty(), |this| this.text_color(foreground))
+                        .hover(move |style| style.text_color(foreground))
+                        .on_click(cx.listener(|view, _, _, cx| view.cycle_priority_sort(cx)))
+                        .child(column_title(Column::Priority))
+                        .child(priority_arrow),
                     cx,
                 ),
             )
@@ -924,6 +1028,24 @@ impl BoardView {
             )
             .child(
                 div()
+                    .id(("priority", ix))
+                    .test_support()
+                    .aria_label(
+                        self.board
+                            .priority(card)
+                            .map_or_else(|| "Priority: unknown".to_owned(), |p| format!("Priority P{p}")),
+                    )
+                    .w(width(Column::Priority, &self.columns))
+                    .flex_none()
+                    .truncate()
+                    .child(
+                        self.board
+                            .priority(card)
+                            .map_or_else(|| "—".to_owned(), |p| format!("P{p}")),
+                    ),
+            )
+            .child(
+                div()
                     .id(("prs", ix))
                     .test_support()
                     .aria_label(format!("{prs} open pull requests"))
@@ -1086,6 +1208,7 @@ fn column_cell(column: Column, widths: &ColumnWidths) -> gpui_kit::Div {
 fn column_title(column: Column) -> &'static str {
     match column {
         Column::Repository => "Repository",
+        Column::Priority => "Priority",
         Column::PullRequests => "PRs",
         Column::Issues => "Issues",
         Column::Updated => "Updated",
@@ -1093,12 +1216,11 @@ fn column_title(column: Column) -> &'static str {
 }
 
 /// The table's least width: chevron, state and the two row buttons; the repository column's minimum and the other resizable
-/// columns' widths; the lead before Updated; last activity's minimum; seven gaps and 0.5 rem padding on each side. At
-/// the default widths that is 476 px at 100%, inside the window's 480 px minimum. Wider columns make the table scroll
-/// sideways instead.
+/// columns' widths; the lead before Updated; last activity's minimum; eight gaps and 0.5 rem padding on each side.
+/// Narrow windows and wider saved columns scroll sideways with the header and rows together.
 fn table_min(widths: &ColumnWidths) -> gpui_kit::Rems {
     let resizable = widths.total() - widths.get(Column::Repository) + Column::Repository.min_width();
-    rems(1.75 + 0.75 + 3.5 + resizable + 0.75 + 1.5 + 7. * 0.5 + 2. * 0.5)
+    rems(1.75 + 0.75 + 3.5 + resizable + 0.75 + 1.5 + 8. * 0.5 + 2. * 0.5)
 }
 
 impl Render for BoardView {

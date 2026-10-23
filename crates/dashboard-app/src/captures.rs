@@ -39,6 +39,8 @@ fn options() -> Options {
         columns: Default::default(),
         ui_state_dir: None,
         threads: Arc::new(demo::DemoThreads),
+        priorities: Arc::new(demo::DemoPriorities),
+        pmd: None,
     }
 }
 
@@ -76,6 +78,8 @@ fn open_sized(
 fn fill(cx: &mut HeadlessAppContext, view: &Entity<BoardView>, source: &dyn StatusSource) {
     cx.update(|cx| {
         view.update(cx, |view, cx| {
+            use dashboard_core::priority::PrioritySource as _;
+            view.apply_priorities(demo::DemoPriorities.fetch(), cx);
             for checkout in view.board().checkouts() {
                 let result = source.fetch(&checkout, false);
                 view.apply(Outcome { checkout, result }, cx);
@@ -107,6 +111,33 @@ fn captures() {
     fill(&mut cx, &view, &demo::DemoSource);
     save(&mut cx, board, &out, "table");
 
+    cx.update(|cx| view.update(cx, |view, cx| view.cycle_priority_sort(cx)));
+    cx.run_until_parked();
+    save(&mut cx, board, &out, "priority-highest");
+    cx.update(|cx| view.update(cx, |view, cx| view.cycle_priority_sort(cx)));
+    cx.run_until_parked();
+    save(&mut cx, board, &out, "priority-lowest");
+    cx.update(|cx| view.update(cx, |view, cx| view.cycle_priority_sort(cx)));
+    cx.run_until_parked();
+    save(&mut cx, board, &out, "priority-config");
+
+    cx.update_window(board, |_, window, cx| {
+        use dashboard_core::columns::Column;
+        use gpui_kit::point;
+        window.render_frame(cx);
+        let from = window.find(("resize", Column::Priority as usize)).bounds().center();
+        window.drag(from, point(from.x + px(48.), from.y), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    save(&mut cx, board, &out, "priority-resized");
+    cx.update_window(board, |_, window, cx| {
+        use dashboard_core::columns::Column;
+        window.double_click(("resize", Column::Priority as usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
     // The same table sorted by update time, newest first, then oldest first.
     cx.update(|cx| view.update(cx, |view, cx| view.cycle_sort(cx)));
     cx.run_until_parked();
@@ -115,10 +146,16 @@ fn captures() {
     cx.run_until_parked();
     save(&mut cx, board, &out, "table-sorted-oldest");
 
-    // The window at its 480 px minimum: last activity shrinks, every refresh button stays in view.
+    // The window at its 480 px minimum: the table can scroll sideways to its controls.
     let (narrow, narrow_view) = open_sized(&mut cx, demo::checkouts(), 480., 560.);
     fill(&mut cx, &narrow_view, &demo::DemoSource);
     save(&mut cx, narrow, &out, "table-narrow");
+    cx.update_window(narrow, |_, window, cx| {
+        use gpui_kit::{ScrollDelta, point};
+        window.scroll("table", ScrollDelta::Pixels(point(px(-2000.), px(0.))), cx);
+    })
+    .unwrap();
+    save(&mut cx, narrow, &out, "table-narrow-scrolled");
 
     // The table with codexbar expanded: its health rows and its PR, issue, merged-PR and workflow-run tables.
     let (expanded, expanded_view) = open(&mut cx, demo::checkouts(), 980.);

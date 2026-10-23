@@ -35,6 +35,8 @@ fn options() -> Options {
         columns: Default::default(),
         ui_state_dir: None,
         threads: Arc::new(demo::DemoThreads),
+        priorities: Arc::new(demo::DemoPriorities),
+        pmd: None,
     }
 }
 
@@ -81,7 +83,7 @@ async fn settle(cx: &mut TestAppContext, handle: AnyWindowHandle, view: &Entity<
         std::thread::sleep(Duration::from_millis(2));
         cx.executor().advance_clock(Duration::from_millis(100));
         cx.run_until_parked();
-        if !cx.update(|cx| view.read(cx).board().is_refreshing()) {
+        if !cx.update(|cx| view.read(cx).board().is_refreshing() || view.read(cx).priorities_pending()) {
             break;
         }
     }
@@ -621,7 +623,7 @@ async fn clicking_the_last_activity_opens_it_without_expanding_the_row(cx: &mut 
 }
 
 #[gpui_kit::test]
-async fn at_the_minimum_width_every_row_keeps_its_refresh_button_in_view(cx: &mut TestAppContext) {
+async fn at_the_minimum_width_every_row_can_scroll_its_refresh_button_into_view(cx: &mut TestAppContext) {
     // 480 px is the window's minimum (main.rs).
     let (handle, view) = open_board_sized(
         cx,
@@ -634,6 +636,12 @@ async fn at_the_minimum_width_every_row_keeps_its_refresh_button_in_view(cx: &mu
     cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
     settle(cx, handle, &view).await;
     cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll(
+            "table",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-2000.), px(0.))),
+            cx,
+        );
         window.render_frame(cx);
         for ix in 0..12usize {
             let bounds = window.find(("refresh", ix)).bounds();
@@ -811,11 +819,17 @@ async fn the_zoom_is_saved_and_restored_on_the_next_start(cx: &mut TestAppContex
 }
 
 #[gpui_kit::test]
-async fn at_200_percent_the_table_still_fits_its_columns(cx: &mut TestAppContext) {
+async fn at_200_percent_the_table_keeps_readable_columns_and_scrolls_to_controls(cx: &mut TestAppContext) {
     let (handle, _) = twelve(cx).await;
     cx.update(|cx| zoom::set_level(2.0, cx));
     cx.run_until_parked();
     cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll(
+            "table",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-2000.), px(0.))),
+            cx,
+        );
         window.render_frame(cx);
         for ix in 0..12usize {
             let refresh = window.find(("refresh", ix)).bounds();
@@ -827,7 +841,7 @@ async fn at_200_percent_the_table_still_fits_its_columns(cx: &mut TestAppContext
             );
             // Names keep a readable share of the width rather than their minimum alone.
             assert!(
-                window.find(("name", ix)).bounds().size.width > px(150.),
+                window.find(("name", ix)).bounds().size.width >= px(6. * 32.),
                 "row {ix} name width"
             );
         }
@@ -958,7 +972,7 @@ async fn the_repository_column_defaults_to_a_name_sized_width(cx: &mut TestAppCo
         // Last activity got the width the narrower repository column freed.
         let summary = window.find(("activity-summary", 0usize)).bounds();
         assert!(
-            summary.origin.x < px(600.),
+            summary.origin.x < px(700.),
             "last activity starts at {:?}",
             summary.origin.x
         );
@@ -1150,6 +1164,12 @@ async fn each_row_has_a_t3_button_just_left_of_its_refresh_button(cx: &mut TestA
         cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
         settle(cx, handle, &view).await;
         cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.scroll(
+                "table",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-2000.), px(0.))),
+                cx,
+            );
             window.render_frame(cx);
             for ix in 0..12usize {
                 let t3 = window.find(("t3", ix)).bounds();
@@ -1598,4 +1618,158 @@ async fn an_unchanged_config_starts_no_extra_fetches(cx: &mut TestAppContext) {
         source.0.lock().unwrap().is_empty(),
         "polling an unchanged file fetches nothing"
     );
+}
+
+#[gpui_kit::test]
+async fn priority_values_precede_prs_and_sort_without_expanding_rows(cx: &mut TestAppContext) {
+    let (handle, view) = twelve(cx).await;
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(("priority", 0usize)).label(), Some("Priority P3"));
+        assert_eq!(window.find(("priority", 2usize)).label(), Some("Priority: unknown"));
+        let priority = window.find("sort-priority").bounds();
+        let row = window.find(("priority", 0usize)).bounds();
+        let prs = window.find(("prs", 0usize)).bounds();
+        assert_eq!(priority.origin.x, row.origin.x);
+        assert!(row.origin.x + row.size.width < prs.origin.x);
+        window.click("sort-priority", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::PriorityFirst);
+    let order = cx.update(|cx| view.read(cx).row_order());
+    assert_eq!(order[0], Path::new("/demo/set-it-free-loop"));
+    assert_eq!(order[1], Path::new("/demo/hs-buddy"));
+    assert_eq!(order[2], Path::new("/demo/gh-x"));
+    assert_eq!(order[6], Path::new("/demo/minibot"));
+    assert!(!cx.update(|cx| view.read(cx).is_expanded(Path::new("/demo/gh-x"))));
+    cx.update_window(handle, |_, window, cx| window.click("sort-priority", cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::PriorityLast);
+    assert_eq!(cx.update(|cx| view.read(cx).row_order())[0], Path::new("/demo/gh-x"));
+    cx.update_window(handle, |_, window, cx| window.click("sort-priority", cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| view.read(cx).row_order()), demo::checkouts());
+    cx.update_window(handle, |_, window, cx| {
+        window.click("sort-priority", cx);
+        window.render_frame(cx);
+        window.click("sort-updated", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::NewestFirst);
+}
+
+#[gpui_kit::test]
+async fn priority_width_survives_a_restart_and_dragging_does_not_sort(cx: &mut TestAppContext) {
+    let dir = std::env::temp_dir().join(format!("dashboard-priority-width-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (handle, view) = open_board(
+        cx,
+        four(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        Options {
+            ui_state_dir: Some(dir.clone()),
+            ..options()
+        },
+    );
+    drag_border(cx, handle, Column::Priority, 32.);
+    let width = Column::Priority.default_width() + 2.;
+    assert_eq!(cx.update(|cx| view.read(cx).columns()).get(Column::Priority), width);
+    assert_eq!(width_of(cx, handle, "sort-priority"), px(width * 16.));
+    assert_eq!(width_of(cx, handle, ("priority", 0usize)), px(width * 16.));
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::Config);
+    let saved = dashboard_core::ui_state::UiState::load(&dir).columns;
+    assert_eq!(saved.get(Column::Priority), width);
+    let (restored, _) = open_board(
+        cx,
+        four(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        Options {
+            columns: saved,
+            ..options()
+        },
+    );
+    assert_eq!(width_of(cx, restored, "sort-priority"), px(width * 16.));
+    cx.update_window(handle, |_, window, cx| {
+        window.double_click(("resize", Column::Priority as usize), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|cx| view.read(cx).columns()).get(Column::Priority),
+        Column::Priority.default_width()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[gpui_kit::test]
+async fn a_blocked_priority_source_never_holds_up_status_refreshes(cx: &mut TestAppContext) {
+    use dashboard_core::priority::{Priorities, PrioritySource};
+    struct Gated {
+        released: std::sync::Mutex<bool>,
+        ready: std::sync::Condvar,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    impl PrioritySource for Gated {
+        fn fetch(&self) -> Priorities {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let released = self.released.lock().unwrap();
+            let _released = self.ready.wait_while(released, |released| !*released).unwrap();
+            Priorities::default()
+        }
+    }
+    struct Release(Arc<Gated>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            *self.0.released.lock().unwrap() = true;
+            self.0.ready.notify_all();
+        }
+    }
+    let source = Arc::new(Gated {
+        released: std::sync::Mutex::new(false),
+        ready: std::sync::Condvar::new(),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let release = Release(Arc::clone(&source));
+    let (handle, view) = open_board(
+        cx,
+        four(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        Options {
+            priorities: source.clone(),
+            ..options()
+        },
+    );
+    cx.update(|cx| {
+        view.update(cx, |view, cx| {
+            view.refresh_all(cx);
+            view.refresh_all(cx);
+        })
+    });
+    for _ in 0..100 {
+        std::thread::sleep(Duration::from_millis(2));
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+        if !cx.update(|cx| view.read(cx).board().is_refreshing()) {
+            break;
+        }
+    }
+    assert!(!cx.update(|cx| view.read(cx).board().is_refreshing()));
+    assert!(cx.update(|cx| view.read(cx).priorities_pending()));
+    assert_eq!(source.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(("priority", 0usize)).label(), Some("Priority: unknown"));
+        assert_eq!(window.find(("prs", 0usize)).label(), Some("0 open pull requests"));
+    })
+    .unwrap();
+    drop(release);
+    settle(cx, handle, &view).await;
+    assert!(!cx.update(|cx| view.read(cx).priorities_pending()));
 }

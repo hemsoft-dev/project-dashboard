@@ -8,6 +8,8 @@
 //! repositories = ["C:/Users/franz/github/hemsoft/gh-x", "C:/Users/franz/github/hemsoft/codexbar"]
 //! # Optional: the T3 Code home (its --base-dir) when it isn't T3CODE_HOME, ~/.t3 or ~/.t3-server.
 //! t3_home = "D:/t3"
+//! pmd_url = "http://100.97.164.73:8790"
+//! pmd_token_path = "pmd-token" # relative to config.toml
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -34,6 +36,10 @@ pub struct Config {
     /// Where the local T3 Code server keeps its data (its `--base-dir`), for the row's T3 button. Unset, the
     /// dashboard looks in `T3CODE_HOME`, `~/.t3` and `~/.t3-server`.
     pub t3_home: Option<PathBuf>,
+    /// Base URL of the project-manager read API.
+    pub pmd_url: String,
+    /// Bearer-token file. Relative paths resolve beside config.toml.
+    pub pmd_token_path: PathBuf,
 }
 
 impl Default for Config {
@@ -44,6 +50,8 @@ impl Default for Config {
             parallelism: DEFAULT_PARALLELISM,
             repositories: Vec::new(),
             t3_home: None,
+            pmd_url: crate::priority::DEFAULT_URL.to_owned(),
+            pmd_token_path: PathBuf::from("pmd-token"),
         }
     }
 }

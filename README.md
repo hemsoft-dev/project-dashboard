@@ -23,7 +23,8 @@ with the look and speed of [CodexBar](https://github.com/hemsoft-dev/codexbar).
 - **gh-x stays the source of truth.** The app runs `gh x status --json` in each
   repository and renders the result. It never reimplements the status rules, so
   the app and `gs` always agree. JSON output is tracked in
-  [gh-x](https://github.com/hemsoft-dev/gh-x/issues).
+  [gh-x](https://github.com/hemsoft-dev/gh-x/issues). Project priority comes separately from
+  [project-manager](https://github.com/hemsoft-dev/project-manager#read-api), the authority for project priorities.
 - **Many repos, one window:** a configurable list of local checkouts, refreshed
   in parallel. Cached results render first, and fresh data replaces them as it
   arrives.
@@ -102,7 +103,7 @@ gh extension install hemsoft-dev/gh-x   # or: gh extension upgrade gh-x
 ```
 
 The window shows a table with one row per repository, in config order: a colored dot for its overall state
-(**Clean**, **Attention**, **Failed** or **Loading**), its `owner/name`, the counts of open PRs and open issues, when it
+(**Clean**, **Attention**, **Failed** or **Loading**), its `owner/name`, its **Priority**, the counts of open PRs and open issues, when it
 was last **updated**, such as `14m ago`, and its **last activity**: the most recently updated open or recently merged
 PR, open issue or workflow run in gh-x's report, such as `PR #12` with its title. The update time is that item's;
 hover it for the exact local time. A repository is Clean when every health row is clean by gh-x's verdict and
@@ -114,7 +115,11 @@ every GitHub section loaded.
   item, or a row's last activity, to open it in your browser.
 - **Sort** by update time with the **Updated** column header: newest first, then oldest first, then config order
   again. Repositories with nothing to date stay at the bottom either way.
-- **Resize** a column by dragging the border to the right of its header (Repository, PRs, Issues, Updated); last
+- **Priority** shows pmd's tier, such as `P0`, immediately before PRs. Click its header for highest priority first,
+  then lowest first, then config order. Equal priorities keep config order; unknowns stay last in either direction.
+  Untracked repositories, missing tokens, and API failures show `—`. Its request runs separately, with a two-second
+  timeout, so status refreshes proceed while pmd is unavailable. Priority refreshes at startup and with every refresh.
+- **Resize** a column by dragging the border to the right of its header (Repository, Priority, PRs, Issues, Updated); last
   activity takes the rest. Double-click a border to restore that column's default width. Widths are remembered in
   `ui-state.json`, next to `config.toml`, and scale with the zoom. On a window too narrow for them, the repository
   column gives way first, then the table scrolls sideways.
@@ -135,6 +140,7 @@ every GitHub section loaded.
   refresh and a new `refresh_minutes` from the next scheduled one. **Refresh all** reads the file first too. If an
   edit leaves the file invalid, the table keeps the last good list and a banner says what's wrong until you fix it.
   `t3_home` is read at startup only.
+  Changes to `pmd_url` and `pmd_token_path` apply immediately and discard the old service's priorities.
 - **Zoom** the whole window with **Ctrl** **+** (or **Ctrl** **=**) and **Ctrl** **-**, or **Ctrl** + mouse wheel, in
   10% steps from 50% to 200%; **Ctrl** **0** resets to 100%. Text, spacing, icons and columns scale together, and the
   new level shows briefly at the bottom. It's remembered in `ui-state.json`, next to `config.toml`, so the next start
@@ -165,6 +171,10 @@ repositories = [
 refresh_minutes = 5
 # How many gh x status processes run at once.
 parallelism = 4
+# Base URL of the tailnet-only project-manager API.
+pmd_url = "http://100.97.164.73:8790"
+# Read-scoped bearer token; relative paths resolve beside config.toml.
+pmd_token_path = "pmd-token"
 # The folder scanned on first run.
 root = "C:/Users/franz/github"
 ```
@@ -173,6 +183,11 @@ On first run, when the file doesn't exist yet, the app creates it with every git
 (or your home folder if there's no `~/github`). Edit the list to change it; the running app picks up the change when
 the file is saved. The last results are
 cached next to it in `status-cache.json`, and the zoom level in `ui-state.json`; deleting either file is always safe.
+
+Existing configs use the pmd defaults when these keys are absent. Store the read token as plain text in the configured
+file, with access restricted to your user. On Windows the default is `%APPDATA%\ProjectDashboard\pmd-token`.
+Only the file path belongs in config.toml. The app never writes the token to its logs, config, or cache.
+See [project-manager's token documentation](https://github.com/hemsoft-dev/project-manager#tokens).
 
 ## License
 

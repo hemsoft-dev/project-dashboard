@@ -95,6 +95,9 @@ impl Pmd {
             .ok()?
             .error_for_status()
             .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
         let mut bytes = Vec::new();
         response.take(MAX_RESPONSE + 1).read_to_end(&mut bytes).ok()?;
         if bytes.len() as u64 > MAX_RESPONSE {

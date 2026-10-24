@@ -101,6 +101,7 @@ impl StatusSource for DemoSource {
         let name = checkout.file_name().and_then(|name| name.to_str()).unwrap_or_default();
         match name {
             "gh-x" => Ok(fixtures::document(CLEAN)),
+            "project-manager" => Ok(fixtures::document(fixtures::ENRICHMENT_ERRORS)),
             "codexbar" => Ok(fixtures::document(ATTENTION)),
             "minibot" => Ok(fixtures::document(UNAVAILABLE)),
             "weather-cli" => Err(FetchError::Failed(

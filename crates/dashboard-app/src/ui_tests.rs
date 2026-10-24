@@ -1773,3 +1773,129 @@ async fn a_blocked_priority_source_never_holds_up_status_refreshes(cx: &mut Test
     settle(cx, handle, &view).await;
     assert!(!cx.update(|cx| view.read(cx).priorities_pending()));
 }
+
+#[test]
+fn unavailable_sections_with_rows_keep_their_counts() {
+    let document = fixtures::document(fixtures::ENRICHMENT_ERRORS);
+    for (section, count) in [
+        ("pullRequests.open", document.pull_requests.open.len()),
+        ("issues", document.issues.len()),
+        ("pullRequests.merged", document.pull_requests.merged.len()),
+        ("workflowRuns", document.workflow_runs.len()),
+    ] {
+        assert!(count > 0);
+        assert_eq!(section_count(&document, section, count), count.to_string(), "{section}");
+        assert_eq!(section_count(&document, section, 0), "?", "empty {section}");
+    }
+}
+
+#[gpui_kit::test]
+async fn enrichment_errors_keep_six_prs_counts_diagnostics_and_clickable_rows(cx: &mut TestAppContext) {
+    let (handle, view) = open_board(
+        cx,
+        vec!["/demo/project-manager".into()],
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        options(),
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    assert_eq!(overall(cx, &view), [Overall::Attention]);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(("prs", 0usize)).label(), Some("6 open pull requests"));
+        assert_eq!(window.find(("issues", 0usize)).label(), Some("2 open issues"));
+        window.click(("expand", 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let document = fixtures::document(fixtures::ENRICHMENT_ERRORS);
+        for (title, count, reason) in [
+            (
+                "Open pull requests",
+                6,
+                "truncated supplemental connections for pull request(s) 32",
+            ),
+            ("Open issues", 2, "issue enrichment timed out"),
+            ("Recently merged", 1, "merged pull request enrichment timed out"),
+            ("Workflow runs", 2, "workflow run enrichment timed out"),
+        ] {
+            assert_eq!(
+                window.find(format!("heading-{title}")).label(),
+                Some(format!("{title} ({count})").as_str())
+            );
+            assert_eq!(
+                window.find(format!("unavailable-{title}")).label(),
+                Some(format!("Unavailable: {reason}").as_str())
+            );
+        }
+        for pr in &document.pull_requests.open {
+            assert!(window.try_find(format!("pr-0-{}", pr.number)).is_some());
+        }
+        for issue in &document.issues {
+            assert!(window.try_find(format!("issue-0-{}", issue.number)).is_some());
+        }
+        for pr in &document.pull_requests.merged {
+            assert!(window.try_find(format!("merged-0-{}", pr.number)).is_some());
+        }
+        for run in &document.workflow_runs {
+            assert!(window.try_find(format!("run-0-{}", run.id)).is_some());
+        }
+        let note = window.find("unavailable-Open pull requests").bounds();
+        let row = window.find("pr-0-27").bounds();
+        assert!(note.origin.y + note.size.height <= row.origin.y);
+        window.click("pr-0-32", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        cx.opened_url(),
+        Some("https://github.com/hemsoft-dev/project-manager/pull/32".to_owned())
+    );
+}
+
+/// Enrichment can fail without supplying diagnostic text; loaded rows are still useful.
+struct EnrichmentWithoutReason;
+
+impl StatusSource for EnrichmentWithoutReason {
+    fn fetch(&self, _: &Path, _: bool) -> Result<StatusDocument, FetchError> {
+        let mut document = fixtures::document(fixtures::ENRICHMENT_ERRORS);
+        for section in &mut document.sections {
+            section.reason.clear();
+        }
+        Ok(document)
+    }
+}
+
+#[gpui_kit::test]
+async fn unavailable_rows_survive_even_without_diagnostic_text(cx: &mut TestAppContext) {
+    let (handle, view) = open_board(
+        cx,
+        vec!["/demo/project-manager".into()],
+        StatusCache::default(),
+        Arc::new(EnrichmentWithoutReason),
+        options(),
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(("prs", 0usize)).label(), Some("6 open pull requests"));
+        window.click(("expand", 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        for number in 27..=32 {
+            assert!(window.try_find(format!("pr-0-{number}")).is_some());
+        }
+        assert_eq!(
+            window.find("heading-Open pull requests").label(),
+            Some("Open pull requests (6)")
+        );
+    })
+    .unwrap();
+}

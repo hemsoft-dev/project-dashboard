@@ -106,6 +106,18 @@ fn captures() {
         crate::zoom::init(cx, None);
     });
 
+    // Regression #23: gh-x loaded six PRs but could not enrich their supplemental connections.
+    let (partial_rows, partial_rows_view) = open(&mut cx, vec![PathBuf::from("/demo/project-manager")], 980.);
+    fill(&mut cx, &partial_rows_view, &demo::DemoSource);
+    save(&mut cx, partial_rows, &out, "enrichment-row");
+    cx.update(|cx| {
+        partial_rows_view.update(cx, |view, cx| {
+            view.toggle_expanded(Path::new("/demo/project-manager"), cx)
+        })
+    });
+    cx.run_until_parked();
+    save(&mut cx, partial_rows, &out, "enrichment-expanded");
+
     // The collapsed table, twelve rows: clean, attention, a partly unavailable repository and a failing one first.
     let (board, view) = open(&mut cx, demo::checkouts(), 560.);
     fill(&mut cx, &view, &demo::DemoSource);

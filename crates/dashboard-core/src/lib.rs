@@ -317,6 +317,7 @@ pub mod fixtures {
     pub const CLEAN: &str = include_str!("../tests/fixtures/status-clean.json");
     pub const ATTENTION: &str = include_str!("../tests/fixtures/status-attention.json");
     pub const UNAVAILABLE: &str = include_str!("../tests/fixtures/status-unavailable.json");
+    pub const ENRICHMENT_ERRORS: &str = include_str!("../tests/fixtures/status-enrichment-errors.json");
     pub const ERROR: &str = include_str!("../tests/fixtures/status-error.json");
 
     pub fn document(json: &str) -> StatusDocument {

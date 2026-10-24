@@ -1,0 +1,335 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-21T06:30:00Z",
+  "repository": {
+    "nameWithOwner": "hemsoft-dev/project-manager",
+    "rootPath": "/demo/project-manager",
+    "defaultBranch": "main"
+  },
+  "health": {
+    "defaultBranch": {
+      "status": "available",
+      "reason": "",
+      "clean": true,
+      "name": "main",
+      "checkedOut": true,
+      "upstream": "origin/main",
+      "synced": true,
+      "ahead": 0,
+      "behind": 0,
+      "changes": {
+        "clean": true,
+        "staged": 0,
+        "modified": 0,
+        "deleted": 0,
+        "renamed": 0,
+        "untracked": 0,
+        "conflicted": 0
+      }
+    },
+    "currentBranch": {
+      "status": "available",
+      "reason": "",
+      "clean": true,
+      "name": "main",
+      "checkedOut": true,
+      "upstream": "origin/main",
+      "synced": true,
+      "ahead": 0,
+      "behind": 0,
+      "changes": {
+        "clean": true,
+        "staged": 0,
+        "modified": 0,
+        "deleted": 0,
+        "renamed": 0,
+        "untracked": 0,
+        "conflicted": 0
+      }
+    },
+    "branches": {
+      "status": "available",
+      "reason": "",
+      "clean": true,
+      "local": 1,
+      "remote": 1,
+      "dangling": 0
+    },
+    "worktrees": {
+      "status": "available",
+      "reason": "",
+      "clean": true,
+      "total": 1,
+      "cleanupCandidates": 0,
+      "items": [
+        {
+          "path": "/home/franz/github/hemsoft/gh-x",
+          "head": "f74ca35c0c1b5c1f0d0f0ad3e1e0f2b7c9a8d6e1",
+          "branch": "main",
+          "detached": false,
+          "detachedMerged": false,
+          "locked": false,
+          "prunable": false,
+          "prunableReason": "",
+          "primary": true,
+          "current": true,
+          "exists": true,
+          "clean": true,
+          "cleanKnown": true,
+          "cleanupCandidate": false,
+          "cleanupReason": ""
+        }
+      ]
+    },
+    "stashes": {
+      "status": "available",
+      "reason": "",
+      "clean": true,
+      "count": 0
+    }
+  },
+  "issues": [
+    {
+      "number": 231,
+      "pullRequests": "#232",
+      "parent": "-",
+      "subIssues": "-",
+      "title": "Show the tray icon on Linux",
+      "author": "Franz Hemmer",
+      "state": "open",
+      "labels": "enhancement",
+      "assignees": "",
+      "updated": "5m",
+      "updatedAt": "2026-10-21T06:25:00Z",
+      "url": "https://github.com/hemsoft-dev/codexbar/issues/231"
+    },
+    {
+      "number": 219,
+      "pullRequests": "-",
+      "parent": "#200",
+      "subIssues": "-",
+      "title": "Remember the window placement per display",
+      "author": "Franz Hemmer",
+      "state": "open",
+      "labels": "bug",
+      "assignees": "HemSoft",
+      "updated": "1d",
+      "updatedAt": "2026-10-20T06:00:00Z",
+      "url": "https://github.com/hemsoft-dev/codexbar/issues/219"
+    }
+  ],
+  "pullRequests": {
+    "open": [
+      {
+        "number": 27,
+        "issues": "-",
+        "title": "Retain cached project status",
+        "author": "HemSoft",
+        "state": "open",
+        "review": "-",
+        "approvals": 0,
+        "approvers": [],
+        "approvalsIncomplete": false,
+        "checks": "pass",
+        "comments": "3",
+        "aiReview": "?",
+        "aiClean": null,
+        "branch": "fixture/pr-27",
+        "updated": "7m",
+        "updatedAt": "2026-10-21T06:23:00Z",
+        "mergedAt": null,
+        "url": "https://github.com/hemsoft-dev/project-manager/pull/27"
+      },
+      {
+        "number": 28,
+        "issues": "-",
+        "title": "Report partial GitHub data",
+        "author": "HemSoft",
+        "state": "open",
+        "review": "-",
+        "approvals": 0,
+        "approvers": [],
+        "approvalsIncomplete": false,
+        "checks": "pass",
+        "comments": "3",
+        "aiReview": "?",
+        "aiClean": null,
+        "branch": "fixture/pr-28",
+        "updated": "7m",
+        "updatedAt": "2026-10-21T06:23:00Z",
+        "mergedAt": null,
+        "url": "https://github.com/hemsoft-dev/project-manager/pull/28"
+      },
+      {
+        "number": 29,
+        "issues": "-",
+        "title": "Keep project metadata current",
+        "author": "HemSoft",
+        "state": "open",
+        "review": "-",
+        "approvals": 0,
+        "approvers": [],
+        "approvalsIncomplete": false,
+        "checks": "pass",
+        "comments": "3",
+        "aiReview": "?",
+        "aiClean": null,
+        "branch": "fixture/pr-29",
+        "updated": "7m",
+        "updatedAt": "2026-10-21T06:23:00Z",
+        "mergedAt": null,
+        "url": "https://github.com/hemsoft-dev/project-manager/pull/29"
+      },
+      {
+        "number": 30,
+        "issues": "-",
+        "title": "Handle supplemental timeouts",
+        "author": "HemSoft",
+        "state": "open",
+        "review": "-",
+        "approvals": 0,
+        "approvers": [],
+        "approvalsIncomplete": false,
+        "checks": "pass",
+        "comments": "3",
+        "aiReview": "?",
+        "aiClean": null,
+        "branch": "fixture/pr-30",
+        "updated": "7m",
+        "updatedAt": "2026-10-21T06:23:00Z",
+        "mergedAt": null,
+        "url": "https://github.com/hemsoft-dev/project-manager/pull/30"
+      },
+      {
+        "number": 31,
+        "issues": "-",
+        "title": "Preserve repository diagnostics",
+        "author": "HemSoft",
+        "state": "open",
+        "review": "-",
+        "approvals": 0,
+        "approvers": [],
+        "approvalsIncomplete": false,
+        "checks": "pass",
+        "comments": "3",
+        "aiReview": "?",
+        "aiClean": null,
+        "branch": "fixture/pr-31",
+        "updated": "7m",
+        "updatedAt": "2026-10-21T06:23:00Z",
+        "mergedAt": null,
+        "url": "https://github.com/hemsoft-dev/project-manager/pull/31"
+      },
+      {
+        "number": 32,
+        "issues": "-",
+        "title": "Report truncated supplemental connections",
+        "author": "HemSoft",
+        "state": "open",
+        "review": "-",
+        "approvals": 0,
+        "approvers": [],
+        "approvalsIncomplete": false,
+        "checks": "pass",
+        "comments": "3",
+        "aiReview": "?",
+        "aiClean": null,
+        "branch": "fixture/pr-32",
+        "updated": "7m",
+        "updatedAt": "2026-10-21T06:23:00Z",
+        "mergedAt": null,
+        "url": "https://github.com/hemsoft-dev/project-manager/pull/32"
+      }
+    ],
+    "merged": [
+      {
+        "number": 229,
+        "issues": "#228",
+        "title": "fix: keep the window on its display",
+        "author": "HemSoft",
+        "state": "merged",
+        "review": "approved",
+        "approvals": 1,
+        "approvers": [],
+        "approvalsIncomplete": false,
+        "checks": "pass",
+        "comments": "2",
+        "aiReview": "pass",
+        "aiClean": true,
+        "branch": "fix/issue-228-display",
+        "updated": "5h",
+        "updatedAt": "2026-10-21T01:30:00Z",
+        "mergedAt": "2026-10-21T01:30:00Z",
+        "url": "https://github.com/hemsoft-dev/codexbar/pull/229"
+      }
+    ],
+    "mergedLimit": 5
+  },
+  "workflowRuns": [
+    {
+      "id": "18312000002",
+      "url": "https://github.com/hemsoft-dev/codexbar/actions/runs/18312000002",
+      "status": "X",
+      "rawStatus": "completed/failure",
+      "title": "feat: show the tray icon on Linux",
+      "workflow": "CI",
+      "branch": "feature/issue-231-tray",
+      "event": "pull_request",
+      "elapsed": "6m 02s",
+      "age": "7m",
+      "createdAt": "2026-10-21T06:23:00Z",
+      "startedAt": "2026-10-21T06:23:05Z",
+      "updatedAt": "2026-10-21T06:29:07Z"
+    },
+    {
+      "id": "18312000001",
+      "url": "https://github.com/hemsoft-dev/codexbar/actions/runs/18312000001",
+      "status": "*",
+      "rawStatus": "in_progress",
+      "title": "chore(deps): bump the cargo group with 3 updates",
+      "workflow": "CI",
+      "branch": "dependabot/cargo/cargo-1a2b3c",
+      "event": "pull_request",
+      "elapsed": "4m 10s",
+      "age": "4m",
+      "createdAt": "2026-10-21T06:26:00Z",
+      "startedAt": "2026-10-21T06:26:02Z",
+      "updatedAt": "2026-10-21T06:30:00Z"
+    }
+  ],
+  "workflowRunsPerfect": false,
+  "sections": [
+    {
+      "name": "issues",
+      "status": "unavailable",
+      "reason": "issue enrichment timed out",
+      "cached": false,
+      "fetchedAt": "2026-10-21T06:29:18Z",
+      "cacheAgeSeconds": 0
+    },
+    {
+      "name": "pullRequests.open",
+      "status": "unavailable",
+      "reason": "truncated supplemental connections for pull request(s) 32",
+      "cached": false,
+      "fetchedAt": "2026-10-21T06:29:18Z",
+      "cacheAgeSeconds": 0
+    },
+    {
+      "name": "pullRequests.merged",
+      "status": "unavailable",
+      "reason": "merged pull request enrichment timed out",
+      "cached": false,
+      "fetchedAt": "2026-10-21T06:29:18Z",
+      "cacheAgeSeconds": 0
+    },
+    {
+      "name": "workflowRuns",
+      "status": "unavailable",
+      "reason": "workflow run enrichment timed out",
+      "cached": false,
+      "fetchedAt": "2026-10-21T06:29:18Z",
+      "cacheAgeSeconds": 0
+    }
+  ]
+}

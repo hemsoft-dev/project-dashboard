@@ -1359,10 +1359,11 @@ fn state_dot(ix: usize, overall: Overall, cx: &App) -> impl IntoElement {
         .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(label).build(window, cx))
 }
 
-/// A section's count: "?" when gh-x couldn't load it, "–" when turned off, never 0 for either.
+/// Keep the count of loaded rows even when enrichment failed. An empty unavailable list is unknown ("?"),
+/// and a section turned off for this run reads "–".
 pub(crate) fn section_count(document: &StatusDocument, section: &str, len: usize) -> String {
     match document.section(section) {
-        Some(section) if section.is_unavailable() => "?".to_owned(),
+        Some(section) if section.is_unavailable() && len == 0 => "?".to_owned(),
         Some(section) if section.is_disabled() => "–".to_owned(),
         _ => len.to_string(),
     }
@@ -1398,9 +1399,8 @@ fn health_row(row: &HealthRow, cx: &App) -> impl IntoElement {
         .child(div().flex_1().truncate().child(row.text.clone()))
 }
 
-/// One table: a heading with its count, then clickable rows or "None". When gh-x couldn't load the section, the
-/// count reads "?" and gh-x's reason stands in for the rows: an empty list there means unknown, not none. A section
-/// the invocation turned off reads "off".
+/// One table: a heading with its count, then clickable rows or "None". An unavailable section keeps any loaded rows
+/// alongside gh-x's diagnostic. Only an empty unavailable list is unknown ("?"). A section turned off reads "off".
 fn table(
     title: &'static str,
     count: usize,
@@ -1412,7 +1412,8 @@ fn table(
     let unavailable = section.filter(|section| section.is_unavailable());
     let disabled = section.is_some_and(Section::is_disabled);
     let heading = match (unavailable, disabled) {
-        (Some(_), _) => format!("{title} (?)"),
+        (Some(_), _) if count == 0 => format!("{title} (?)"),
+        (Some(_), _) => format!("{title} ({count})"),
         (None, true) => format!("{title} (off)"),
         (None, false) => format!("{title} ({count})"),
     };
@@ -1421,6 +1422,7 @@ fn table(
             div()
                 .id(SharedString::from(id))
                 .test_support()
+                .aria_label(text.clone())
                 .text_sm()
                 .text_color(color)
                 .child(text)
@@ -1428,11 +1430,15 @@ fn table(
         ]
     };
     let body: Vec<AnyElement> = match (unavailable, disabled) {
-        (Some(section), _) => note(
-            format!("unavailable-{title}"),
-            format!("Unavailable: {}", section.reason),
-            theme.warning,
-        ),
+        (Some(section), _) => {
+            let mut body = note(
+                format!("unavailable-{title}"),
+                format!("Unavailable: {}", section.reason),
+                theme.warning,
+            );
+            body.extend(rows);
+            body
+        }
         (None, true) => note(
             format!("disabled-{title}"),
             "Turned off for this run".to_owned(),
@@ -1451,6 +1457,9 @@ fn table(
         .gap_0p5()
         .child(
             div()
+                .id(SharedString::from(format!("heading-{title}")))
+                .test_support()
+                .aria_label(heading.clone())
                 .pt_2()
                 .text_xs()
                 .font_semibold()

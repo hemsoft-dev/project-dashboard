@@ -149,7 +149,9 @@ every GitHub section loaded.
   its fresh result arrives. Up to `parallelism` (default 4) `gh x status` processes run at a time.
 - A repository whose status fails shows the error in its row, in place of the last activity, and keeps its last good
   counts; the others keep working. A GitHub section gh-x couldn't load shows its reason in the expanded row, and its
-  count reads `?`; a section gh-x reports as turned off (the merged list with `--merged 0`) reads `–` and *off*.
+  count reads `?` only when it has no rows. When a primary list loaded but supplemental enrichment failed,
+  its count and available rows remain visible alongside the diagnostic. A section gh-x reports as turned off
+  (the merged list with `--merged 0`) reads `–` and *off*.
   Workflow runs show gh-x's own markers (`✓`, `X`, `*`, `○`, `!`, `—`, `·`). A missing `gh` or gh-x shows one setup
   message at the top.
 

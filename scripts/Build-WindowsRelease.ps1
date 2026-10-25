@@ -92,8 +92,9 @@ pmd_token_path = 'missing-synthetic-token'
             throw "No 'Project Dashboard' window within 60 s (main window title: '$($process.MainWindowTitle)')"
         }
         Write-Information "Started: window '$($process.MainWindowTitle)', PID $($process.Id)" -InformationAction Continue
-        # The screenshot is evidence, not a gate: a session without an interactive desktop can't capture one, and that
-        # mustn't stop a release whose window checks passed.
+        # Best effort only: the default 1100x760 window can exceed a hosted runner's 1024x768 screen.
+        # This warning never fails the smoke or skips the separate bounded native-capture step,
+        # which sizes its own window to the existing working area and requires every capture.
         Start-Sleep -Seconds 3
         try {
             Add-Type -AssemblyName System.Windows.Forms, System.Drawing
@@ -113,7 +114,7 @@ pmd_token_path = 'missing-synthetic-token'
                 $bitmap.Save((Join-Path $OutDir 'window.png'), [System.Drawing.Imaging.ImageFormat]::Png)
             } finally { $graphics.Dispose(); $bitmap.Dispose() }
         } catch {
-            Write-Warning "No desktop screenshot: $($_.Exception.Message)"
+            Write-Warning "Best-effort release smoke screenshot skipped (non-fatal): $($_.Exception.Message)"
         }
     } finally {
         if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }

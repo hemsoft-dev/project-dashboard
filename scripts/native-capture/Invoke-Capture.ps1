@@ -120,7 +120,7 @@ function Capture-State([string]$State,[string[]]$Patterns) {
     $capture.visibleText = $text.text
     $visible = [regex]::Replace($text.text,'\s+',' ')
     # Missing markers fail this attempt; a nonblank window alone is insufficient evidence.
-    foreach ($pattern in (@('Project Manager Board','truncated','not supplied by pmd','pmd status generated')+$Patterns)) {
+    foreach ($pattern in (@('Project Manager Board','truncated','not supplied by pmd','pmd status generated \S+ ago')+$Patterns)) {
         if ($visible -notmatch $pattern) { throw "Native '$State' image missing visible '$pattern'. OCR: $($text.text)" }
     }
     $capture.contentVerified = $true
@@ -181,16 +181,19 @@ t3_home = '$root'
     [NativeDesktop]::Click($x,$y)
     $manifest.inputs += @{kind='SendInput repository click';x=$x;y=$y;at=[DateTimeOffset]::UtcNow.ToString('o')}
     Start-Sleep -Seconds 2
-    Capture-State 'normal' @('SYNTHETIC FIXTURE NORMAL')
+    # The Board and work list are above local health and the Open issues table. Assert these
+    # visible rows at the runner's existing size; an error can push Open issues below the fold.
+    $normalRows = @('Ready.*?SYNTHETIC FIXTURE NORMAL.*?In progress','Open work.*?ready.*?SYNTHETIC FIXTURE NORMAL')
+    Capture-State 'normal' $normalRows
     Refresh-State 'stale'
-    Capture-State 'stale' @('upstream refresh failed','SYNTHETIC FIXTURE NORMAL')
+    Capture-State 'stale' ($normalRows + @('pmd last refresh failed','upstream refresh failed','Cached'))
     Refresh-State 'unavailable'
-    Capture-State 'unavailable' @('no.status')
+    Capture-State 'unavailable' ($normalRows + @('no.status','Cached'))
     Refresh-State 'refreshed'
-    Capture-State 'refresh' @('SYNTHETIC FIXTURE REFRESHED')
+    Capture-State 'refresh' @('Ready.*?SYNTHETIC FIXTURE REFRESHED.*?In progress','Open work.*?ready.*?SYNTHETIC FIXTURE REFRESHED')
     if ($manifest.captures[-1].sha256 -eq $manifest.captures[-2].sha256) { throw 'OS refresh did not visibly change the image.' }
     Refresh-State 'board'
-    Capture-State 'board' @('SYNTHETIC FIXTURE BOARD','Ready','In progress','Waiting on Franz','Blocked','all API pages')
+    Capture-State 'board' @('Ready.*?SYNTHETIC FIXTURE BOARD.*?In progress','Open work.*?ready.*?SYNTHETIC FIXTURE BOARD','Waiting on Franz','Blocked','all API pages')
     $manifest.requests = @(Get-Content (Join-Path $root 'requests.jsonl') | ForEach-Object { $_ | ConvertFrom-Json })
     $manifest.success = $true
 } catch {

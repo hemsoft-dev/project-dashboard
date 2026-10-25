@@ -9,6 +9,8 @@ $base.pullRequests = @{open=@();merged=@();mergedLimit=0}
 $base.workflowRuns = @(); $base.workflowRunsPerfect = $true
 $generated = [DateTimeOffset]::UtcNow.AddMinutes(-10).ToString('o')
 $base.generatedAt = $generated
+$goodMode = 'normal'
+$base.issues = @(@{number=31;title='SYNTHETIC FIXTURE NORMAL';state='OPEN';updatedAt=$generated;url='https://github.com/fixture-org/synthetic-dashboard/issues/31'})
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0)
 $listener.Start()
 try {
@@ -26,16 +28,24 @@ try {
             $code=200; $body=$null
             if ($auth -ne 'Bearer synthetic-issue31-token') { $code=401; $body=@{error=@{code='unauthorized';message='synthetic fixture auth failure'}} }
             else {
-                $label='SYNTHETIC FIXTURE '+$mode.ToUpperInvariant()
+                # Stale decorates the last successful snapshot; no_status must not mutate it either.
+                # Only a new successful state advances rows and timestamps, once for all four APIs.
+                if ($mode -notin @('stale','unavailable') -and $mode -ne $goodMode) {
+                    $goodMode=$mode
+                    $generated=[DateTimeOffset]::UtcNow.ToString('o')
+                    $base.generatedAt=$generated
+                    $base.issues[0].title='SYNTHETIC FIXTURE '+$goodMode.ToUpperInvariant()
+                    $base.issues[0].updatedAt=$generated
+                }
+                $label='SYNTHETIC FIXTURE '+$goodMode.ToUpperInvariant()
                 $item=@{id='synthetic-issue31-item';project='synthetic-dashboard';kind='issue';number=31;title=$label;url='https://github.com/fixture-org/synthetic-dashboard/issues/31';status='ready'}
                 switch ($uri.AbsolutePath) {
                     '/v1/projects' { $body=@{projects=@(@{slug='synthetic-dashboard';repo='fixture-org/synthetic-dashboard';priority=1;tracked=$true})} }
                     '/v1/projects/synthetic-dashboard/status' {
                         if ($mode -eq 'unavailable') { $code=404; $body=@{error=@{code='no_status';message='SYNTHETIC FIXTURE no_status'}} }
                         else {
-                            $base.issues=@(@{number=31;title=$label;state='OPEN';updatedAt=[DateTimeOffset]::UtcNow.ToString('o');url=$item.url})
                             $body=@{project='synthetic-dashboard';generatedAt=$generated;status=$base;lastError=$null}
-                            if ($mode -eq 'stale') { $base.issues[0].title='SYNTHETIC FIXTURE NORMAL'; $body.lastError=@{message='SYNTHETIC FIXTURE STALE upstream refresh failed';at=[DateTimeOffset]::UtcNow.AddMinutes(-1).ToString('o')} }
+                            if ($mode -eq 'stale') { $body.lastError=@{message='SYNTHETIC FIXTURE STALE upstream refresh failed';at=[DateTimeOffset]::UtcNow.AddMinutes(-1).ToString('o')} }
                         }
                     }
                     '/v1/board' { $body=@{generatedAt=$generated;columns=@(

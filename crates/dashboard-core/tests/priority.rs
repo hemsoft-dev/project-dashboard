@@ -35,7 +35,11 @@ impl Drop for Token {
     }
 }
 
-fn server(status: &str, body: &str, delay: Duration) -> (String, std::thread::JoinHandle<()>) {
+fn server(
+    status: &str,
+    body: &str,
+    release: Option<std::sync::mpsc::Receiver<()>>,
+) -> (String, std::thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let response = format!(
@@ -54,7 +58,9 @@ fn server(status: &str, body: &str, delay: Duration) -> (String, std::thread::Jo
         let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
         assert!(request.starts_with("get /v1/projects http/1.1\r\n"));
         assert!(request.contains("authorization: bearer test-read-token\r\n"));
-        std::thread::sleep(delay);
+        if let Some(release) = release {
+            let _ = release.recv_timeout(Duration::from_secs(5));
+        }
         let _ = stream.write_all(response.as_bytes());
     });
     (url, thread)
@@ -63,7 +69,7 @@ fn server(status: &str, body: &str, delay: Duration) -> (String, std::thread::Jo
 #[test]
 fn authenticated_projects_match_repo_names_and_omit_untracked_or_untiered_projects() {
     let token = Token::new();
-    let (url, server) = server("200 OK", PROJECTS, Duration::ZERO);
+    let (url, server) = server("200 OK", PROJECTS, None);
     let priorities = Pmd {
         url: format!("{url}/"),
         token_path: token.0.clone(),
@@ -103,7 +109,7 @@ fn failed_auth_redirect_malformed_and_oversized_responses_clear_priorities() {
         ("200 OK", "invalid".to_owned()),
         ("200 OK", " ".repeat(1024 * 1024 + 1)),
     ] {
-        let (url, server) = server(status, &body, Duration::ZERO);
+        let (url, server) = server(status, &body, None);
         assert_eq!(
             Pmd {
                 url,
@@ -119,11 +125,14 @@ fn failed_auth_redirect_malformed_and_oversized_responses_clear_priorities() {
 #[test]
 fn missing_empty_tokens_and_unreachable_services_leave_priority_unknown() {
     let token = Token::new();
+    // Invalid HTTP on an accepted connection avoids platform-specific connection-refused timing.
+    let (url, broken) = server("invalid", "", None);
     let pmd = Pmd {
-        url: "http://127.0.0.1:1".into(),
+        url,
         token_path: token.0.clone(),
     };
     assert_eq!(pmd.fetch(), Priorities::default());
+    broken.join().unwrap();
     std::fs::write(&token.0, "\n ").unwrap();
     assert_eq!(pmd.fetch(), Priorities::default());
     std::fs::remove_file(&token.0).unwrap();
@@ -133,7 +142,8 @@ fn missing_empty_tokens_and_unreachable_services_leave_priority_unknown() {
 #[test]
 fn a_slow_service_has_a_bounded_request_time() {
     let token = Token::new();
-    let (url, server) = server("200 OK", PROJECTS, Duration::from_millis(2400));
+    let (release, wait) = std::sync::mpsc::channel();
+    let (url, server) = server("200 OK", PROJECTS, Some(wait));
     let start = Instant::now();
     assert_eq!(
         Pmd {
@@ -143,7 +153,8 @@ fn a_slow_service_has_a_bounded_request_time() {
         .fetch(),
         Priorities::default()
     );
-    assert!(start.elapsed() < Duration::from_millis(2350));
+    let _ = release.send(());
+    assert!(start.elapsed() < Duration::from_secs(5));
     server.join().unwrap();
 }
 

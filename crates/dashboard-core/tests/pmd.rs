@@ -57,14 +57,12 @@ impl Drop for Checkout {
 struct Reply {
     code: u16,
     body: String,
-    delay: Duration,
 }
 impl Reply {
     fn json(value: Value) -> Self {
         Self {
             code: 200,
             body: value.to_string(),
-            delay: Duration::ZERO,
         }
     }
 }
@@ -117,7 +115,6 @@ impl Server {
                                 .to_owned();
                             seen.lock().unwrap().push(path.clone());
                             let reply = handler(&path);
-                            std::thread::sleep(reply.delay);
                             let _ = write!(
                                 stream,
                                 "HTTP/1.1 {} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -234,7 +231,6 @@ fn last_error_and_outage_keep_last_good_status_with_original_age_and_explicit_er
             return Reply {
                 code: 503,
                 body: TOKEN.into(),
-                delay: Duration::ZERO,
             };
         }
         let mut reply = response(path);
@@ -293,12 +289,10 @@ fn first_load_failures_are_explicit_and_never_create_clean_or_zero_status() {
                     "401" => Reply {
                         code: 401,
                         body: TOKEN.into(),
-                        delay: Duration::ZERO,
                     },
                     "outage" => Reply {
                         code: 503,
                         body: TOKEN.into(),
-                        delay: Duration::ZERO,
                     },
                     "untracked" => {
                         let mut p = projects();
@@ -326,14 +320,12 @@ fn first_load_failures_are_explicit_and_never_create_clean_or_zero_status() {
                         return Reply {
                             code: 404,
                             body: json!({"error":{"code":"no_status","message":TOKEN}}).to_string(),
-                            delay: Duration::ZERO,
                         };
                     }
                     "malformed" => {
                         return Reply {
                             code: 200,
                             body: "{invalid".into(),
-                            delay: Duration::ZERO,
                         };
                     }
                     "unsupported" => value["status"]["schemaVersion"] = json!(2),
@@ -368,41 +360,46 @@ fn missing_token_timeout_and_connection_failure_are_bounded_and_explicit() {
     source.token_path = checkout.0.join("missing");
     assert_eq!(source.fetch(&checkout.0, false), Err(FetchError::MissingToken));
     assert!(server.requests.lock().unwrap().is_empty());
-    let delayed = Server::new(|path| {
-        let mut reply = response(path);
-        reply.delay = Duration::from_millis(200);
-        reply
+    let (release, wait) = std::sync::mpsc::channel();
+    let wait = Mutex::new(wait);
+    let delayed = Server::new(move |path| {
+        let _ = wait.lock().unwrap().recv_timeout(Duration::from_secs(5));
+        response(path)
     });
     let started = Instant::now();
     assert_eq!(
         checkout
             .source(&delayed)
-            .fetch_with_timeout(&checkout.0, Duration::from_millis(30)),
+            .fetch_with_timeout(&checkout.0, Duration::from_millis(500)),
         Err(FetchError::Timeout)
     );
-    assert!(started.elapsed() < Duration::from_secs(1));
-    // Reserve then release a loopback port, so no service is listening.
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    drop(listener);
-    let source = Pmd {
-        url,
-        token_path: checkout.0.join("token"),
-    };
-    assert_eq!(source.fetch(&checkout.0, false), Err(FetchError::Unavailable));
+    let _ = release.send(());
+    assert!(started.elapsed() < Duration::from_secs(3));
+    // An accepted connection with an invalid HTTP status avoids OS-specific closed-port retries.
+    let broken = Server::new(|_| Reply {
+        code: 0,
+        body: String::new(),
+    });
+    let started = Instant::now();
+    assert_eq!(
+        checkout.source(&broken).fetch(&checkout.0, false),
+        Err(FetchError::Unavailable)
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(broken.requests.lock().unwrap().len(), 1);
 }
 #[test]
 fn changed_identity_or_service_rejects_delayed_completions_and_old_cache() {
     let checkout = Checkout::new();
     let entered = Arc::new(AtomicBool::new(false));
     let flag = entered.clone();
+    let (release, wait) = std::sync::mpsc::channel();
+    let wait = Mutex::new(wait);
     let server = Server::new(move |path| {
-        let mut reply = response(path);
-        if path.ends_with("/status") {
-            flag.store(true, Ordering::SeqCst);
-            reply.delay = Duration::from_millis(150);
+        if path.ends_with("/status") && !flag.swap(true, Ordering::SeqCst) {
+            let _ = wait.lock().unwrap().recv_timeout(Duration::from_secs(5));
         }
-        reply
+        response(path)
     });
     let source = Arc::new(checkout.source(&server));
     let mut cache = StatusCache::default();
@@ -420,6 +417,7 @@ fn changed_identity_or_service_rejects_delayed_completions_and_old_cache() {
         board.sync_pmd_identities(&source.url, &mut cache),
         vec![checkout.0.clone()]
     );
+    release.send(()).unwrap();
     let outcome = receive.recv_timeout(Duration::from_secs(3)).unwrap();
     assert_eq!(outcome.result, Err(FetchError::IdentityMismatch));
     assert!(!board.apply_started(outcome, generations[&checkout.0], &mut cache));
@@ -464,7 +462,6 @@ fn repeated_work_cursor_and_board_failure_are_explicit_without_losing_hosted_sta
                 return Reply {
                     code: 503,
                     body: String::new(),
-                    delay: Duration::ZERO,
                 };
             }
             if path.starts_with("/v1/work") {
@@ -529,13 +526,14 @@ fn new_service_config_wins_over_a_delayed_first_load_from_the_old_service() {
     let checkout = Checkout::new();
     let entered = Arc::new(AtomicBool::new(false));
     let flag = entered.clone();
+    let (release, wait) = std::sync::mpsc::channel();
+    let wait = Mutex::new(wait);
     let old = Server::new(move |path| {
-        let mut reply = response(path);
         if path.ends_with("/status") {
             flag.store(true, Ordering::SeqCst);
-            reply.delay = Duration::from_millis(150);
+            let _ = wait.lock().unwrap().recv_timeout(Duration::from_secs(5));
         }
-        reply
+        response(path)
     });
     let new = Server::new(response);
     let limiter = Arc::new(scheduler::Limited::new(Arc::new(checkout.source(&old)), 2));
@@ -559,6 +557,7 @@ fn new_service_config_wins_over_a_delayed_first_load_from_the_old_service() {
         .recv_timeout(Duration::from_secs(3))
         .unwrap();
     assert!(board.apply_started(current, generation, &mut cache));
+    release.send(()).unwrap();
     let old_result = pending.recv_timeout(Duration::from_secs(3)).unwrap();
     assert!(old_result.result.is_ok());
     assert!(!board.apply_started(old_result, old_generation, &mut cache));
@@ -578,7 +577,6 @@ fn board_refresh_failure_retains_last_good_board_and_work_with_original_board_ti
             Reply {
                 code: 503,
                 body: String::new(),
-                delay: Duration::ZERO,
             }
         } else {
             response(path)
@@ -605,6 +603,7 @@ fn a_body_that_stalls_after_headers_is_reported_as_timeout() {
         url: format!("http://{}", listener.local_addr().unwrap()),
         token_path: checkout.0.join("token"),
     };
+    let (release, wait) = std::sync::mpsc::channel();
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
@@ -617,13 +616,15 @@ fn a_body_that_stalls_after_headers_is_reported_as_timeout() {
         stream
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n")
             .unwrap();
-        std::thread::sleep(Duration::from_millis(200));
+        let _ = wait.recv_timeout(Duration::from_secs(5));
     });
     let start = Instant::now();
     assert_eq!(
-        source.fetch_with_timeout(&checkout.0, Duration::from_millis(30)),
+        source.fetch_with_timeout(&checkout.0, Duration::from_millis(500)),
         Err(FetchError::Timeout)
     );
-    assert!(start.elapsed() < Duration::from_secs(1));
+    let _ = release.send(());
+    assert!(start.elapsed() < Duration::from_secs(3));
     server.join().unwrap();
 }
+

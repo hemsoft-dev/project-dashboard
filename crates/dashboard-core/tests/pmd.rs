@@ -449,6 +449,12 @@ fn linked_worktree_identity_uses_common_origin_and_never_invents_a_folder_identi
     std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
     std::fs::write(linked.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
     assert_eq!(checkout_identity(&linked), Ok(REPO.into()));
+    std::fs::write(checkout.0.join(".git/config"),
+        "[remote \"origin\"] # common origin\n url = \"https://github.com/hemsoft-dev/gh-x.git#literal;fragment\" ; primary\n").unwrap();
+    for pointer in [gitdir.display().to_string(), "../.git/worktrees/linked".to_owned()] {
+        std::fs::write(linked.join(".git"), format!("gitdir: {pointer}\n")).unwrap();
+        assert_eq!(checkout_identity(&linked), Ok(REPO.into()));
+    }
     std::fs::write(checkout.0.join(".git/config"), "[core]\n bare=false\n").unwrap();
     assert_eq!(checkout_identity(&linked), Err(FetchError::Identity));
     assert_eq!(checkout_identity(Path::new("/not/a/repo")), Err(FetchError::Identity));
@@ -628,3 +634,31 @@ fn a_body_that_stalls_after_headers_is_reported_as_timeout() {
     server.join().unwrap();
 }
 
+#[test]
+fn origin_comments_and_quoted_comment_characters_preserve_hosted_identity_and_cache() {
+    let checkout = Checkout::new();
+    let server = Server::new(response);
+    let source = checkout.source(&server);
+    let mut cache = StatusCache::default();
+    let mut board = Board::new(std::slice::from_ref(&checkout.0), &cache);
+    board.sync_pmd_identities(&source.url, &mut cache);
+    apply(&mut board, &mut cache, &checkout, source.fetch(&checkout.0, false));
+    let original = board.cards()[0].document.clone();
+    for config in [
+        "[remote \"origin\"] # GitHub remote\n url = https://github.com/hemsoft-dev/gh-x.git\n",
+        "[remote \"origin\"] ; GitHub remote\n url = https://github.com/hemsoft-dev/gh-x.git\n",
+        "[remote \"origin\"]\n url = https://github.com/hemsoft-dev/gh-x.git # primary\n",
+        "[remote \"origin\"]\n url = https://github.com/hemsoft-dev/gh-x.git ; primary\n",
+        "# [remote \"elsewhere\"]\n; url = ignored\n[remote \"origin\"] # primary\n url = \"https://github.com/hemsoft-dev/gh-x.git#literal;fragment\" ; trailing\n",
+        "[remote \"origin\"]\n url = \"https://github.com/hemsoft-dev/gh-x.git?literal;query#fragment\" # trailing\n",
+    ] {
+        std::fs::write(checkout.0.join(".git/config"), config).unwrap();
+        assert_eq!(checkout_identity(&checkout.0), Ok(REPO.into()), "{config}");
+        assert!(board.sync_pmd_identities(&source.url, &mut cache).is_empty());
+        assert_eq!(board.cards()[0].document, original);
+        assert_eq!(
+            source.fetch(&checkout.0, false).unwrap().repository.name_with_owner,
+            REPO
+        );
+    }
+}

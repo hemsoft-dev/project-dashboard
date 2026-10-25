@@ -77,6 +77,49 @@ struct WorkPage {
     next_cursor: serde_json::Value,
 }
 
+/// Git comments end a physical line only outside double quotes. Keep quoting for section parsing
+/// and value decoding; an escaped quote inside a value must not start or end a comment.
+fn config_content(line: &str) -> Result<&str, FetchError> {
+    let mut quoted = false;
+    let mut escaped = false;
+    for (offset, character) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            '#' | ';' if !quoted => return Ok(line[..offset].trim()),
+            _ => {}
+        }
+    }
+    if quoted || escaped {
+        return Err(FetchError::Identity);
+    }
+    Ok(line.trim())
+}
+
+fn config_value(value: &str) -> Result<String, FetchError> {
+    let mut decoded = String::new();
+    let mut characters = value.trim().chars();
+    while let Some(character) = characters.next() {
+        match character {
+            '"' => {}
+            '\\' => decoded.push(match characters.next() {
+                Some('"') => '"',
+                Some('\\') => '\\',
+                Some('n') => '\n',
+                Some('t') => '\t',
+                Some('b') => '\u{0008}',
+                _ => return Err(FetchError::Identity),
+            }),
+            _ => decoded.push(character),
+        }
+    }
+    Ok(decoded)
+}
+
 /// Read identity only, without invoking git. Linked worktrees use their common config.
 /// Unsupported/conditional Git config is explicit, never guessed from the folder name.
 pub fn checkout_identity(checkout: &Path) -> Result<String, FetchError> {
@@ -101,7 +144,8 @@ pub fn checkout_identity(checkout: &Path) -> Result<String, FetchError> {
     let config = std::fs::read_to_string(dir.join("config")).map_err(|_| FetchError::Identity)?;
     let mut origin = false;
     let mut urls = Vec::new();
-    for line in config.lines().map(str::trim) {
+    for line in config.lines() {
+        let line = config_content(line)?;
         if line.starts_with('[') {
             // Conditional/includes and URL rewrites need Git's evaluator; report unsupported identity instead.
             let lower = line.to_ascii_lowercase();
@@ -113,7 +157,7 @@ pub fn checkout_identity(checkout: &Path) -> Result<String, FetchError> {
             && let Some((key, value)) = line.split_once('=')
             && key.trim().eq_ignore_ascii_case("url")
         {
-            urls.push(value.trim().trim_matches('"').to_owned());
+            urls.push(config_value(value)?);
         }
     }
     if urls.len() != 1 {
@@ -386,5 +430,36 @@ impl Pmd {
 impl StatusSource for Pmd {
     fn fetch(&self, checkout: &Path, _: bool) -> Result<StatusDocument, FetchError> {
         self.fetch_with_timeout(checkout, TIMEOUT)
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::{config_content, config_value};
+    use crate::source::FetchError;
+
+    #[test]
+    fn quoted_hash_semicolon_and_escaped_quotes_survive_comment_removal() {
+        for line in [
+            r#"url = "https://github.com/owner/repo.git#hash;semicolon" # outside "#,
+            r#"url = "https://github.com/owner/repo.git#hash;semicolon" ; outside "#,
+        ] {
+            let content = config_content(line).unwrap();
+            assert_eq!(
+                config_value(content.split_once('=').unwrap().1).unwrap(),
+                "https://github.com/owner/repo.git#hash;semicolon"
+            );
+        }
+        let content = config_content(r##"note = "literal \"#;\" and \\ path" # outside"##).unwrap();
+        assert_eq!(
+            config_value(content.split_once('=').unwrap().1).unwrap(),
+            "literal \"#;\" and \\ path"
+        );
+    }
+
+    #[test]
+    fn malformed_quotes_and_escapes_fail_without_guessing_identity() {
+        assert_eq!(config_content(r#"url = "unterminated #;"#), Err(FetchError::Identity));
+        assert_eq!(config_value(r#""bad\qescape""#), Err(FetchError::Identity));
     }
 }

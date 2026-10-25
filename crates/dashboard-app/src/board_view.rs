@@ -935,17 +935,23 @@ impl BoardView {
                         cx.stop_propagation();
                         cx.open_url(&url);
                     })
-                    // The title only gets space the label leaves; on a narrow window the label truncates too.
+                    // Workflow names can be longer than their titles. Let the label use its natural width up to
+                    // a third of this cell, leaving the description the rest at every window size and zoom.
                     .child(
                         div()
                             .id(("activity-summary", ix))
                             .test_support()
                             .min_w_0()
+                            .when(!activity.title.is_empty(), |this| {
+                                this.max_w(gpui_kit::relative(1. / 3.))
+                            })
                             .truncate()
                             .child(activity.label.clone()),
                     )
                     .child(
                         div()
+                            .id(("activity-title", ix))
+                            .test_support()
                             .flex_1()
                             .min_w_0()
                             .truncate()
@@ -1069,7 +1075,14 @@ impl BoardView {
             .child(column_cell(Column::Updated, &self.columns).child(updated))
             // Takes the width the other columns leave, and shrinks first on a narrow window, so the refresh button
             // stays in view.
-            .child(div().flex_1().min_w(ACTIVITY_MIN).child(activity))
+            .child(
+                div()
+                    .id(("activity-cell", ix))
+                    .test_support()
+                    .flex_1()
+                    .min_w(ACTIVITY_MIN)
+                    .child(activity),
+            )
             .child(
                 h_flex()
                     .w(ACTIONS)

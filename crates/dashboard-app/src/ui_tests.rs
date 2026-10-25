@@ -623,6 +623,89 @@ async fn clicking_the_last_activity_opens_it_without_expanding_the_row(cx: &mut 
 }
 
 #[gpui_kit::test]
+async fn activity_descriptions_use_the_residual_width_even_with_long_workflow_names(cx: &mut TestAppContext) {
+    // Include Home's actual saved zoom/repository width, as well as the defaults. The long workflow name used to
+    // take the entire 678 px cell at 1680 px / 130%, leaving its description zero width.
+    for (level, repository) in [(1.0_f64, 18.0_f32), (1.3, 20.88)] {
+        // Match zoom::apply's conversion at the pixel boundary; the saved zoom itself remains f64.
+        let scale = level as f32;
+        for width in [760., 1100., 1680.] {
+            let mut columns = ColumnWidths::default();
+            columns.set(Column::Repository, repository);
+            let (handle, view) = open_board_sized(
+                cx,
+                vec![
+                    "/demo/short-label".into(),
+                    "/demo/long-label".into(),
+                    "/demo/empty-title".into(),
+                ],
+                StatusCache::default(),
+                Arc::new(ActivityLayoutSource),
+                Options { columns, ..options() },
+                width,
+            );
+            cx.update(|cx| zoom::set_level(level, cx));
+            cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+            settle(cx, handle, &view).await;
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                for ix in [0usize, 1] {
+                    let cell = window.find(("activity-cell", ix)).bounds();
+                    let activity = window.find(("activity", ix)).bounds();
+                    let label = window.find(("activity-summary", ix)).bounds();
+                    let title = window.find(("activity-title", ix)).bounds();
+                    let name = window.find(("name", ix)).bounds();
+                    let updated = window.find(("updated", ix)).bounds();
+                    let t3 = window.find(("t3", ix)).bounds();
+                    let refresh = window.find(("refresh", ix)).bounds();
+                    let cell_width = f32::from(cell.size.width);
+                    let title_width = f32::from(title.size.width);
+                    let gap = 8. * scale;
+                    assert_eq!(activity, cell, "nested activity fills its residual column");
+                    assert!(
+                        title_width >= cell_width / 2. - gap - 1.,
+                        "description keeps the larger share: {title:?}"
+                    );
+                    assert_eq!(title.right(), cell.right(), "no unused tail after the description");
+                    assert!(label.right() <= title.left());
+                    assert!(updated.right() <= cell.left());
+                    assert!(cell.right() <= t3.left());
+                    assert!(t3.right() <= refresh.left());
+                    assert!(refresh.right() <= px(width), "controls remain in the window");
+                    assert!(name.size.width >= px(Column::Repository.min_width() * 16. * scale - 1.));
+                    assert_eq!(name.origin.x, window.find("header-repository").bounds().origin.x);
+                    // Layout rounds to physical pixels; allow one pixel around each rem-based setting.
+                    for (id, expected) in [("priority", 4.5), ("prs", 3.25), ("issues", 3.25)] {
+                        let shown = f32::from(window.find((id, ix)).bounds().size.width);
+                        assert!((shown - expected * 16. * scale).abs() <= 1., "{id}: {shown}");
+                    }
+                    println!(
+                        "width={width} zoom={level} row={ix} cell={cell_width} label={} title={title_width}",
+                        f32::from(label.size.width)
+                    );
+                }
+                // Short labels do not expand to their cap and consume the title's space on a wide window.
+                if width == 1680. {
+                    assert!(window.find(("activity-summary", 0usize)).bounds().size.width < px(100. * scale));
+                    // No description: do not clip the workflow name just to reserve a blank area.
+                    let empty_cell = window.find(("activity-cell", 2usize)).bounds();
+                    let empty_label = window.find(("activity-summary", 2usize)).bounds();
+                    assert!(empty_label.size.width > empty_cell.size.width / 2.);
+                }
+                window.click(("activity-title", 1usize), cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            assert_eq!(
+                cx.opened_url(),
+                Some(fixtures::document(CLEAN).workflow_runs[0].url.clone())
+            );
+            assert!(!cx.update(|cx| view.read(cx).is_expanded(Path::new("/demo/long-label"))));
+        }
+    }
+}
+
+#[gpui_kit::test]
 async fn at_the_minimum_width_every_row_can_scroll_its_refresh_button_into_view(cx: &mut TestAppContext) {
     // 480 px is the window's minimum (main.rs).
     let (handle, view) = open_board_sized(
@@ -1898,4 +1981,29 @@ async fn unavailable_rows_survive_even_without_diagnostic_text(cx: &mut TestAppC
         );
     })
     .unwrap();
+}
+
+/// Synthetic long/short labels expose the activity split without changing production data.
+struct ActivityLayoutSource;
+
+impl StatusSource for ActivityLayoutSource {
+    fn fetch(&self, checkout: &Path, _: bool) -> Result<StatusDocument, FetchError> {
+        let mut document = fixtures::document(CLEAN);
+        document.pull_requests.open.clear();
+        document.pull_requests.merged.clear();
+        document.issues.clear();
+        document.workflow_runs.truncate(1);
+        let run = &mut document.workflow_runs[0];
+        run.workflow = if checkout.ends_with("long-label") || checkout.ends_with("empty-title") {
+            "Build and test all Windows release packages and validate embedded executable resources".into()
+        } else {
+            "CI".into()
+        };
+        run.title = if checkout.ends_with("empty-title") {
+            String::new()
+        } else {
+            "Render available rows and counts when enrichment is unavailable across dashboard sections".into()
+        };
+        Ok(document)
+    }
 }

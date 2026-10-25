@@ -86,6 +86,8 @@ impl Server {
             while !stopped.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        // Winsock accept inherits the listener's non-blocking mode; read_exact needs blocking I/O.
+                        stream.set_nonblocking(false).unwrap();
                         let handler = handler.clone();
                         let seen = seen.clone();
                         connections.push(std::thread::spawn(move || {
@@ -612,6 +614,7 @@ fn a_body_that_stalls_after_headers_is_reported_as_timeout() {
     let (release, wait) = std::sync::mpsc::channel();
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
+        stream.set_nonblocking(false).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
         let mut request = Vec::new();
         while !request.ends_with(b"\r\n\r\n") {

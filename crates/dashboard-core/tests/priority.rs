@@ -48,6 +48,7 @@ fn server(
     );
     let thread = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
+        stream.set_nonblocking(false).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let mut request = Vec::new();
         while !request.ends_with(b"\r\n\r\n") {

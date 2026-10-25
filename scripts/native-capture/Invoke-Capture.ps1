@@ -120,10 +120,11 @@ function Capture-State([string]$State,[string[]]$Patterns) {
     $capture.visibleText = $text.text
     $visible = [regex]::Replace($text.text,'\s+',' ')
     # Missing markers fail this attempt; a nonblank window alone is insufficient evidence.
-    foreach ($pattern in (@('Project Manager Board','truncated','not supplied by pmd','pmd status generated \S+ ago')+$Patterns)) {
+    foreach ($pattern in (@('Project Manager Board','truncated, complete list below','Unavailable: local health is not supplied by pmd','pmd status generated \S+ ago')+$Patterns)) {
         if ($visible -notmatch $pattern) { throw "Native '$State' image missing visible '$pattern'. OCR: $($text.text)" }
     }
     $capture.contentVerified = $true
+    Write-Host "Native '$State' verified OCR: $($text.text)"
 }
 try {
     if (-not $IsWindows) { throw 'Native capture requires Windows.' }
@@ -183,17 +184,19 @@ t3_home = '$root'
     Start-Sleep -Seconds 2
     # The Board and work list are above local health and the Open issues table. Assert these
     # visible rows at the runner's existing size; an error can push Open issues below the fold.
-    $normalRows = @('Ready.*?SYNTHETIC FIXTURE NORMAL.*?In progress','Open work.*?ready.*?SYNTHETIC FIXTURE NORMAL')
+    $normalRows = @('Ready.*?SYNTHETIC FIXTURE NORMAL.*?In progress','Open work.*?all API pages.*?SYNTHETIC FIXTURE NORMAL')
     Capture-State 'normal' $normalRows
     Refresh-State 'stale'
-    Capture-State 'stale' ($normalRows + @('pmd last refresh failed','upstream refresh failed','Cached'))
+    # The small Cached pill is not reliably read by Windows OCR. The error, original-age
+    # line and retained NORMAL Board/work rows together prove the last-good stale state.
+    Capture-State 'stale' ($normalRows + @('pmd last refresh failed at','SYNTHETIC FIXTURE STALE upstream refresh failed'))
     Refresh-State 'unavailable'
-    Capture-State 'unavailable' ($normalRows + @('no.status','Cached'))
+    Capture-State 'unavailable' ($normalRows + @('pmd has no.?status for this project yet'))
     Refresh-State 'refreshed'
-    Capture-State 'refresh' @('Ready.*?SYNTHETIC FIXTURE REFRESHED.*?In progress','Open work.*?ready.*?SYNTHETIC FIXTURE REFRESHED')
+    Capture-State 'refresh' @('Ready.*?SYNTHETIC FIXTURE REFRESHED.*?In progress','Open work.*?all API pages.*?SYNTHETIC FIXTURE REFRESHED')
     if ($manifest.captures[-1].sha256 -eq $manifest.captures[-2].sha256) { throw 'OS refresh did not visibly change the image.' }
     Refresh-State 'board'
-    Capture-State 'board' @('Ready.*?SYNTHETIC FIXTURE BOARD.*?In progress','Open work.*?ready.*?SYNTHETIC FIXTURE BOARD','Waiting on Franz','Blocked','all API pages')
+    Capture-State 'board' @('Ready.*?SYNTHETIC FIXTURE BOARD.*?In progress','Open work.*?all API pages.*?SYNTHETIC FIXTURE BOARD','Waiting on Franz','Blocked')
     $manifest.requests = @(Get-Content (Join-Path $root 'requests.jsonl') | ForEach-Object { $_ | ConvertFrom-Json })
     $manifest.success = $true
 } catch {

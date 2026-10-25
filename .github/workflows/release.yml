@@ -52,11 +52,14 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Check native fixture retention without a window
+      - name: Check native fixture retention and OCR assertions without a window
         if: github.event_name == 'pull_request' && github.event.pull_request.number == 32 && github.run_attempt == 1
         timeout-minutes: 1
         shell: pwsh
-        run: python scripts/native-capture/test_fixture.py
+        run: |
+          python scripts/native-capture/test_fixture.py
+          if ($LASTEXITCODE -ne 0) { throw 'Native fixture retention regression failed.' }
+          ./scripts/native-capture/Test-CaptureText.ps1
 
       # The tag reaches the script through the environment, never as command text.
       - name: Build, check and zip

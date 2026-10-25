@@ -11,6 +11,7 @@ on:
     paths:
       - .github/workflows/release.yml
       - scripts/Build-WindowsRelease.ps1
+      - scripts/native-capture/**
       - crates/dashboard-app/build.rs
       - crates/dashboard-app/src/mark.rs
       - crates/dashboard-app/src/main.rs
@@ -40,6 +41,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Native evidence must describe the PR head, rather than GitHub's synthetic merge commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Install Rust toolchain
         shell: bash
@@ -54,6 +58,23 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: ./scripts/Build-WindowsRelease.ps1 -OutDir dist -Tag $env:RELEASE_TAG
+
+      # Owner-authorized issue-31 attempt only. A rerun must not silently repeat OS input/capture.
+      - name: Native Windows pmd capture (issue 31, one attempt)
+        if: github.event_name == 'pull_request' && github.event.pull_request.number == 32 && github.run_attempt == 1
+        timeout-minutes: 8
+        shell: pwsh
+        env:
+          CAPTURE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: ./scripts/native-capture/Invoke-Capture.ps1 -ExpectedHead $env:CAPTURE_HEAD
+
+      - name: Upload native capture evidence and failure manifest
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.number == 32 && github.run_attempt == 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-31-native-windows-${{ github.event.pull_request.head.sha }}
+          path: native-captures/
+          retention-days: 14
 
       - name: Upload the package
         if: always()

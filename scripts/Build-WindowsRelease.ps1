@@ -71,10 +71,14 @@ public static extern bool FreeLibrary(System.IntPtr module);
     New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
     $OutDir = (Resolve-Path $OutDir).Path
 
-    # Start it with an empty config folder, wait for its window, and photograph the screen.
+    # Start with an isolated empty config, wait for its window, and photograph only that window.
     $config = Join-Path ([IO.Path]::GetTempPath()) "project-dashboard-release-$PID"
     New-Item -ItemType Directory -Force -Path $config | Out-Null
-    Set-Content -Path (Join-Path $config 'config.toml') -Value 'repositories = []'
+    Set-Content -Path (Join-Path $config 'config.toml') -Value @'
+repositories = []
+pmd_url = 'http://127.0.0.1:1'
+pmd_token_path = 'missing-synthetic-token'
+'@
     $env:PROJECT_DASHBOARD_CONFIG_DIR = $config
     $process = Start-Process -FilePath $exe -PassThru
     try {
@@ -93,12 +97,21 @@ public static extern bool FreeLibrary(System.IntPtr module);
         Start-Sleep -Seconds 3
         try {
             Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-            $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            Add-Type -Path (Join-Path $PSScriptRoot 'native-capture/NativeDesktop.cs')
+            $rect = [NativeDesktop+RECT]::new()
+            if (-not [NativeDesktop]::GetWindowRect($process.MainWindowHandle, [ref]$rect)) {
+                throw 'GetWindowRect failed for the owned Dashboard window'
+            }
+            $bounds = [System.Drawing.Rectangle]::FromLTRB($rect.Left, $rect.Top, $rect.Right, $rect.Bottom)
+            if (-not [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Contains($bounds)) {
+                throw 'Dashboard window is not fully on the visible screen'
+            }
             $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
             $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-            $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-            $bitmap.Save((Join-Path $OutDir 'window.png'), [System.Drawing.Imaging.ImageFormat]::Png)
-            $graphics.Dispose(); $bitmap.Dispose()
+            try {
+                $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+                $bitmap.Save((Join-Path $OutDir 'window.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+            } finally { $graphics.Dispose(); $bitmap.Dispose() }
         } catch {
             Write-Warning "No desktop screenshot: $($_.Exception.Message)"
         }

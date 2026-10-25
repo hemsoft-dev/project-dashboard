@@ -22,7 +22,7 @@ use chrono::{DateTime, Utc};
 use dashboard_core::cache::StatusCache;
 use dashboard_core::columns::{Column, ColumnWidths};
 use dashboard_core::config::{Config, ConfigError, ConfigFile};
-use dashboard_core::priority::{Pmd, Priorities, PrioritySource};
+use dashboard_core::priority::{Pmd, PrioritySource};
 use dashboard_core::scheduler::{self, Outcome};
 use dashboard_core::source::StatusSource;
 use dashboard_core::status::{HealthRow, Issue, PullRequest, RunOutcome, Section, StatusDocument, WorkflowRun};
@@ -126,6 +126,8 @@ pub struct BoardView {
     priorities_wanted: bool,
     priority_generation: u64,
     last_refresh: Option<Instant>,
+    #[cfg(test)]
+    pending_refreshes: usize,
     focus: FocusHandle,
 }
 
@@ -165,6 +167,8 @@ impl BoardView {
             priorities_wanted: false,
             priority_generation: 0,
             last_refresh: None,
+            #[cfg(test)]
+            pending_refreshes: 0,
             focus,
         };
         view.find_threads(cx);
@@ -209,12 +213,22 @@ impl BoardView {
     }
 
     #[cfg(test)]
+    pub fn pending_refreshes(&self) -> usize {
+        self.pending_refreshes
+    }
+
+    #[cfg(test)]
+    pub fn cached(&self, checkout: &Path) -> Option<&StatusDocument> {
+        self.cache.get(checkout)
+    }
+
+    #[cfg(test)]
     pub fn priorities_pending(&self) -> bool {
         self.finding_priorities
     }
 
     #[cfg(all(test, target_os = "linux"))]
-    pub fn apply_priorities(&mut self, priorities: Priorities, cx: &mut Context<Self>) {
+    pub fn apply_priorities(&mut self, priorities: dashboard_core::priority::Priorities, cx: &mut Context<Self>) {
         self.board.set_priorities(priorities);
         cx.notify();
     }
@@ -366,7 +380,7 @@ impl BoardView {
         let source = Arc::clone(&self.options.priorities);
         let (send, receive) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = send.send(source.fetch());
+            let _ = send.send(source.fetch_result());
         });
         cx.spawn(async move |this, cx| {
             loop {
@@ -374,11 +388,13 @@ impl BoardView {
                 let priorities = match receive.try_recv() {
                     Ok(priorities) => priorities,
                     Err(TryRecvError::Empty) => continue,
-                    Err(TryRecvError::Disconnected) => Priorities::default(),
+                    Err(TryRecvError::Disconnected) => Err(dashboard_core::source::FetchError::Unavailable),
                 };
                 let _ = this.update(cx, |view, cx| {
                     view.finding_priorities = false;
-                    if view.priority_generation == generation {
+                    if view.priority_generation == generation
+                        && let Ok(priorities) = priorities
+                    {
                         view.board.set_priorities(priorities);
                     }
                     if std::mem::take(&mut view.priorities_wanted) {
@@ -504,15 +520,10 @@ impl BoardView {
                 self.priority_generation += 1;
                 self.options.priorities = Arc::new(pmd.clone());
                 self.limiter.set_source(Arc::new(pmd.clone()));
+                self.board.replace_pmd_source(&pmd.url, &mut self.cache);
                 self.options.pmd = Some(pmd);
-                for checkout in self.board.checkouts() {
-                    self.board.invalidate(&checkout, &mut self.cache);
-                }
-                self.board
-                    .sync_pmd_identities(&self.options.pmd.as_ref().expect("live pmd").url, &mut self.cache);
                 self.sync_wanted();
                 self.start(self.board.checkouts(), false, cx);
-                self.board.set_priorities(Priorities::default());
                 self.refresh_priorities(cx);
             }
         }
@@ -591,6 +602,10 @@ impl BoardView {
         if checkouts.is_empty() {
             return;
         }
+        #[cfg(test)]
+        {
+            self.pending_refreshes += 1;
+        }
         let generations = self.board.start_refresh(&checkouts);
         // Work for a checkout removed (or removed and added back) since now is skipped, before it queues for a slot
         // and again once it has one, so it never fetches or holds a slot.
@@ -616,6 +631,10 @@ impl BoardView {
                         }
                     }
                     if done {
+                        #[cfg(test)]
+                        {
+                            view.pending_refreshes -= 1;
+                        }
                         view.finished(cx);
                     }
                 });

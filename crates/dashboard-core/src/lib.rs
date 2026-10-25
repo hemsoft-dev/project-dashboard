@@ -39,8 +39,8 @@ pub struct Card {
     pub refreshing: bool,
     /// The latest refresh's failure. The last good document stays alongside it.
     pub error: Option<FetchError>,
-    /// Which time this checkout joined the board. A checkout removed from the config and added back is a new card,
-    /// and a refresh started for the old one must not land on it.
+    /// Identifies this card's current data/source generation. Replaced credentials, services and identities
+    /// supersede older refreshes, even when the displayed data is retained.
     pub generation: u64,
     pub identity: Option<Result<String, FetchError>>,
 }
@@ -116,7 +116,7 @@ pub struct Board {
     cards: Vec<Card>,
     priorities: priority::Priorities,
     service_url: Option<String>,
-    /// The generation the next new card gets.
+    /// The next generation for a new card or a replaced source.
     next_generation: u64,
 }
 
@@ -176,6 +176,20 @@ impl Board {
             card.from_cache = false;
             cache.remove(checkout);
         }
+    }
+
+    /// A new credential source supersedes in-flight results without discarding last good data.
+    /// A different service or checkout identity still invalidates data through the normal identity check.
+    pub fn replace_pmd_source(&mut self, url: &str, cache: &mut StatusCache) {
+        if self.service_url.as_deref() != Some(url) {
+            self.priorities = priority::Priorities::default();
+        }
+        for card in &mut self.cards {
+            card.generation = self.next_generation;
+            self.next_generation += 1;
+            card.refreshing = false;
+        }
+        self.sync_pmd_identities(url, cache);
     }
 
     /// Called before refresh and before applying completions, as well as during config polling.

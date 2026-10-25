@@ -39,6 +39,11 @@ impl Priorities {
 pub trait PrioritySource: Send + Sync + 'static {
     /// Failure means unknown priorities. Never return or log a credential or an HTTP error containing it.
     fn fetch(&self) -> Priorities;
+
+    /// Distinguish a failed read from a successful empty result, so callers can retain last good priorities.
+    fn fetch_result(&self) -> Result<Priorities, crate::source::FetchError> {
+        Ok(self.fetch())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,16 +59,17 @@ impl Pmd {
             token_path: dir.join(&config.pmd_token_path),
         }
     }
-
-    fn read(&self) -> Option<Priorities> {
-        let api = ReadApi::new(self, TIMEOUT).ok()?;
-        let value: serde_json::Value = api.get("v1/projects", &[]).ok()?;
-        Priorities::parse(&serde_json::to_vec(&value).ok()?)
-    }
 }
 
 impl PrioritySource for Pmd {
     fn fetch(&self) -> Priorities {
-        self.read().unwrap_or_default()
+        self.fetch_result().unwrap_or_default()
+    }
+
+    fn fetch_result(&self) -> Result<Priorities, crate::source::FetchError> {
+        use crate::source::FetchError;
+        let api = ReadApi::new(self, TIMEOUT)?;
+        let value: serde_json::Value = api.get("v1/projects", &[])?;
+        Priorities::parse(&serde_json::to_vec(&value).map_err(|_| FetchError::Malformed)?).ok_or(FetchError::Malformed)
     }
 }

@@ -252,6 +252,19 @@ fn captures() {
     });
     cx.run_until_parked();
     save(&mut cx, hosted, &out, "pmd-outage-cache");
+    cx.update(|cx| {
+        hosted_view.update(cx, |view, cx| {
+            view.apply(
+                Outcome {
+                    checkout: PathBuf::from("/demo/codexbar"),
+                    result: Err(FetchError::MissingToken),
+                },
+                cx,
+            )
+        })
+    });
+    cx.run_until_parked();
+    save(&mut cx, hosted, &out, "pmd-token-cache");
 
     // Last, so no zoom or toast carries into the other captures.
     // Zoom (#9): the same table with codexbar expanded at 80%, 100% and 150%, in a 1100×760 window like the app's.

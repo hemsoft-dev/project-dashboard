@@ -111,8 +111,9 @@ hover it for the exact local time. Pmd currently supplies no overall/local-healt
   again. Repositories with nothing to date stay at the bottom either way.
 - **Priority** shows pmd's tier, such as `P0`, immediately before PRs. Click its header for highest priority first,
   then lowest first, then config order. Equal priorities keep config order; unknowns stay last in either direction.
-  Untracked repositories, missing tokens, and API failures show `—`. Its request runs separately, with a two-second
-  timeout, independently of status workers. Priority refreshes at startup and with every refresh.
+  A repository without a known tier shows `—`. Failed reads retain the last good priorities from the same pmd
+  service; a successful response replaces them, including an unknown tier. Its request runs separately, with a
+  two-second timeout, independently of status workers. Priority refreshes at startup and with every refresh.
 - **Resize** a column by dragging the border to the right of its header (Repository, Priority, PRs, Issues, Updated); last
   activity takes the rest. Double-click a border to restore that column's default width. Widths are remembered in
   `ui-state.json`, next to `config.toml`, and scale with the zoom. On a window too narrow for them, the repository
@@ -134,7 +135,9 @@ hover it for the exact local time. Pmd currently supplies no overall/local-healt
   refresh and a new `refresh_minutes` from the next scheduled one. **Refresh all** reads the file first too. If an
   edit leaves the file invalid, the table keeps the last good list and a banner says what's wrong until you fix it.
   `t3_home` is read at startup only.
-  Changes to `pmd_url` and `pmd_token_path` apply immediately and invalidate the old service's data and in-flight results. Origin identity changes invalidate data too.
+  Changes to `pmd_token_path` replace the credential source and supersede in-flight results while keeping last good
+  status, Board/work data and priorities. Failed requests retain that data with its original status age and the error.
+  Changes to `pmd_url` or origin identity invalidate the old service or repository data.
 - **Zoom** the whole window with **Ctrl** **+** (or **Ctrl** **=**) and **Ctrl** **-**, or **Ctrl** + mouse wheel, in
   10% steps from 50% to 200%; **Ctrl** **0** resets to 100%. Text, spacing, icons and columns scale together, and the
   new level shows briefly at the bottom. It's remembered in `ui-state.json`, next to `config.toml`, so the next start

@@ -15,7 +15,10 @@ pub struct StatusDocument {
     pub schema_version: u32,
     pub generated_at: String,
     pub repository: RepositoryIdentity,
-    pub health: Health,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health: Option<Health>,
+    /// API provenance, freshness, Board and work data. Absent only in historical/demo fixtures.
+    pub hosted: Option<crate::pmd::Hosted>,
     pub issues: Vec<Issue>,
     pub pull_requests: PullRequests,
     pub workflow_runs: Vec<WorkflowRun>,
@@ -308,7 +311,24 @@ impl StatusDocument {
 
     /// The health header, row by row, as the terminal shows it.
     pub fn health_rows(&self) -> Vec<HealthRow> {
-        let health = &self.health;
+        let Some(health) = self.health.as_ref().filter(|_| self.hosted.is_none()) else {
+            return [
+                "Default branch",
+                "Current branch",
+                "Branches",
+                "Worktrees",
+                "Stashes",
+                "Working tree",
+            ]
+            .into_iter()
+            .map(|label| HealthRow {
+                label: label.to_owned(),
+                text: "Unavailable: local health is not supplied by pmd".to_owned(),
+                clean: false,
+                unavailable: true,
+            })
+            .collect();
+        };
         let default = &health.default_branch;
         let label = capitalized(if default.name.is_empty() {
             "default"

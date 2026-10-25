@@ -151,14 +151,61 @@ impl dashboard_core::priority::PrioritySource for DemoPriorities {
     fn fetch(&self) -> dashboard_core::priority::Priorities {
         dashboard_core::priority::Priorities::parse(
             br#"{"projects":[
-            {"slug":"gh-x","priority":3,"tracked":true},
-            {"slug":"codexbar","priority":3,"tracked":true},
-            {"slug":"hs-buddy","priority":2,"tracked":true},
-            {"slug":"project-dashboard","priority":3,"tracked":true},
-            {"slug":"set-it-free-loop","priority":1,"tracked":true},
-            {"slug":"hs-pi-dashboard","priority":3,"tracked":true}
+            {"slug":"gh-x","repo":"hemsoft-dev/gh-x","priority":3,"tracked":true},
+            {"slug":"codexbar","repo":"hemsoft-dev/codexbar","priority":3,"tracked":true},
+            {"slug":"hs-buddy","repo":"hemsoft-dev/hs-buddy","priority":2,"tracked":true},
+            {"slug":"project-dashboard","repo":"hemsoft-dev/project-dashboard","priority":3,"tracked":true},
+            {"slug":"set-it-free-loop","repo":"hemsoft-dev/set-it-free-loop","priority":1,"tracked":true},
+            {"slug":"hs-pi-dashboard","repo":"hemsoft-dev/hs-pi-dashboard","priority":3,"tracked":true}
         ]}"#,
         )
         .unwrap()
+    }
+}
+
+/// Illustrative API state for headless regression tests and captures, with no network access.
+#[cfg(test)]
+pub struct HostedSource;
+#[cfg(test)]
+impl StatusSource for HostedSource {
+    fn fetch(&self, checkout: &Path, _: bool) -> Result<StatusDocument, FetchError> {
+        use dashboard_core::pmd::{Hosted, WorkBoard, WorkColumn, WorkItem};
+        let mut document = DemoSource.fetch(checkout, false)?;
+        document.health = None;
+        document.verdict = None;
+        let item = WorkItem {
+            id: "fixture-stable-id".into(),
+            project: "codexbar".into(),
+            kind: "issue".into(),
+            number: 31,
+            title: "Read shared API data".into(),
+            url: "https://github.com/hemsoft-dev/codexbar/issues/31".into(),
+            status: "ready".into(),
+        };
+        document.hosted = Some(Hosted {
+            service_url: "http://fixture.invalid".into(),
+            generated_at: "2026-10-21T06:20:00Z".into(),
+            last_error: None,
+            board: Some(WorkBoard {
+                generated_at: "2026-10-21T06:20:00Z".into(),
+                columns: [
+                    ("ready", "Ready"),
+                    ("in_progress", "In progress"),
+                    ("waiting_on_franz", "Waiting on Franz"),
+                    ("blocked", "Blocked"),
+                ]
+                .into_iter()
+                .map(|(status, title)| WorkColumn {
+                    status: status.into(),
+                    title: title.into(),
+                    items: if status == "ready" { vec![item.clone()] } else { vec![] },
+                    truncated: status == "ready",
+                })
+                .collect(),
+            }),
+            work: vec![item],
+            work_error: None,
+        });
+        Ok(document)
     }
 }

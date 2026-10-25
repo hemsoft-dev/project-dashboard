@@ -1,4 +1,4 @@
-//! Refreshing many checkouts at once with a bounded number of `gh x status` processes, reporting each result as soon
+//! Refreshing many checkouts at once with a bounded number of HTTP reads, reporting each result as soon
 //! as it arrives.
 
 use std::path::Path;
@@ -10,7 +10,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use crate::source::{FetchError, StatusSource};
 use crate::status::StatusDocument;
 
-/// The most `gh x status` processes that ever run at once.
+/// The most HTTP reads that ever run at once.
 pub const MAX_PARALLELISM: usize = 16;
 
 /// How many workers a refresh of `checkouts` checkouts starts for a configured `parallelism`.
@@ -47,7 +47,7 @@ pub fn refresh(
                 let Some(checkout) = next else { break };
                 let result = source.fetch(&checkout, refresh);
                 if sender.send(Outcome { checkout, result }).is_err() {
-                    // Nobody is listening any more; stop starting new processes.
+                    // Nobody is listening any more; stop starting new reads.
                     break;
                 }
             }
@@ -61,7 +61,7 @@ pub fn refresh(
 /// can change while fetches run (#21): it is one counter for everything, so lowering it never lets old and new work
 /// add up past the new limit; fetches already running finish, and no new one starts until the count is under it.
 pub struct Limited {
-    inner: Arc<dyn StatusSource>,
+    inner: std::sync::RwLock<Arc<dyn StatusSource>>,
     limit: AtomicUsize,
     running: Mutex<usize>,
     freed: Condvar,
@@ -70,11 +70,15 @@ pub struct Limited {
 impl Limited {
     pub fn new(inner: Arc<dyn StatusSource>, limit: usize) -> Self {
         Self {
-            inner,
+            inner: std::sync::RwLock::new(inner),
             limit: AtomicUsize::new(limit.clamp(1, MAX_PARALLELISM)),
             running: Mutex::new(0),
             freed: Condvar::new(),
         }
+    }
+
+    pub fn set_source(&self, source: Arc<dyn StatusSource>) {
+        *self.inner.write().unwrap_or_else(|p| p.into_inner()) = source;
     }
 
     pub fn limit(&self) -> usize {
@@ -121,7 +125,8 @@ impl Limited {
             }
             *running += 1;
         }
-        let result = self.inner.fetch(checkout, refresh);
+        let source = self.inner.read().unwrap_or_else(|p| p.into_inner()).clone();
+        let result = source.fetch(checkout, refresh);
         *self.running.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) -= 1;
         self.freed.notify_one();
         result

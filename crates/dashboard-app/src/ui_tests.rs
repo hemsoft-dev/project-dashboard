@@ -227,7 +227,7 @@ impl StatusSource for Recording {
 }
 
 #[gpui_kit::test]
-async fn refreshing_one_card_bypasses_the_gh_x_cache_and_refresh_all_does_not(cx: &mut TestAppContext) {
+async fn manual_and_full_refresh_preserve_the_source_request_intent(cx: &mut TestAppContext) {
     let source = Arc::new(Recording::default());
     let (handle, view) = open_board(cx, four(), StatusCache::default(), source.clone(), options());
     cx.update_window(handle, |_, window, cx| window.click(("refresh", 2usize), cx))
@@ -243,14 +243,14 @@ async fn refreshing_one_card_bypasses_the_gh_x_cache_and_refresh_all_does_not(cx
 }
 
 #[gpui_kit::test]
-async fn a_missing_gh_shows_one_setup_message(cx: &mut TestAppContext) {
-    struct NoGh;
-    impl StatusSource for NoGh {
+async fn a_missing_pmd_token_shows_one_setup_message(cx: &mut TestAppContext) {
+    struct NoToken;
+    impl StatusSource for NoToken {
         fn fetch(&self, _: &Path, _: bool) -> Result<StatusDocument, FetchError> {
-            Err(FetchError::GhMissing)
+            Err(FetchError::MissingToken)
         }
     }
-    let (handle, view) = open_board(cx, four(), StatusCache::default(), Arc::new(NoGh), options());
+    let (handle, view) = open_board(cx, four(), StatusCache::default(), Arc::new(NoToken), options());
     cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
     settle(cx, handle, &view).await;
     cx.update_window(handle, |_, window, _| {
@@ -1898,4 +1898,72 @@ async fn unavailable_rows_survive_even_without_diagnostic_text(cx: &mut TestAppC
         );
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+async fn hosted_status_renders_unavailable_health_and_board_identity_links(cx: &mut TestAppContext) {
+    let checkout = PathBuf::from("/demo/codexbar");
+    let (handle, view) = open_board(
+        cx,
+        vec![checkout.clone()],
+        StatusCache::default(),
+        Arc::new(demo::HostedSource),
+        options(),
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    assert_eq!(overall(cx, &view), [Overall::Unavailable]);
+    cx.update(|cx| view.update(cx, |view, cx| view.toggle_expanded(&checkout, cx)));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("health-Working tree").label(),
+            Some("Working tree: Unavailable: local health is not supplied by pmd")
+        );
+        assert!(window.try_find(("pmd-freshness", 0usize)).is_some());
+        assert!(window.try_find(("pmd-board", 0usize)).is_some());
+        window.click("work-0-fixture-stable-id", cx);
+    })
+    .unwrap();
+    assert_eq!(
+        cx.opened_url(),
+        Some("https://github.com/hemsoft-dev/codexbar/issues/31".into())
+    );
+}
+
+#[gpui_kit::test]
+async fn cached_hosted_status_keeps_age_and_last_error_then_recovers(cx: &mut TestAppContext) {
+    let checkout = PathBuf::from("/demo/codexbar");
+    let mut document = demo::HostedSource.fetch(&checkout, false).unwrap();
+    document.hosted.as_mut().unwrap().last_error = Some(dashboard_core::pmd::LastError {
+        message: "upstream unavailable".into(),
+        at: "2026-10-21T06:25:00Z".into(),
+    });
+    let mut cache = StatusCache::default();
+    cache.insert(checkout.clone(), document);
+    let (handle, view) = open_board(
+        cx,
+        vec![checkout.clone()],
+        cache,
+        Arc::new(demo::HostedSource),
+        options(),
+    );
+    assert_eq!(overall(cx, &view), [Overall::Failed]);
+    cx.update(|cx| view.update(cx, |view, cx| view.toggle_expanded(&checkout, cx)));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .find(("row-error", 0usize))
+                .label()
+                .unwrap()
+                .contains("upstream unavailable")
+        );
+        assert!(window.try_find(("pmd-freshness", 0usize)).is_some());
+    })
+    .unwrap();
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_one(&checkout, cx)));
+    settle(cx, handle, &view).await;
+    assert_eq!(overall(cx, &view), [Overall::Unavailable]);
+    assert!(cx.update(|cx| view.read(cx).board().cards()[0].error.is_none()));
 }

@@ -10,11 +10,11 @@ use dashboard_core::priority::{DEFAULT_URL, Pmd, Priorities, PrioritySource};
 use dashboard_core::{Board, Card, SortOrder, fixtures, scheduler::Outcome};
 
 const PROJECTS: &str = r#"{"projects":[
- {"slug":"alpha","priority":3,"tracked":true},
- {"slug":"beta","priority":0,"tracked":true},
- {"slug":"gamma","priority":3,"tracked":true},
- {"slug":"untracked","priority":1,"tracked":false},
- {"slug":"untiered","priority":null,"tracked":true}] }"#;
+ {"slug":"alpha","repo":"hemsoft-dev/alpha","priority":3,"tracked":true},
+ {"slug":"beta","repo":"hemsoft-dev/beta","priority":0,"tracked":true},
+ {"slug":"gamma","repo":"hemsoft-dev/gamma","priority":3,"tracked":true},
+ {"slug":"untracked","repo":"hemsoft-dev/untracked","priority":1,"tracked":false},
+ {"slug":"untiered","repo":"hemsoft-dev/untiered","priority":null,"tracked":true}] }"#;
 
 struct Token(PathBuf);
 impl Token {
@@ -77,7 +77,14 @@ fn authenticated_projects_match_repo_names_and_omit_untracked_or_untiered_projec
         ("untiered", None),
         ("missing", None),
     ] {
-        assert_eq!(priorities.for_card(&Card::new(PathBuf::from(name))), expected);
+        let mut card = Card::new(PathBuf::from(name));
+        assert_eq!(
+            priorities.for_card(&card),
+            None,
+            "folder name never establishes identity"
+        );
+        card.identity = Some(Ok(format!("hemsoft-dev/{name}")));
+        assert_eq!(priorities.for_card(&card), expected);
     }
     // gh-x's canonical identity wins over an arbitrarily named checkout directory.
     let mut card = Card::new("renamed-folder".into());
@@ -146,6 +153,18 @@ fn priority_sort_keeps_ties_and_unknowns_in_config_order_in_both_directions() {
         .map(PathBuf::from)
         .into();
     let mut board = Board::new(&paths, &StatusCache::default());
+    let mut cache = StatusCache::default();
+    for path in &paths {
+        let mut doc = fixtures::document(fixtures::CLEAN);
+        doc.repository.name_with_owner = format!("hemsoft-dev/{}", path.display());
+        board.apply(
+            Outcome {
+                checkout: path.clone(),
+                result: Ok(doc),
+            },
+            &mut cache,
+        );
+    }
     board.set_priorities(Priorities::parse(PROJECTS.as_bytes()).unwrap());
     assert_eq!(board.order(SortOrder::PriorityFirst), [3, 1, 4, 0, 2, 5]);
     assert_eq!(board.order(SortOrder::PriorityLast), [1, 4, 3, 0, 2, 5]);

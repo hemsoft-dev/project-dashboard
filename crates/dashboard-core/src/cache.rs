@@ -10,7 +10,7 @@ use crate::status::StatusDocument;
 pub const FILE_NAME: &str = "status-cache.json";
 
 /// The cache file's own version; a different one is ignored rather than misread.
-const CACHE_VERSION: u32 = 1;
+const CACHE_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +36,10 @@ impl StatusCache {
 
     pub fn insert(&mut self, path: PathBuf, document: StatusDocument) {
         self.entries.insert(path, document);
+    }
+
+    pub fn remove(&mut self, path: &Path) {
+        self.entries.remove(path);
     }
 
     pub fn len(&self) -> usize {

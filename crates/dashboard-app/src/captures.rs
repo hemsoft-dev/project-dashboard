@@ -200,20 +200,58 @@ fn captures() {
     cx.run_until_parked();
     save(&mut cx, partial, &out, "expanded-unavailable");
 
-    // Without gh: one setup message instead of a failure on every card.
-    struct NoGh;
-    impl StatusSource for NoGh {
+    // Without a pmd token: one setup message instead of a failure on every card.
+    struct NoToken;
+    impl StatusSource for NoToken {
         fn fetch(&self, _: &Path, _: bool) -> Result<StatusDocument, FetchError> {
-            Err(FetchError::GhMissing)
+            Err(FetchError::MissingToken)
         }
     }
     let (setup, setup_view) = open(&mut cx, demo::checkouts(), 520.);
-    fill(&mut cx, &setup_view, &NoGh);
-    save(&mut cx, setup, &out, "setup-missing-gh");
+    fill(&mut cx, &setup_view, &NoToken);
+    save(&mut cx, setup, &out, "setup-missing-token");
 
     let (empty, _) = open(&mut cx, vec![], 520.);
     cx.run_until_parked();
     save(&mut cx, empty, &out, "empty-board");
+
+    // Hosted status, unavailable local health, truncated Board and complete work list.
+    let (hosted, hosted_view) = open(&mut cx, vec![PathBuf::from("/demo/codexbar")], 980.);
+    fill(&mut cx, &hosted_view, &demo::HostedSource);
+    cx.update(|cx| hosted_view.update(cx, |view, cx| view.toggle_expanded(Path::new("/demo/codexbar"), cx)));
+    cx.run_until_parked();
+    save(&mut cx, hosted, &out, "pmd-hosted-board");
+    cx.update(|cx| {
+        hosted_view.update(cx, |view, cx| {
+            let mut document = demo::HostedSource.fetch(Path::new("/demo/codexbar"), false).unwrap();
+            document.hosted.as_mut().unwrap().last_error = Some(dashboard_core::pmd::LastError {
+                message: "Upstream refresh failed; showing last good status".into(),
+                at: "2026-10-21T06:25:00Z".into(),
+            });
+            view.apply(
+                Outcome {
+                    checkout: PathBuf::from("/demo/codexbar"),
+                    result: Ok(document),
+                },
+                cx,
+            );
+        })
+    });
+    cx.run_until_parked();
+    save(&mut cx, hosted, &out, "pmd-stale-status");
+    cx.update(|cx| {
+        hosted_view.update(cx, |view, cx| {
+            view.apply(
+                Outcome {
+                    checkout: PathBuf::from("/demo/codexbar"),
+                    result: Err(FetchError::Unavailable),
+                },
+                cx,
+            )
+        })
+    });
+    cx.run_until_parked();
+    save(&mut cx, hosted, &out, "pmd-outage-cache");
 
     // Last, so no zoom or toast carries into the other captures.
     // Zoom (#9): the same table with codexbar expanded at 80%, 100% and 150%, in a 1100×760 window like the app's.

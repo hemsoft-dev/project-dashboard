@@ -15,7 +15,11 @@ $baseline = '4cc273ac30fe091fb9e898c85d004831648cb8c8'
 $manifest = [ordered]@{
     head=(git rev-parse HEAD); expectedHead=$ExpectedHead; baseline=$baseline
     runner='GitHub-hosted windows-latest'; run="https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
-    syntheticLoopbackFixture=$true; success=$false; ownerInspectionPending=$true
+    syntheticLoopbackFixture=$true; success=$false; matrixComplete=$false; ownerInspectionPending=$true
+    priorDisplayEvidence=@(
+        @{head='ead89cbcfd8ac1be2824834732f1dd767bd2302b';run=40251951263;method='Synthesized 1920x1080';testCode=-5;testResult='DISP_CHANGE_BADPARAM';source='Owner report';modeHeadersRecorded=$false},
+        @{head='3a6d909f74da494b726ea26779b21b8cf32950d4';run=40254485036;method='Unchanged enumerated DEVMODE';enumeratedModeCount=13;selectedIndex=12;width=1920;height=1080;bpp=32;testCode=-5;testResult='DISP_CHANGE_BADPARAM';actualWidth=1024;actualHeight=768;workAreaWidth=1024;workAreaHeight=720;narrowFixAccepted=$true;source='Owner report';modeHeadersRecorded=$false}
+    )
     captures=@(); ocrReads=@(); skipped=@(); processes=@()
     profiles=@(@{name='default';zoom=1.0;repositoryRem=18.0},@{name='saved';zoom=1.3;repositoryRem=20.88})
     requestedClientWidths=@(760,1100,1680); requestedClientHeight=620
@@ -187,7 +191,10 @@ function Assert-WidthText([string]$Text,[string]$Source,[int]$Width) {
     }
 }
 function Get-ModeRecord($Mode) {
-    @{width=$Mode.Width;height=$Mode.Height;bitsPerPixel=$Mode.BitsPerPixel;frequency=$Mode.Frequency}
+    @{
+        width=$Mode.Width;height=$Mode.Height;bitsPerPixel=$Mode.BitsPerPixel;frequency=$Mode.Frequency
+        size=$Mode.Size;driverExtra=$Mode.DriverExtra;fields=$Mode.Fields;fieldsHex=('0x{0:X8}' -f $Mode.Fields)
+    }
 }
 function Get-DisplayCode([int]$Code) {
     $names=@{0='DISP_CHANGE_SUCCESSFUL';1='DISP_CHANGE_RESTART';'-1'='DISP_CHANGE_FAILED';'-2'='DISP_CHANGE_BADMODE';'-3'='DISP_CHANGE_NOTUPDATED';'-4'='DISP_CHANGE_BADFLAGS';'-5'='DISP_CHANGE_BADPARAM';'-6'='DISP_CHANGE_BADDUALVIEW'}
@@ -198,7 +205,9 @@ function Get-DisplayCode([int]$Code) {
 function Set-CaptureDisplay {
     $manifest.display=@{
         api='EnumDisplaySettingsW + ChangeDisplaySettingsExW';requested=$null;registryUpdated=$false;errors=@();enumeratedModes=@()
-        selection='Width descending, then prefer 32 bpp, then height descending; unchanged enumerated DEVMODE'
+        selection='Width descending, then prefer 32 bpp, then height descending'
+        method='Normalized public DEVMODEW: width, height, bpp and frequency; one CDS_TEST then dynamic apply'
+        publicStructBytes=[WidthDesktop]::ModeSize();testFlags=2;applyFlags=0
     }
     try {
         $modes=[WidthDesktop]::EnumerateModes()
@@ -212,15 +221,17 @@ function Set-CaptureDisplay {
         $script:originalMode=[WidthDesktop]::ReadMode(-1)
         $manifest.display.before=Get-ModeRecord $originalMode
         $selected=[WidthDesktop]::SelectWidest($modes)
-        $manifest.display.requested=Get-ModeRecord $selected.Settings
+        $manifest.display.selected=Get-ModeRecord $selected.Settings
+        $manifest.display.selected.index=$selected.Index
+        $desired=[WidthDesktop]::ChangeRequest($selected.Settings)
+        $manifest.display.requested=Get-ModeRecord $desired
         $manifest.display.requested.index=$selected.Index
-        $desired=$selected.Settings
         $code=[WidthDesktop]::ChangeDisplaySettingsExW($null,[ref]$desired,[IntPtr]::Zero,2,[IntPtr]::Zero)
         $manifest.display.testCode=$code; $manifest.display.testResult=Get-DisplayCode $code
         if ($code -eq 0) {
-            # Pass the complete enumerated value again, without changing any DEVMODE fields.
+            # Rebuild the same public request if the test call modified its ref argument.
             # Flags=0 changes the live mode only. Never CDS_UPDATEREGISTRY.
-            $desired=$selected.Settings
+            $desired=[WidthDesktop]::ChangeRequest($selected.Settings)
             $code=[WidthDesktop]::ChangeDisplaySettingsExW($null,[ref]$desired,[IntPtr]::Zero,0,[IntPtr]::Zero)
             $manifest.display.applyCode=$code; $manifest.display.applyResult=Get-DisplayCode $code
             $script:displayApplied=($code -eq 0)
@@ -230,10 +241,28 @@ function Set-CaptureDisplay {
     } catch { $manifest.display.errors += $_.Exception.Message }
     $actual=[WidthDesktop]::ReadMode(-1)
     $manifest.display.actual=Get-ModeRecord $actual
+    $manifest.display.requestedModeVerified=($null -ne $manifest.display.requested -and
+        $actual.Width -eq $manifest.display.requested.width -and $actual.Height -eq $manifest.display.requested.height -and
+        $actual.BitsPerPixel -eq $manifest.display.requested.bitsPerPixel -and $actual.Frequency -eq $manifest.display.requested.frequency)
     $work=[WidthDesktop]::WorkArea()
     $script:area=[Drawing.Rectangle]::FromLTRB($work.Left,$work.Top,$work.Right,$work.Bottom)
     $manifest.display.workingArea=@{x=$area.X;y=$area.Y;width=$area.Width;height=$area.Height}
     Write-Host "Native display: $($actual.Width)x$($actual.Height); work area $area; API errors: $($manifest.display.errors -join '; ')"
+    if ($manifest.display.errors.Count) { throw "Native display probe stopped without a fallback: $($manifest.display.errors -join '; ')" }
+    if (-not $manifest.display.requestedModeVerified) { throw "Native display probe did not produce its requested mode; actual $($actual.Width)x$($actual.Height), $($actual.BitsPerPixel) bpp, $($actual.Frequency) Hz. No fallback attempted." }
+}
+function Restore-CaptureDisplay {
+    $restore=[WidthDesktop]::ChangeRequest($originalMode)
+    $manifest.display.restoreRequested=Get-ModeRecord $restore
+    $manifest.display.restoreFlags=0
+    $code=[WidthDesktop]::ChangeDisplaySettingsExW($null,[ref]$restore,[IntPtr]::Zero,0,[IntPtr]::Zero)
+    $manifest.display.restoreCode=$code; $manifest.display.restoreResult=Get-DisplayCode $code
+    $restored=[WidthDesktop]::ReadMode(-1)
+    $manifest.display.restored=Get-ModeRecord $restored
+    if ($code -ne 0 -or $restored.Width -ne $originalMode.Width -or $restored.Height -ne $originalMode.Height -or
+        $restored.BitsPerPixel -ne $originalMode.BitsPerPixel -or $restored.Frequency -ne $originalMode.Frequency) {
+        throw "Display restore failed: $code"
+    }
 }
 function Wait-WidthRequests([string]$Session) {
     $required=@('/v1/projects','/v1/projects/long/status','/v1/projects/short/status','/v1/board?project=long','/v1/board?project=short','/v1/work?project=long&limit=500','/v1/work?project=short&limit=500')
@@ -316,6 +345,8 @@ try {
     Add-Type -AssemblyName System.Windows.Forms,System.Drawing
     [void][NativeDesktop]::SetThreadDpiAwarenessContext([IntPtr](-4))
     $manifest.inputDesktop=[NativeDesktop]::InputDesktop()
+    $manifest.session=@{processId=$PID;sessionId=(Get-Process -Id $PID).SessionId;userInteractive=[Environment]::UserInteractive;inputDesktop=$manifest.inputDesktop}
+    try { $manifest.session.windowStation=[WidthDesktop]::WindowStationName() } catch { $manifest.session.windowStationError=$_.Exception.Message }
     if (-not [Environment]::UserInteractive -or $manifest.inputDesktop -ne 'Default') { throw 'Locked/noninteractive runner desktop.' }
     New-Item -ItemType Directory $root | Out-Null
     Set-CaptureDisplay
@@ -363,13 +394,7 @@ try {
     }
     try { if (Test-Path (Join-Path $root 'requests.jsonl')) { Copy-Item (Join-Path $root 'requests.jsonl') $OutDir } } catch { $cleanupErrors += $_.Exception.Message }
     if ($displayApplied -and $null -ne $originalMode) {
-        try {
-            $code=[WidthDesktop]::ChangeDisplaySettingsExW($null,[ref]$originalMode,[IntPtr]::Zero,0,[IntPtr]::Zero)
-            $manifest.display.restoreCode=$code; $manifest.display.restoreResult=Get-DisplayCode $code
-            $restored=[WidthDesktop]::ReadMode(-1)
-            $manifest.display.restored=Get-ModeRecord $restored
-            if ($code -ne 0 -or $restored.Width -ne $originalMode.Width -or $restored.Height -ne $originalMode.Height) { throw "Display restore failed: $code" }
-        } catch { $cleanupErrors += $_.Exception.Message }
+        try { Restore-CaptureDisplay } catch { $cleanupErrors += $_.Exception.Message }
     }
     try { if (Test-Path $root) { Remove-Item $root -Recurse -Force } } catch { $cleanupErrors += $_.Exception.Message }
     if ($cleanupErrors.Count) { $manifest.success=$false; $manifest.cleanupErrors=$cleanupErrors }

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Text;
 
 // Additional APIs for issue 27 only. Display changes are dynamic, never saved to the registry.
 // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-changedisplaysettingsexw
@@ -30,13 +31,36 @@ public static class WidthDesktop {
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr window);
     [DllImport("user32.dll", SetLastError=true)] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
     [DllImport("user32.dll", SetLastError=true)] static extern bool SystemParametersInfoW(uint action, uint parameter, out Rect rect, uint flags);
+    [DllImport("user32.dll", SetLastError=true)] static extern IntPtr GetProcessWindowStation();
+    [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern bool GetUserObjectInformationW(IntPtr handle, int index, StringBuilder name, int bytes, out int needed);
+    public static string WindowStationName() {
+        var station=GetProcessWindowStation();
+        var name=new StringBuilder(256); int needed;
+        if (station==IntPtr.Zero || !GetUserObjectInformationW(station, 2, name, 512, out needed))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot identify process window station");
+        return name.ToString();
+    }
+    public static int ModeSize() { return Marshal.SizeOf(typeof(Mode)); }
+    public static Mode ChangeRequest(Mode source) {
+        // This marshaller supplies the public DEVMODEW only, with no private driver tail.
+        // dmDriverExtra counts bytes FOLLOWING that structure; dmFields names requested members.
+        // https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-devmodew
+        // Use only documented display fields. Keep frequency to select/restore the same mode.
+        // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-changedisplaysettingsexw
+        // Mode is a value type: normalize a copy, preserving the driver-returned version/data.
+        source.Size=(ushort)ModeSize();
+        source.DriverExtra=0;
+        source.Fields=0x00040000 | 0x00080000 | 0x00100000 | 0x00400000;
+        return source;
+    }
     public static Rect WorkArea() {
         Rect rect;
         if (!SystemParametersInfoW(0x0030, 0, out rect, 0)) throw new Win32Exception(Marshal.GetLastWin32Error(), "SPI_GETWORKAREA failed");
         return rect;
     }
     public static Mode ReadMode(int number) {
-        var mode = new Mode { Size=(ushort)Marshal.SizeOf(typeof(Mode)) };
+        var mode = new Mode { Size=(ushort)Marshal.SizeOf(typeof(Mode)), DriverExtra=0 };
         if (!EnumDisplaySettingsW(null, number, ref mode)) throw new Win32Exception(Marshal.GetLastWin32Error(), "EnumDisplaySettingsW failed");
         return mode;
     }
@@ -45,7 +69,7 @@ public static class WidthDesktop {
         var modes=new List<EnumeratedMode>();
         // Enumerate every index until the documented zero return, without inventing a mode.
         for (int i=0; ; i++) {
-            var mode=new Mode { Size=(ushort)Marshal.SizeOf(typeof(Mode)) };
+            var mode=new Mode { Size=(ushort)Marshal.SizeOf(typeof(Mode)), DriverExtra=0 };
             if (!EnumDisplaySettingsW(null, i, ref mode)) break;
             modes.Add(new EnumeratedMode { Index=i, Settings=mode });
         }

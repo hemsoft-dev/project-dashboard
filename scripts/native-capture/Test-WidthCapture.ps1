@@ -4,7 +4,7 @@ Set-StrictMode -Version Latest
 $tokens=$null; $errors=$null
 $ast=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'Invoke-WidthCapture.ps1'),[ref]$tokens,[ref]$errors)
 if ($errors) { throw ($errors | Out-String) }
-foreach ($name in @('Assert-ClientWidth','Assert-WidthText','Read-Screenshot','Capture-Width','Get-ModeRecord','Get-DisplayCode','Set-CaptureDisplay')) {
+foreach ($name in @('Assert-ClientWidth','Assert-WidthText','Read-Screenshot','Capture-Width','Get-ModeRecord','Get-DisplayCode','Set-CaptureDisplay','Restore-CaptureDisplay')) {
     $node=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
     if ($null -eq $node) { throw "Missing capture function $name" }
     Invoke-Expression $node.Extent.Text
@@ -34,6 +34,9 @@ $code=(Get-Content (Join-Path $PSScriptRoot 'WidthDesktop.cs') -Raw).Replace('cl
 Add-Type -TypeDefinition $code
 if ([Runtime.InteropServices.Marshal]::SizeOf([type][WidthDesktopAbi+Mode]) -ne 220 -or
     [Runtime.InteropServices.Marshal]::OffsetOf([type][WidthDesktopAbi+Mode],'Width').ToInt32() -ne 172) { throw 'DEVMODEW ABI mismatch.' }
+foreach ($field in @{Size=68;DriverExtra=70;Fields=72;Frequency=184}.GetEnumerator()) {
+    if ([Runtime.InteropServices.Marshal]::OffsetOf([type][WidthDesktopAbi+Mode],$field.Key).ToInt32() -ne $field.Value) { throw "DEVMODEW $($field.Key) offset mismatch." }
+}
 function New-TestMode([int]$Index,[uint32]$Width,[uint32]$Height,[uint32]$Bpp) {
     $entry=[WidthDesktopAbi+EnumeratedMode]::new()
     $entry.Index=$Index
@@ -54,6 +57,16 @@ $wider=New-TestMode 5 1800 900 16
 if ([WidthDesktopAbi]::SelectWidest([WidthDesktopAbi+EnumeratedMode[]]@($modes[4],$wider)).Index -ne 5) { throw 'Mode selection did not prioritize width.' }
 Reject { $null=[WidthDesktopAbi]::SelectWidest([WidthDesktopAbi+EnumeratedMode[]]@()) } 'no display modes'
 Write-Output 'Real mode selector chooses an available non-1920 width, prefers 32 bpp then height, and preserves all DEVMODE fields.'
+$raw=$selected.Settings
+$raw.Size=124; $raw.DriverExtra=64; $raw.Fields=[uint32]::MaxValue; $raw.SpecVersion=1025; $raw.DriverVersion=7
+$before=$raw
+$request=[WidthDesktopAbi]::ChangeRequest($raw)
+if ($request.Size -ne 220 -or $request.DriverExtra -ne 0 -or $request.Fields -ne 0x005c0000 -or
+    $request.Width -ne $raw.Width -or $request.Height -ne $raw.Height -or $request.BitsPerPixel -ne $raw.BitsPerPixel -or
+    $request.Frequency -ne $raw.Frequency -or $request.SpecVersion -ne $raw.SpecVersion -or $request.DriverVersion -ne $raw.DriverVersion -or
+    $request.X -ne $raw.X -or $request.Orientation -ne $raw.Orientation -or $request.Flags -ne $raw.Flags -or
+    -not $raw.Equals($before)) { throw 'Public request leaks private bytes/extra fields or changes raw mode evidence.' }
+Write-Output 'Real public request fixes size/private-tail/field-mask metadata, retains enumerated dimensions/bpp/frequency, and leaves raw evidence unchanged.'
 
 # Stub the native APIs to test coordinator ordering and failure preservation, never a real image.
 Add-Type -TypeDefinition @'
@@ -63,22 +76,29 @@ public static class NativeDesktop {
     public static bool GetWindowRect(IntPtr window,out RECT rect) { rect=new RECT{Right=776,Bottom=636}; return true; }
 }
 public static class WidthDesktop {
-    public struct Mode { public uint Width,Height,BitsPerPixel,Frequency,Fields; }
+    public struct Mode { public uint Width,Height,BitsPerPixel,Frequency,Fields; public ushort Size,DriverExtra; }
     public struct EnumeratedMode { public int Index; public Mode Settings; }
     public static EnumeratedMode[] Modes = new [] {
-        new EnumeratedMode { Index=0, Settings=new Mode { Width=1024,Height=768,BitsPerPixel=32,Frequency=60,Fields=12345 } },
-        new EnumeratedMode { Index=1, Settings=new Mode { Width=1600,Height=900,BitsPerPixel=16,Frequency=60,Fields=12345 } },
-        new EnumeratedMode { Index=2, Settings=new Mode { Width=1600,Height=900,BitsPerPixel=32,Frequency=75,Fields=12345 } }
+        new EnumeratedMode { Index=0, Settings=new Mode { Width=1024,Height=768,BitsPerPixel=32,Frequency=60,Fields=0xffffffff,Size=220,DriverExtra=64 } },
+        new EnumeratedMode { Index=1, Settings=new Mode { Width=1600,Height=900,BitsPerPixel=16,Frequency=60,Fields=0xffffffff,Size=220,DriverExtra=64 } },
+        new EnumeratedMode { Index=2, Settings=new Mode { Width=1600,Height=900,BitsPerPixel=32,Frequency=75,Fields=0xffffffff,Size=220,DriverExtra=64 } }
     };
-    public static int TestCode=0, ApplyCalls=0;
-    public static Mode ReadMode(int index) { return Modes[ApplyCalls>0 ? 2 : 0].Settings; }
+    public static int TestCode=0, ApplyCode=0, ApplyCalls=0;
+    public static bool IgnoreApply=false;
+    public static Mode Current=Modes[0].Settings;
+    public static Mode ReadMode(int index) { return Current; }
     public static EnumeratedMode[] EnumerateModes() { return Modes; }
     public static EnumeratedMode SelectWidest(EnumeratedMode[] modes) { return modes[2]; }
+    public static int ModeSize() { return 220; }
+    public static Mode ChangeRequest(Mode source) { source.Size=220; source.DriverExtra=0; source.Fields=0x005c0000; return source; }
     public static int ChangeDisplaySettingsExW(string device,ref Mode mode,IntPtr window,uint flags,IntPtr parameter) {
-        if (mode.Fields!=12345 || mode.Width!=1600 || mode.Frequency!=75) throw new Exception("Changed enumerated DEVMODE");
+        if (mode.Size!=220 || mode.DriverExtra!=0) throw new Exception("Request describes unbacked private driver bytes");
+        if (mode.Fields!=0x005c0000) throw new Exception("Request carries unselected dmFields");
         if (flags==2) { mode.Fields=99; return TestCode; }
         if (flags!=0) throw new Exception("Unexpected display flags");
-        ApplyCalls++; return 0;
+        ApplyCalls++;
+        if (ApplyCode==0 && !IgnoreApply) Current=mode;
+        return ApplyCode;
     }
     public struct Rect { public int Left,Top,Right,Bottom; }
     public static Rect WorkArea() { var mode=ReadMode(-1); return new Rect { Right=(int)mode.Width,Bottom=(int)mode.Height-40 }; }
@@ -89,18 +109,32 @@ public static class WidthDesktop {
 }
 '@
 $manifest=@{}
-Set-CaptureDisplay
-if ($manifest.display.enumeratedModes.Count -ne 3 -or $manifest.display.enumeratedModes[1].bitsPerPixel -ne 16 -or
-    $manifest.display.enumeratedModes[2].index -ne 2 -or $manifest.display.enumeratedModes[2].frequency -ne 75 -or
-    $manifest.display.requested.width -ne 1600 -or $manifest.display.actual.width -ne 1600 -or
-    -not $displayApplied -or [WidthDesktop]::ApplyCalls -ne 1 -or $manifest.display.registryUpdated) { throw 'Mode enumeration, untouched DEVMODE application or actual resolution evidence was lost.' }
-[WidthDesktop]::ApplyCalls=0; [WidthDesktop]::TestCode=-5
 $displayApplied=$false
 Set-CaptureDisplay
+if ($manifest.display.enumeratedModes.Count -ne 3 -or $manifest.display.enumeratedModes[1].bitsPerPixel -ne 16 -or
+    $manifest.display.enumeratedModes[0].size -ne 220 -or $manifest.display.before.driverExtra -ne 64 -or
+    $manifest.display.enumeratedModes[2].index -ne 2 -or $manifest.display.enumeratedModes[2].frequency -ne 75 -or
+    $manifest.display.requested.width -ne 1600 -or $manifest.display.actual.width -ne 1600 -or
+    $manifest.display.selected.driverExtra -ne 64 -or $manifest.display.selected.fields -ne [uint32]::MaxValue -or
+    $manifest.display.requested.driverExtra -ne 0 -or $manifest.display.requested.size -ne 220 -or $manifest.display.requested.fieldsHex -ne '0x005C0000' -or
+    -not $manifest.display.requestedModeVerified -or -not $displayApplied -or [WidthDesktop]::ApplyCalls -ne 1 -or $manifest.display.registryUpdated) { throw 'Mode enumeration, normalized public request or actual resolution evidence was lost.' }
+Restore-CaptureDisplay
+if ($manifest.display.restoreRequested.driverExtra -ne 0 -or $manifest.display.restoreRequested.fieldsHex -ne '0x005C0000' -or
+    $manifest.display.restored.width -ne 1024 -or $manifest.display.restored.frequency -ne 60 -or $manifest.display.restoreCode -ne 0) { throw 'Restore bypassed normalization or lost original dimensions/frequency.' }
+[WidthDesktop]::ApplyCalls=0; [WidthDesktop]::TestCode=-5; [WidthDesktop]::Current=[WidthDesktop]::Modes[0].Settings
+$displayApplied=$false
+Reject { Set-CaptureDisplay } 'probe stopped without a fallback'
 if ($manifest.display.enumeratedModes.Count -ne 3 -or $manifest.display.testCode -ne -5 -or
     $manifest.display.actual.width -ne 1024 -or $displayApplied -or [WidthDesktop]::ApplyCalls -ne 0 -or
     $manifest.display.errors[0] -notmatch 'DISP_CHANGE_BADPARAM') { throw 'Rejected mode lost enumeration/API error evidence or was applied.' }
-Write-Output 'Display controller records every mode, applies only an untouched tested mode, and retains the verified desktop and API error on rejection.'
+Write-Output 'Display controller records raw/requested headers, normalizes test/apply/restore and stops after rejected CDS_TEST without another path.'
+[WidthDesktop]::TestCode=0; [WidthDesktop]::ApplyCode=-2
+Reject { Set-CaptureDisplay } 'DISP_CHANGE_BADMODE'
+if ($manifest.display.applyCode -ne -2 -or $displayApplied -or $manifest.display.actual.width -ne 1024) { throw 'Rejected apply lost its result/desktop or triggered restoration.' }
+[WidthDesktop]::ApplyCode=0; [WidthDesktop]::IgnoreApply=$true
+Reject { Set-CaptureDisplay } 'did not produce its requested mode'
+if ($manifest.display.requestedModeVerified) { throw 'Unchanged desktop was accepted as requested resolution.' }
+Write-Output 'Unsupported apply and success-with-unchanged-desktop stop with exact result and actual mode evidence.'
 $OutDir=Join-Path ([IO.Path]::GetTempPath()) "width-order-$([Guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory $OutDir | Out-Null
 try {

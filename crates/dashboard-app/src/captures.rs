@@ -91,6 +91,58 @@ fn fill(cx: &mut HeadlessAppContext, view: &Entity<BoardView>, source: &dyn Stat
 
 #[test]
 #[ignore = "writes screenshots; run with CAPTURE_DIR set"]
+fn activity_width_captures() {
+    let Some(out) = std::env::var_os("CAPTURE_DIR").map(PathBuf::from) else {
+        return;
+    };
+    std::fs::create_dir_all(&out).unwrap();
+    let text_system = gpui_kit::platform::current_platform(true).text_system();
+    let mut cx = HeadlessAppContext::with_platform(text_system, Arc::new(gpui_kit::assets::Assets), || {
+        gpui_kit::platform::current_headless_renderer()
+    });
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        theme::init(cx);
+        crate::zoom::init(cx, None);
+    });
+    for (level, repository) in [(1.0, 18.0), (1.3, 20.88)] {
+        cx.update(|cx| crate::zoom::set_level(level, cx));
+        for width in [760., 1100., 1680.] {
+            let checkouts = vec!["/demo/short-label".into(), "/demo/long-label".into()];
+            let mut view = None;
+            let window = cx
+                .open_window(size(px(width), px(400.)), |window, cx| {
+                    let mut options = options();
+                    options
+                        .columns
+                        .set(dashboard_core::columns::Column::Repository, repository);
+                    let board = cx.new(|cx| {
+                        BoardView::new(
+                            &checkouts,
+                            StatusCache::default(),
+                            Arc::new(crate::ui_tests::ActivityLayoutSource),
+                            options,
+                            window,
+                            cx,
+                        )
+                    });
+                    view = Some(board.clone());
+                    cx.new(|cx| Root::new(board, window, cx))
+                })
+                .unwrap();
+            fill(&mut cx, &view.unwrap(), &crate::ui_tests::ActivityLayoutSource);
+            save(
+                &mut cx,
+                window.into(),
+                &out,
+                &format!("activity-{width}-{}", (level * 100.) as u32),
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "writes screenshots; run with CAPTURE_DIR set"]
 fn captures() {
     let Some(out) = std::env::var_os("CAPTURE_DIR").map(PathBuf::from) else {
         return;

@@ -985,7 +985,6 @@ impl BoardView {
                     .test_support()
                     .aria_label(format!("Last activity: {}, {}", activity.label, activity.title))
                     .min_w_0()
-                    .gap_2()
                     .cursor_pointer()
                     .hover(|style| style.underline())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -994,14 +993,14 @@ impl BoardView {
                         cx.open_url(&url);
                     })
                     // Workflow names can be longer than their titles. Let the label use its natural width up to
-                    // a third of this cell, leaving the description the rest at every window size and zoom.
+                    // a third of this cell. At its minimum, keep a label prefix instead of two bare ellipses.
                     .child(
                         div()
                             .id(("activity-summary", ix))
                             .test_support()
                             .min_w_0()
                             .when(!activity.title.is_empty(), |this| {
-                                this.max_w(gpui_kit::relative(1. / 3.))
+                                this.min_w(ACTIVITY_MIN).max_w(gpui_kit::relative(1. / 3.))
                             })
                             .truncate()
                             .child(activity.label.clone()),
@@ -1014,7 +1013,8 @@ impl BoardView {
                             .min_w_0()
                             .truncate()
                             .text_color(theme.muted_foreground)
-                            .child(activity.title.clone()),
+                            // The gap shrinks with the description, so the minimum label always fits the cell.
+                            .child(div().pl_2().truncate().child(activity.title.clone())),
                     )
                     .into_any_element()
             }

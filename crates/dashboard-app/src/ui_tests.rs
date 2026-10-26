@@ -623,6 +623,50 @@ async fn clicking_the_last_activity_opens_it_without_expanding_the_row(cx: &mut 
 }
 
 #[gpui_kit::test]
+async fn activity_labels_keep_a_readable_prefix_when_the_cell_is_too_narrow_to_split(cx: &mut TestAppContext) {
+    let mut readable = true;
+    for (level, repository) in [(1.0_f64, 18.0_f32), (1.3, 20.88)] {
+        let mut columns = ColumnWidths::default();
+        columns.set(Column::Repository, repository);
+        let (handle, view) = open_board_sized(
+            cx,
+            vec!["/demo/short-label".into(), "/demo/long-label".into()],
+            StatusCache::default(),
+            Arc::new(ActivityLayoutSource),
+            Options { columns, ..options() },
+            760.,
+        );
+        cx.update(|cx| zoom::set_level(level, cx));
+        cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+        settle(cx, handle, &view).await;
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            for ix in [0usize, 1] {
+                let cell = window.find(("activity-cell", ix)).bounds();
+                let label = window.find(("activity-summary", ix)).bounds();
+                let title = window.find(("activity-title", ix)).bounds();
+                let gap = title.left() - label.right();
+                println!(
+                    "narrow zoom={level} row={ix} cell={} label={} title={} gap={}",
+                    f32::from(cell.size.width),
+                    f32::from(label.size.width),
+                    f32::from(title.size.width),
+                    f32::from(gap),
+                );
+                // Leave at least a minimum cell's width to a prefix when two strings cannot fit.
+                readable &= label.size.width >= px(24. * level as f32 - 1.);
+                assert!(label.left() >= cell.left());
+                assert!(title.right() <= cell.right());
+                assert!(cell.right() <= window.find(("t3", ix)).bounds().left());
+                assert!(window.find(("refresh", ix)).bounds().right() <= px(760.));
+            }
+        })
+        .unwrap();
+    }
+    assert!(readable, "the narrow activity label lost its readable prefix budget");
+}
+
+#[gpui_kit::test]
 async fn activity_descriptions_use_the_residual_width_even_with_long_workflow_names(cx: &mut TestAppContext) {
     // Include Home's actual saved zoom/repository width, as well as the defaults. The long workflow name used to
     // take the entire 678 px cell at 1680 px / 130%, leaving its description zero width.
@@ -662,10 +706,18 @@ async fn activity_descriptions_use_the_residual_width_even_with_long_workflow_na
                     let title_width = f32::from(title.size.width);
                     let gap = 8. * scale;
                     assert_eq!(activity, cell, "nested activity fills its residual column");
-                    assert!(
-                        title_width >= cell_width / 2. - gap - 1.,
-                        "description keeps the larger share: {title:?}"
-                    );
+                    if width >= 1100. {
+                        assert!(f32::from(label.size.width) <= cell_width / 3. + 1.);
+                        assert!(
+                            title_width - gap >= cell_width * 2. / 3. - gap - 1.,
+                            "description keeps the larger share: {title:?}"
+                        );
+                    } else {
+                        assert!(
+                            label.size.width >= px(24. * scale - 1.),
+                            "keep a readable narrow label prefix"
+                        );
+                    }
                     assert_eq!(title.right(), cell.right(), "no unused tail after the description");
                     assert!(label.right() <= title.left());
                     assert!(updated.right() <= cell.left());
@@ -692,7 +744,18 @@ async fn activity_descriptions_use_the_residual_width_even_with_long_workflow_na
                     let empty_label = window.find(("activity-summary", 2usize)).bounds();
                     assert!(empty_label.size.width > empty_cell.size.width / 2.);
                 }
-                window.click(("activity-title", 1usize), cx);
+                // A narrow description may have no width; its label still opens the same activity.
+                window.click(
+                    (
+                        if width >= 1100. {
+                            "activity-title"
+                        } else {
+                            "activity-summary"
+                        },
+                        1usize,
+                    ),
+                    cx,
+                );
             })
             .unwrap();
             cx.run_until_parked();
@@ -1984,7 +2047,7 @@ async fn unavailable_rows_survive_even_without_diagnostic_text(cx: &mut TestAppC
 }
 
 /// Synthetic long/short labels expose the activity split without changing production data.
-struct ActivityLayoutSource;
+pub(super) struct ActivityLayoutSource;
 
 impl StatusSource for ActivityLayoutSource {
     fn fetch(&self, checkout: &Path, _: bool) -> Result<StatusDocument, FetchError> {

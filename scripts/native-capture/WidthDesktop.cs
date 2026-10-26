@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 
@@ -39,17 +40,30 @@ public static class WidthDesktop {
         if (!EnumDisplaySettingsW(null, number, ref mode)) throw new Win32Exception(Marshal.GetLastWin32Error(), "EnumDisplaySettingsW failed");
         return mode;
     }
-    public static Mode DesiredMode() {
-        // Prefer a driver-enumerated mode as documented. If absent, test the current mode
-        // with width/height fields only; the returned DISP_CHANGE code records rejection.
-        for (int i=0; i<512; i++) {
-            Mode mode;
-            try { mode=ReadMode(i); } catch (Win32Exception) { break; }
-            if (mode.Width==1920 && mode.Height==1080 && mode.BitsPerPixel==32) return mode;
+    public struct EnumeratedMode { public int Index; public Mode Settings; }
+    public static EnumeratedMode[] EnumerateModes() {
+        var modes=new List<EnumeratedMode>();
+        // Enumerate every index until the documented zero return, without inventing a mode.
+        for (int i=0; ; i++) {
+            var mode=new Mode { Size=(ushort)Marshal.SizeOf(typeof(Mode)) };
+            if (!EnumDisplaySettingsW(null, i, ref mode)) break;
+            modes.Add(new EnumeratedMode { Index=i, Settings=mode });
         }
-        var desired=ReadMode(-1);
-        desired.Width=1920; desired.Height=1080; desired.Fields=0x00080000 | 0x00100000;
-        return desired;
+        return modes.ToArray();
+    }
+    public static EnumeratedMode SelectWidest(EnumeratedMode[] modes) {
+        if (modes==null || modes.Length==0) throw new InvalidOperationException("EnumDisplaySettingsW returned no display modes.");
+        var best=modes[0];
+        foreach (var candidate in modes) {
+            var mode=candidate.Settings;
+            var current=best.Settings;
+            if (mode.Width>current.Width ||
+                (mode.Width==current.Width && mode.BitsPerPixel==32 && current.BitsPerPixel!=32) ||
+                (mode.Width==current.Width && (mode.BitsPerPixel==32)==(current.BitsPerPixel==32) && mode.Height>current.Height))
+                best=candidate;
+        }
+        // Keep the complete driver-returned DEVMODE, including flags/frequency/position.
+        return best;
     }
     public static Rect Client(IntPtr window) {
         Rect rect;

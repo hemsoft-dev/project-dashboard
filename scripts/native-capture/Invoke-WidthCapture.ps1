@@ -196,23 +196,37 @@ function Get-DisplayCode([int]$Code) {
     "UNKNOWN_DISPLAY_RESULT_$Code"
 }
 function Set-CaptureDisplay {
-    $manifest.display=@{api='EnumDisplaySettingsW + ChangeDisplaySettingsExW';requested=@{width=1920;height=1080};registryUpdated=$false;errors=@()}
+    $manifest.display=@{
+        api='EnumDisplaySettingsW + ChangeDisplaySettingsExW';requested=$null;registryUpdated=$false;errors=@();enumeratedModes=@()
+        selection='Width descending, then prefer 32 bpp, then height descending; unchanged enumerated DEVMODE'
+    }
     try {
+        $modes=[WidthDesktop]::EnumerateModes()
+        foreach ($entry in $modes) {
+            $record=Get-ModeRecord $entry.Settings
+            $record.index=$entry.Index
+            $manifest.display.enumeratedModes += $record
+        }
+        $manifest.display.enumerationEndIndex=$modes.Length
+        $manifest.display.enumerationEndedOnZero=$true
         $script:originalMode=[WidthDesktop]::ReadMode(-1)
         $manifest.display.before=Get-ModeRecord $originalMode
-        if ($originalMode.Width -ne 1920 -or $originalMode.Height -ne 1080) {
-            $desired=[WidthDesktop]::DesiredMode()
-            $code=[WidthDesktop]::ChangeDisplaySettingsExW($null,[ref]$desired,[IntPtr]::Zero,2,[IntPtr]::Zero)
-            $manifest.display.testCode=$code; $manifest.display.testResult=Get-DisplayCode $code
-            if ($code -eq 0) {
-                # Flags=0 changes the live mode only. Never CDS_UPDATEREGISTRY.
-                $code=[WidthDesktop]::ChangeDisplaySettingsExW($null,[ref]$desired,[IntPtr]::Zero,0,[IntPtr]::Zero)
-                $manifest.display.applyCode=$code; $manifest.display.applyResult=Get-DisplayCode $code
-                $script:displayApplied=($code -eq 0)
-                if ($code -ne 0) { $manifest.display.errors += "ChangeDisplaySettingsExW apply: $code ($(Get-DisplayCode $code))" }
-                Start-Sleep -Seconds 2
-            } else { $manifest.display.errors += "ChangeDisplaySettingsExW CDS_TEST: $code ($(Get-DisplayCode $code))" }
-        }
+        $selected=[WidthDesktop]::SelectWidest($modes)
+        $manifest.display.requested=Get-ModeRecord $selected.Settings
+        $manifest.display.requested.index=$selected.Index
+        $desired=$selected.Settings
+        $code=[WidthDesktop]::ChangeDisplaySettingsExW($null,[ref]$desired,[IntPtr]::Zero,2,[IntPtr]::Zero)
+        $manifest.display.testCode=$code; $manifest.display.testResult=Get-DisplayCode $code
+        if ($code -eq 0) {
+            # Pass the complete enumerated value again, without changing any DEVMODE fields.
+            # Flags=0 changes the live mode only. Never CDS_UPDATEREGISTRY.
+            $desired=$selected.Settings
+            $code=[WidthDesktop]::ChangeDisplaySettingsExW($null,[ref]$desired,[IntPtr]::Zero,0,[IntPtr]::Zero)
+            $manifest.display.applyCode=$code; $manifest.display.applyResult=Get-DisplayCode $code
+            $script:displayApplied=($code -eq 0)
+            if ($code -ne 0) { $manifest.display.errors += "ChangeDisplaySettingsExW apply: $code ($(Get-DisplayCode $code))" }
+            Start-Sleep -Seconds 2
+        } else { $manifest.display.errors += "ChangeDisplaySettingsExW CDS_TEST: $code ($(Get-DisplayCode $code))" }
     } catch { $manifest.display.errors += $_.Exception.Message }
     $actual=[WidthDesktop]::ReadMode(-1)
     $manifest.display.actual=Get-ModeRecord $actual
@@ -271,7 +285,7 @@ function Capture-Width([string]$State,[int]$Width) {
     $extraWidth=($outer.Right-$outer.Left)-($client.Right-$client.Left)
     $extraHeight=($outer.Bottom-$outer.Top)-($client.Bottom-$client.Top)
     if ($Width+$extraWidth -gt $area.Width-16 -or 620+$extraHeight -gt $area.Height-16) {
-        $reason="Client ${Width}x620 plus frame ${extraWidth}x${extraHeight} does not fit work area $($area.Width)x$($area.Height). Display API errors: $($manifest.display.errors -join '; ')"
+        $reason="Client ${Width}x620 plus frame ${extraWidth}x${extraHeight} does not fit work area $($area.Width)x$($area.Height). CopyFromScreen requires a fully visible window; full off-screen native pixels cannot be verified. Display API errors: $($manifest.display.errors -join '; ')"
         $manifest.skipped += @{source=$activeSource.source;commit=$activeSource.commit;profile=$widthProfile.name;zoom=$widthProfile.zoom;requestedClientWidth=$Width;reason=$reason}
         Write-Warning $reason
         return

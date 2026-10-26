@@ -227,7 +227,7 @@ impl StatusSource for Recording {
 }
 
 #[gpui_kit::test]
-async fn refreshing_one_card_bypasses_the_gh_x_cache_and_refresh_all_does_not(cx: &mut TestAppContext) {
+async fn manual_and_full_refresh_preserve_the_source_request_intent(cx: &mut TestAppContext) {
     let source = Arc::new(Recording::default());
     let (handle, view) = open_board(cx, four(), StatusCache::default(), source.clone(), options());
     cx.update_window(handle, |_, window, cx| window.click(("refresh", 2usize), cx))
@@ -243,14 +243,14 @@ async fn refreshing_one_card_bypasses_the_gh_x_cache_and_refresh_all_does_not(cx
 }
 
 #[gpui_kit::test]
-async fn a_missing_gh_shows_one_setup_message(cx: &mut TestAppContext) {
-    struct NoGh;
-    impl StatusSource for NoGh {
+async fn a_missing_pmd_token_shows_one_setup_message(cx: &mut TestAppContext) {
+    struct NoToken;
+    impl StatusSource for NoToken {
         fn fetch(&self, _: &Path, _: bool) -> Result<StatusDocument, FetchError> {
-            Err(FetchError::GhMissing)
+            Err(FetchError::MissingToken)
         }
     }
-    let (handle, view) = open_board(cx, four(), StatusCache::default(), Arc::new(NoGh), options());
+    let (handle, view) = open_board(cx, four(), StatusCache::default(), Arc::new(NoToken), options());
     cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
     settle(cx, handle, &view).await;
     cx.update_window(handle, |_, window, _| {
@@ -2006,4 +2006,364 @@ impl StatusSource for ActivityLayoutSource {
         };
         Ok(document)
     }
+}
+
+#[gpui_kit::test]
+async fn hosted_status_renders_unavailable_health_and_board_identity_links(cx: &mut TestAppContext) {
+    let checkout = PathBuf::from("/demo/codexbar");
+    let (handle, view) = open_board(
+        cx,
+        vec![checkout.clone()],
+        StatusCache::default(),
+        Arc::new(demo::HostedSource),
+        options(),
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    assert_eq!(overall(cx, &view), [Overall::Unavailable]);
+    cx.update(|cx| view.update(cx, |view, cx| view.toggle_expanded(&checkout, cx)));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("health-Working tree").label(),
+            Some("Working tree: Unavailable: local health is not supplied by pmd")
+        );
+        assert!(window.try_find(("pmd-freshness", 0usize)).is_some());
+        assert!(window.try_find(("pmd-board", 0usize)).is_some());
+        window.click("work-0-fixture-stable-id", cx);
+    })
+    .unwrap();
+    assert_eq!(
+        cx.opened_url(),
+        Some("https://github.com/hemsoft-dev/codexbar/issues/31".into())
+    );
+}
+
+#[gpui_kit::test]
+async fn cached_hosted_status_keeps_age_and_last_error_then_recovers(cx: &mut TestAppContext) {
+    let checkout = PathBuf::from("/demo/codexbar");
+    let mut document = demo::HostedSource.fetch(&checkout, false).unwrap();
+    document.hosted.as_mut().unwrap().last_error = Some(dashboard_core::pmd::LastError {
+        message: "upstream unavailable".into(),
+        at: "2026-10-21T06:25:00Z".into(),
+    });
+    let mut cache = StatusCache::default();
+    cache.insert(checkout.clone(), document);
+    let (handle, view) = open_board(
+        cx,
+        vec![checkout.clone()],
+        cache,
+        Arc::new(demo::HostedSource),
+        options(),
+    );
+    assert_eq!(overall(cx, &view), [Overall::Failed]);
+    cx.update(|cx| view.update(cx, |view, cx| view.toggle_expanded(&checkout, cx)));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .find(("row-error", 0usize))
+                .label()
+                .unwrap()
+                .contains("upstream unavailable")
+        );
+        assert!(window.try_find(("pmd-freshness", 0usize)).is_some());
+    })
+    .unwrap();
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_one(&checkout, cx)));
+    settle(cx, handle, &view).await;
+    assert_eq!(overall(cx, &view), [Overall::Unavailable]);
+    assert!(cx.update(|cx| view.read(cx).board().cards()[0].error.is_none()));
+}
+
+#[path = "../../dashboard-core/tests/support/http.rs"]
+mod pmd_http;
+
+const OLD_TOKEN: &str = "fixture-read-token";
+const NEW_TOKEN: &str = "replacement-read-token";
+const OLD_STAMP: &str = "2026-10-25T20:00:00Z";
+const NEW_STAMP: &str = "2026-10-25T20:10:00Z";
+
+fn pmd_response(path: &str, token: &str) -> pmd_http::Reply {
+    let (stamp, label, priority) = if token == OLD_TOKEN {
+        (OLD_STAMP, "old", 1)
+    } else {
+        assert_eq!(token, NEW_TOKEN);
+        (NEW_STAMP, "new", 5)
+    };
+    let item = r#"{"id":"stable-work-id","project":"gh-x","kind":"issue","number":31,"title":"LABEL work","url":"https://github.com/hemsoft-dev/gh-x/issues/31","status":"ready"}"#.replace("LABEL", label);
+    let body = match path {
+        "/v1/projects" => r#"{"projects":[{"slug":"gh-x","repo":"hemsoft-dev/gh-x","priority":PRIORITY,"tracked":true}]}"#.replace("PRIORITY", &priority.to_string()),
+        "/v1/projects/gh-x/status" => format!(r#"{{"project":"gh-x","generatedAt":"{stamp}","lastError":null,"status":{}}}"#, fixtures::CLEAN),
+        "/v1/board?project=gh-x" => r#"{"generatedAt":"STAMP","columns":[{"status":"ready","title":"Ready","items":[ITEM],"truncated":false},{"status":"in_progress","title":"In progress","items":[],"truncated":false},{"status":"waiting_on_franz","title":"Waiting on Franz","items":[],"truncated":false},{"status":"blocked","title":"Blocked","items":[],"truncated":false}]}"#.replace("STAMP",stamp).replace("ITEM",&item),
+        "/v1/work?project=gh-x&limit=500" => format!(r#"{{"items":[{item}],"nextCursor":null}}"#),
+        _ => panic!("unexpected fixture path {path}"),
+    };
+    pmd_http::Reply { code: 200, body }
+}
+
+struct LivePmd {
+    root: ConfigDir,
+    config: dashboard_core::config::Config,
+    checkout: PathBuf,
+    handle: AnyWindowHandle,
+    view: Entity<BoardView>,
+}
+impl LivePmd {
+    fn new(cx: &mut TestAppContext, server: &pmd_http::Server, name: &str) -> Self {
+        let root = ConfigDir::new(name, &[]);
+        let checkout = root.0.join("checkout");
+        std::fs::create_dir_all(checkout.join(".git")).unwrap();
+        std::fs::write(
+            checkout.join(".git/config"),
+            "[remote \"origin\"]\nurl = git@github.com:hemsoft-dev/gh-x.git\n",
+        )
+        .unwrap();
+        std::fs::write(root.0.join("old-token"), OLD_TOKEN).unwrap();
+        std::fs::write(root.0.join("new-token"), NEW_TOKEN).unwrap();
+        let config = dashboard_core::config::Config {
+            repositories: vec![checkout.clone()],
+            refresh_minutes: 0,
+            parallelism: 2,
+            pmd_url: server.url.clone(),
+            pmd_token_path: "old-token".into(),
+            ..Default::default()
+        };
+        root.write_text(&config.to_toml());
+        let pmd = dashboard_core::priority::Pmd::from_config(&config, &root.0);
+        let (handle, view) = open_board(
+            cx,
+            vec![checkout.clone()],
+            StatusCache::default(),
+            Arc::new(pmd.clone()),
+            Options {
+                config_dir: Some(root.0.clone()),
+                cache_dir: Some(root.0.clone()),
+                priorities: Arc::new(pmd.clone()),
+                pmd: Some(pmd),
+                ..options()
+            },
+        );
+        cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+        let live = Self {
+            root,
+            config,
+            checkout,
+            handle,
+            view,
+        };
+        live.wait(cx);
+        cx.update(|cx| {
+            live.view
+                .update(cx, |view, cx| view.toggle_expanded(&live.checkout, cx))
+        });
+        assert_eq!(live.document(cx).hosted.as_ref().unwrap().generated_at, OLD_STAMP);
+        live
+    }
+    fn wait(&self, cx: &mut TestAppContext) {
+        until(cx, |cx| {
+            cx.update(|cx| {
+                !self.view.read(cx).board().is_refreshing()
+                    && !self.view.read(cx).priorities_pending()
+                    && self.view.read(cx).pending_refreshes() == 0
+            })
+        });
+    }
+    fn document(&self, cx: &mut TestAppContext) -> StatusDocument {
+        cx.update(|cx| {
+            self.view.read(cx).board().cards()[0]
+                .document
+                .clone()
+                .expect("last good status")
+        })
+    }
+    fn reload(&self, cx: &mut TestAppContext) {
+        self.root.write_text(&self.config.to_toml());
+        cx.update(|cx| self.view.update(cx, |view, cx| view.refresh_all(cx)));
+    }
+    fn assert_retained(&self, cx: &mut TestAppContext, original: &StatusDocument) {
+        assert_eq!(&self.document(cx), original);
+        assert_eq!(
+            cx.update(|cx| self.view.read(cx).cached(&self.checkout).cloned())
+                .as_ref(),
+            Some(original)
+        );
+        assert_eq!(StatusCache::load(&self.root.0).get(&self.checkout), Some(original));
+    }
+}
+
+fn token_failure_keeps_last_good_data(cx: &mut TestAppContext, code: u16, missing: bool, name: &str) {
+    let server = pmd_http::Server::with_auth(move |path, token| {
+        if token == NEW_TOKEN {
+            pmd_http::Reply {
+                code,
+                body: String::new(),
+            }
+        } else {
+            pmd_response(path, token)
+        }
+    });
+    let mut live = LivePmd::new(cx, &server, name);
+    let original = live.document(cx);
+    live.config.pmd_token_path = if missing {
+        "missing-token".into()
+    } else {
+        "new-token".into()
+    };
+    live.reload(cx);
+    live.assert_retained(cx, &original);
+    live.wait(cx);
+    live.assert_retained(cx, &original);
+    let error = if missing {
+        FetchError::MissingToken
+    } else if code == 401 {
+        FetchError::Unauthorized
+    } else {
+        FetchError::Http(code)
+    };
+    cx.update(|cx| {
+        let board = live.view.read(cx).board();
+        assert_eq!(board.cards()[0].error, Some(error));
+        assert_eq!(
+            board.priority(&board.cards()[0]),
+            Some(1),
+            "retain last good priority on credential failure"
+        );
+    });
+    assert!(!server.requests.lock().unwrap().is_empty());
+    cx.update_window(live.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("prs", 0usize)).is_some());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn token_only_missing_token_preserves_status_age_board_work_cache_and_priority(cx: &mut TestAppContext) {
+    token_failure_keeps_last_good_data(cx, 200, true, "pmd-token-missing");
+}
+#[gpui_kit::test]
+fn token_only_unauthorized_preserves_status_age_board_work_cache_and_priority(cx: &mut TestAppContext) {
+    token_failure_keeps_last_good_data(cx, 401, false, "pmd-token-401");
+}
+#[gpui_kit::test]
+fn token_only_outage_preserves_status_age_board_work_cache_and_priority(cx: &mut TestAppContext) {
+    token_failure_keeps_last_good_data(cx, 503, false, "pmd-token-outage");
+}
+#[gpui_kit::test]
+fn token_only_success_replaces_retained_status_board_work_and_priority(cx: &mut TestAppContext) {
+    let server = pmd_http::Server::with_auth(pmd_response);
+    let mut live = LivePmd::new(cx, &server, "pmd-token-success");
+    let original = live.document(cx);
+    live.config.pmd_token_path = "new-token".into();
+    live.reload(cx);
+    live.assert_retained(cx, &original);
+    live.wait(cx);
+    let document = live.document(cx);
+    let hosted = document.hosted.as_ref().unwrap();
+    assert_eq!(hosted.generated_at, NEW_STAMP);
+    assert_eq!(hosted.board.as_ref().unwrap().columns[0].items[0].title, "new work");
+    assert_eq!(hosted.work[0].title, "new work");
+    cx.update(|cx| {
+        let board = live.view.read(cx).board();
+        assert!(board.cards()[0].error.is_none());
+        assert_eq!(board.priority(&board.cards()[0]), Some(5));
+    });
+    live.assert_retained(cx, &document);
+}
+#[gpui_kit::test]
+fn changed_pmd_url_still_discards_status_board_work_cache_and_priority(cx: &mut TestAppContext) {
+    let old = pmd_http::Server::new(|path| pmd_response(path, OLD_TOKEN));
+    let new = pmd_http::Server::new(|_| pmd_http::Reply {
+        code: 503,
+        body: String::new(),
+    });
+    let mut live = LivePmd::new(cx, &old, "pmd-url-change");
+    live.config.pmd_url = new.url.clone();
+    live.reload(cx);
+    cx.update(|cx| {
+        let view = live.view.read(cx);
+        let board = view.board();
+        assert!(board.cards()[0].document.is_none());
+        assert!(view.cached(&live.checkout).is_none());
+        assert_eq!(board.priority(&board.cards()[0]), None);
+    });
+    live.wait(cx);
+    cx.update(|cx| {
+        let board = live.view.read(cx).board();
+        assert!(board.cards()[0].document.is_none());
+        assert_eq!(board.cards()[0].error, Some(FetchError::Http(503)));
+    });
+    assert!(StatusCache::load(&live.root.0).is_empty());
+}
+
+#[gpui_kit::test]
+fn token_only_change_rejects_delayed_old_token_status_after_new_success(cx: &mut TestAppContext) {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    let delay = Arc::new(AtomicBool::new(false));
+    let hold = delay.clone();
+    let entered = Arc::new(AtomicBool::new(false));
+    let seen = entered.clone();
+    let (release, wait) = mpsc::channel();
+    let wait = Mutex::new(wait);
+    let server = pmd_http::Server::with_auth(move |path, token| {
+        if token == OLD_TOKEN && path.ends_with("/status") && hold.load(Ordering::SeqCst) {
+            seen.store(true, Ordering::SeqCst);
+            let _ = wait.lock().unwrap().recv_timeout(Duration::from_secs(5));
+        }
+        pmd_response(path, token)
+    });
+    let mut live = LivePmd::new(cx, &server, "pmd-token-delayed");
+    let original = live.document(cx);
+    let generation = cx.update(|cx| live.view.read(cx).board().cards()[0].generation);
+    delay.store(true, Ordering::SeqCst);
+    cx.update(|cx| live.view.update(cx, |view, cx| view.refresh_one(&live.checkout, cx)));
+    until(cx, |_| entered.load(Ordering::SeqCst));
+    live.config.pmd_token_path = "new-token".into();
+    live.reload(cx);
+    live.assert_retained(cx, &original);
+    assert_ne!(
+        cx.update(|cx| live.view.read(cx).board().cards()[0].generation),
+        generation
+    );
+    until(cx, |cx| {
+        cx.update(|cx| {
+            live.view.read(cx).board().cards()[0]
+                .document
+                .as_ref()
+                .and_then(|doc| doc.hosted.as_ref())
+                .is_some_and(|hosted| hosted.generated_at == NEW_STAMP)
+        })
+    });
+    release.send(()).unwrap();
+    live.wait(cx);
+    let current = live.document(cx);
+    assert_eq!(current.hosted.as_ref().unwrap().generated_at, NEW_STAMP);
+    assert_eq!(current.hosted.as_ref().unwrap().work[0].title, "new work");
+    assert!(cx.update(|cx| live.view.read(cx).board().cards()[0].error.is_none()));
+    live.assert_retained(cx, &current);
+}
+
+#[gpui_kit::test]
+fn token_only_successful_untiered_priority_response_clears_previous_priority(cx: &mut TestAppContext) {
+    let server = pmd_http::Server::with_auth(|path, token| {
+        let mut response = pmd_response(path, token);
+        if token == NEW_TOKEN && path == "/v1/projects" {
+            response.body = response.body.replace("\"priority\":5", "\"priority\":null");
+        }
+        response
+    });
+    let mut live = LivePmd::new(cx, &server, "pmd-priority-untiered");
+    live.config.pmd_token_path = "new-token".into();
+    live.reload(cx);
+    live.wait(cx);
+    assert_eq!(live.document(cx).hosted.as_ref().unwrap().generated_at, NEW_STAMP);
+    cx.update(|cx| {
+        let board = live.view.read(cx).board();
+        assert_eq!(board.priority(&board.cards()[0]), None);
+    });
 }

@@ -78,19 +78,19 @@ fn a_failure_keeps_the_last_good_status_and_marks_only_its_card() {
 }
 
 #[test]
-fn a_missing_gh_is_one_setup_problem() {
+fn a_missing_pmd_token_is_one_setup_problem() {
     let mut cache = StatusCache::default();
     let mut board = Board::new(&paths(), &cache);
     for checkout in paths() {
         board.apply(
             Outcome {
                 checkout,
-                result: Err(FetchError::GhMissing),
+                result: Err(FetchError::MissingToken),
             },
             &mut cache,
         );
     }
-    assert_eq!(board.setup_problem(), Some(&FetchError::GhMissing));
+    assert_eq!(board.setup_problem(), Some(&FetchError::MissingToken));
 }
 
 #[test]

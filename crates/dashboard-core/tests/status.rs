@@ -122,9 +122,9 @@ fn unknown_and_missing_fields_parse_within_schema_one() {
 #[test]
 fn a_detached_head_gets_its_current_row() {
     let mut doc = fixtures::document(CLEAN);
-    doc.health.current_branch.name.clear();
-    doc.health.current_branch.upstream.clear();
-    doc.health.current_branch.verdict.clean = false;
+    doc.health.as_mut().unwrap().current_branch.name.clear();
+    doc.health.as_mut().unwrap().current_branch.upstream.clear();
+    doc.health.as_mut().unwrap().current_branch.verdict.clean = false;
     let rows = doc.health_rows();
     assert_eq!(rows.len(), 5);
     assert_eq!(rows[4].label, "Current");

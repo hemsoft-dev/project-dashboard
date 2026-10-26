@@ -1,13 +1,13 @@
 //! The Project Dashboard data model, kept apart from the GPUI views so it builds and tests without a window.
 //!
-//! Status data always comes from `gh x status --json` (gh-x is the single source of truth): [`source`] runs it,
-//! [`status`] reads its document, and the board only arranges and aggregates gh-x's own verdicts.
-//! Project priority is separate, read from pmd by [`priority`].
+//! Production status, priority and Board/work data come from pmd's read API.
+//! Hosted verdicts are rendered as supplied; local health is unavailable.
 
 pub mod activity;
 pub mod cache;
 pub mod columns;
 pub mod config;
+pub mod pmd;
 pub mod priority;
 pub mod scheduler;
 pub mod source;
@@ -33,15 +33,16 @@ pub struct Card {
     pub checkout: PathBuf,
     /// The latest status, fresh or from the cache.
     pub document: Option<StatusDocument>,
-    /// True while `document` is the cached copy from an earlier run.
+    /// True for a startup cache, stale API status or a last good result retained after a failed refresh.
     pub from_cache: bool,
     /// True while a refresh for this checkout is running.
     pub refreshing: bool,
     /// The latest refresh's failure. The last good document stays alongside it.
     pub error: Option<FetchError>,
-    /// Which time this checkout joined the board. A checkout removed from the config and added back is a new card,
-    /// and a refresh started for the old one must not land on it.
+    /// Identifies this card's current data/source generation. Replaced credentials, services and identities
+    /// supersede older refreshes, even when the displayed data is retained.
     pub generation: u64,
+    pub identity: Option<Result<String, FetchError>>,
 }
 
 /// A card's overall state, for its badge.
@@ -55,6 +56,8 @@ pub enum Overall {
     Attention,
     /// The latest refresh failed.
     Failed,
+    /// Hosted data carries no overall/local-health verdict.
+    Unavailable,
 }
 
 impl Card {
@@ -66,14 +69,20 @@ impl Card {
             refreshing: false,
             error: None,
             generation: 0,
+            identity: None,
         }
     }
 
-    /// `owner/name` from gh-x, else the checkout's folder name.
+    /// Verified hosted identity, then checkout origin, then a folder label when identity is unavailable.
     pub fn name(&self) -> String {
         match &self.document {
             Some(document) => document.display_name().to_owned(),
-            None => folder_name(&self.checkout),
+            None => self
+                .identity
+                .as_ref()
+                .and_then(|identity| identity.as_ref().ok())
+                .cloned()
+                .unwrap_or_else(|| folder_name(&self.checkout)),
         }
     }
 
@@ -88,6 +97,7 @@ impl Card {
         }
         match &self.document {
             None => Overall::Loading,
+            Some(document) if document.hosted.is_some() && document.verdict.is_none() => Overall::Unavailable,
             Some(document) if document.is_clean() => Overall::Clean,
             Some(_) => Overall::Attention,
         }
@@ -105,7 +115,8 @@ fn folder_name(path: &Path) -> String {
 pub struct Board {
     cards: Vec<Card>,
     priorities: priority::Priorities,
-    /// The generation the next new card gets.
+    service_url: Option<String>,
+    /// The next generation for a new card or a replaced source.
     next_generation: u64,
 }
 
@@ -135,6 +146,16 @@ impl Board {
                     if let Some(document) = cache.get(checkout) {
                         card.document = Some(document.clone());
                         card.from_cache = true;
+                        card.error = document
+                            .hosted
+                            .as_ref()
+                            .and_then(|hosted| hosted.last_error.as_ref())
+                            .map(|error| {
+                                FetchError::Failed(format!(
+                                    "pmd last refresh failed at {}: {}",
+                                    error.at, error.message
+                                ))
+                            });
                     }
                     self.cards.push(card);
                     added.push(checkout.clone());
@@ -142,6 +163,62 @@ impl Board {
             }
         }
         added
+    }
+
+    /// Invalidate old service/identity results, including in-flight generations and disk cache.
+    pub fn invalidate(&mut self, checkout: &Path, cache: &mut StatusCache) {
+        if let Some(card) = self.cards.iter_mut().find(|card| card.checkout == checkout) {
+            card.generation = self.next_generation;
+            self.next_generation += 1;
+            card.document = None;
+            card.error = None;
+            card.refreshing = false;
+            card.from_cache = false;
+            cache.remove(checkout);
+        }
+    }
+
+    /// A new credential source supersedes in-flight results without discarding last good data.
+    /// A different service or checkout identity still invalidates data through the normal identity check.
+    pub fn replace_pmd_source(&mut self, url: &str, cache: &mut StatusCache) {
+        if self.service_url.as_deref() != Some(url) {
+            self.priorities = priority::Priorities::default();
+        }
+        for card in &mut self.cards {
+            card.generation = self.next_generation;
+            self.next_generation += 1;
+            card.refreshing = false;
+        }
+        self.sync_pmd_identities(url, cache);
+    }
+
+    /// Called before refresh and before applying completions, as well as during config polling.
+    pub fn sync_pmd_identities(&mut self, url: &str, cache: &mut StatusCache) -> Vec<PathBuf> {
+        let mut changed = Vec::new();
+        let service_changed = self.service_url.as_deref().is_some_and(|old| old != url);
+        self.service_url = Some(url.to_owned());
+        for checkout in self.checkouts() {
+            let identity = pmd::checkout_identity(&checkout);
+            let card = self.card(&checkout).expect("listed card");
+            let different = card.identity.as_ref().is_some_and(|old| old != &identity)
+                || card.document.as_ref().is_some_and(|doc| {
+                    doc.hosted.as_ref().is_none_or(|hosted| hosted.service_url != url)
+                        || identity
+                            .as_ref()
+                            .ok()
+                            .is_none_or(|name| !doc.repository.name_with_owner.eq_ignore_ascii_case(name))
+                });
+            if different || service_changed {
+                self.invalidate(&checkout, cache);
+                changed.push(checkout.clone());
+            }
+            self.cards
+                .iter_mut()
+                .find(|card| card.checkout == checkout)
+                .expect("listed card")
+                .identity = Some(identity);
+        }
+        changed
     }
 
     pub fn cards(&self) -> &[Card] {
@@ -194,13 +271,32 @@ impl Board {
         };
         card.refreshing = false;
         match outcome.result {
-            Ok(document) => {
+            Ok(mut document) => {
+                if let Some(hosted) = &mut document.hosted
+                    && hosted.work_error.is_some()
+                    && let Some(previous) = card.document.as_ref().and_then(|doc| doc.hosted.as_ref())
+                    && previous.service_url == hosted.service_url
+                {
+                    hosted.board = previous.board.clone();
+                    hosted.work = previous.work.clone();
+                }
                 cache.insert(outcome.checkout, document.clone());
                 card.document = Some(document);
                 card.from_cache = false;
-                card.error = None;
+                card.error = card
+                    .document
+                    .as_ref()
+                    .and_then(|doc| doc.hosted.as_ref())
+                    .and_then(|hosted| hosted.last_error.as_ref())
+                    .map(|error| {
+                        FetchError::Failed(format!("pmd last refresh failed at {}: {}", error.at, error.message))
+                    });
+                card.from_cache = card.error.is_some();
             }
-            Err(error) => card.error = Some(error),
+            Err(error) => {
+                card.from_cache = card.document.is_some();
+                card.error = Some(error);
+            }
         }
         true
     }
@@ -209,7 +305,7 @@ impl Board {
         self.cards.iter().any(|card| card.refreshing)
     }
 
-    /// A missing `gh` or gh-x, which every card would hit: the board shows it once instead of on each card.
+    /// A missing or rejected pmd token: the board shows it once instead of on each card.
     pub fn setup_problem(&self) -> Option<&FetchError> {
         self.cards
             .iter()
@@ -306,7 +402,7 @@ pub struct EmptyState {
 impl EmptyState {
     pub const NO_REPOSITORIES: Self = Self {
         title: "No repositories yet",
-        hint: "Add local checkouts to the repositories list in the dashboard's config.toml to see their gh x status here.",
+        hint: "Add local checkouts to the repositories list in the dashboard's config.toml to read their hosted pmd status here.",
     };
 }
 

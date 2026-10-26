@@ -1,0 +1,5 @@
+{
+  "source": "https://github.com/hemsoft-dev/project-dashboard/actions/runs/40245709913/job/121326710248",
+  "state": "stale",
+  "text": "Project Dashboard fixture.org/synthetic-dashboard pmd status age: 660s Priority Issues Updated 11m ago updated just now Last activity pmd last refresh failed at 2026-10-25T23... o x c @ pmd last refresh failed at SYNTHETIC FIXTURE STALE upstream refresh failed pmd status generated 660s ago \u0007 Project Manager Board \u0007 Ready \u0007 truncated, complete list below issue SYNTHETIC FIXTURE NORMAL In progress Waiting on Franz Blocked Open work \u0007 all API pages ready \u0007 issue SYNTHETIC FIXTURE NORMAL Default branch Current branch Branches Worktrees Stashes Unavailable: local health is not supplied by pmd Unavailable: local health is not supplied by pmd Unavailable: local health is not supplied by pmd Unavailable: local health is not supplied by pmd Unavailable: local health is not supplied by pmd Working tree Unavailable: local health is not supplied by pmd Open pull requests (O) None Open issues (I)"
+}

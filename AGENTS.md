@@ -1,6 +1,6 @@
 # AGENTS.md — Project Dashboard
 
-A fast native window that shows `gh x status` (Franz's `gs`) for many local checkouts at once. The stack and
+A fast native window that shows hosted Project Manager status for many configured checkouts at once. The stack and
 conventions follow [CodexBar](https://github.com/hemsoft-dev/codexbar); when in doubt, do what CodexBar does.
 
 ## Stack
@@ -10,24 +10,25 @@ conventions follow [CodexBar](https://github.com/hemsoft-dev/codexbar); when in 
   builds on. Move both apps together when upgrading.
 - The HemSoft brand theme, gold on black (`crates/dashboard-app/themes/dashboard.json`, CodexBar's theme file).
 
-## The one rule: gh-x is the source of truth
+## The one rule: pmd is the data source
 
-All status data comes from `gh x status --json`
-([gh-x#230](https://github.com/hemsoft-dev/gh-x/issues/230)), run in each configured checkout. The app parses and
-renders that document. It never calls the GitHub API or git for status itself, and it never re-derives a verdict
-(clean, attention, cleanup candidate). If the dashboard needs something gh-x doesn't report, add it to gh-x first.
-That way the app and `gs` can never disagree.
+Franz's explicit October 25, 2026 direction replaces local gh-x reads with the
+[project-manager read API](https://github.com/hemsoft-dev/project-manager#read-api).
+Production startup, automatic refresh and user refresh read hosted status, priorities and Board/work items from pmd.
+There is no gh-x subprocess adapter or fallback. Match projects by full GitHub `owner/name` from checkout origin,
+never by basename. Read origin configuration only for identity, never local git status.
 
-Project priority is the exception: it comes only from the [project-manager read API](https://github.com/hemsoft-dev/project-manager#read-api),
-matched by repository name. Fetch it independently of gh-x so missing credentials or an unavailable pmd never delay
-status refreshes. Never log or commit the bearer token. Unknown priorities render as `—`.
+Render API rows and verdicts as supplied. Pmd does not supply local branch, worktree, stash or working-tree health;
+show it as unavailable. Keep the last good API data on refresh failure, with its original age and the error.
+A user refresh reloads pmd's cache; the read API has no force-sync endpoint. Never log or commit the bearer token.
+Unknown priorities render as `—`; priority requests remain independent of status workers.
 
 ## Workspace
 
 ```text
 crates/
   dashboard-core/   # Data model, no UI: the gh x status --json schema (status.rs), the config file (config.rs),
-                    # the status cache (cache.rs), running gh (source.rs), the parallel refresh (scheduler.rs)
+                    # the status cache (cache.rs), the pmd adapter (pmd.rs), the source boundary (source.rs), the parallel refresh (scheduler.rs)
                     # and the board (lib.rs). Fixtures: tests/fixtures/status-*.json.
   dashboard-app/    # GPUI views and the `project-dashboard` binary. `--demo` shows the fixtures.
                     # src/mark.rs draws the icon; build.rs embeds it and the version block on Windows.

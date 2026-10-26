@@ -1,97 +1,13 @@
-//! Running gh x status: interpreting its output, and the bounded parallel scheduler.
-
+//! The bounded refresh scheduler.
+use dashboard_core::fixtures::{self, CLEAN};
+use dashboard_core::scheduler;
+use dashboard_core::source::{FetchError, StatusSource};
+use dashboard_core::status::StatusDocument;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
-use dashboard_core::fixtures::{self, CLEAN, ERROR};
-use dashboard_core::scheduler;
-use dashboard_core::source::{FetchError, GhX, StatusSource, interpret};
-use dashboard_core::status::StatusDocument;
-
-#[test]
-fn gh_x_runs_status_json_and_adds_refresh_only_when_asked() {
-    assert_eq!(GhX::args(false), ["x", "status", "--json"]);
-    assert_eq!(GhX::args(true), ["x", "status", "--json", "--refresh"]);
-}
-
-#[test]
-fn a_document_on_stdout_is_read_whatever_the_exit_code() {
-    assert_eq!(interpret(CLEAN.as_bytes(), b"", true), Ok(fixtures::document(CLEAN)));
-    assert_eq!(
-        interpret(ERROR.as_bytes(), b"", false),
-        Err(FetchError::Failed(
-            "not a git repository (or any of the parent directories): .git".into()
-        ))
-    );
-}
-
-#[test]
-fn a_missing_extension_or_flag_is_a_setup_problem() {
-    let missing = interpret(b"", b"unknown command \"x\" for \"gh\"\n\nDid you mean this?", false).unwrap_err();
-    assert!(matches!(missing, FetchError::GhXMissing(_)));
-    assert!(missing.is_setup());
-    let old = interpret(b"", b"unknown flag: --json\nUsage: gh x status", false).unwrap_err();
-    assert!(matches!(old, FetchError::GhXMissing(_)));
-    assert!(old.to_string().contains("gh extension upgrade gh-x"));
-    // Not every mention of an unknown command is gh-x missing.
-    let other = interpret(b"", b"unknown command \"frobnicate\" for \"gh x\"", false).unwrap_err();
-    assert!(!other.is_setup());
-}
-
-/// The real stderr of gh-x v0.21.2, which predates --json (captured 2026-10-21 on mini).
-const GH_X_0_21_2_NO_JSON: &str = include_str!("fixtures/gh-x-0.21.2-no-json.stderr.txt");
-
-#[test]
-fn a_gh_x_without_json_is_a_setup_problem() {
-    let err = interpret(b"", GH_X_0_21_2_NO_JSON.as_bytes(), false).unwrap_err();
-    assert_eq!(
-        err,
-        FetchError::GhXMissing("flag provided but not defined: -json".into())
-    );
-}
-
-#[test]
-fn failures_skip_the_gh_x_banner() {
-    assert_eq!(
-        interpret(
-            b"",
-            b"gh-x v0.21.2 (2026-10-19) \xC2\xA9 2026 HemSoft Developments\nnot a git repository\n",
-            false
-        ),
-        Err(FetchError::Failed("not a git repository".into()))
-    );
-}
-
-#[test]
-fn other_failures_keep_gh_first_line() {
-    assert_eq!(
-        interpret(b"", b"HTTP 401: Bad credentials\nTry gh auth login", false),
-        Err(FetchError::Failed("HTTP 401: Bad credentials".into()))
-    );
-    assert_eq!(
-        interpret(b"", b"", false),
-        Err(FetchError::Failed("gh x status failed without a message".into()))
-    );
-    assert!(matches!(interpret(b"not json", b"", true), Err(FetchError::Failed(_))));
-}
-
-#[test]
-fn a_missing_gh_program_is_reported_as_gh_missing() {
-    let _processes = processes();
-    let source = GhX {
-        program: "gh-that-does-not-exist-anywhere".into(),
-        ..GhX::default()
-    };
-    let here = std::env::current_dir().unwrap();
-    assert_eq!(source.fetch(&here, false), Err(FetchError::GhMissing));
-    assert_eq!(
-        source.fetch(Path::new("/definitely/not/a/folder"), false),
-        Err(FetchError::MissingFolder)
-    );
-}
 
 /// Records how many fetches overlap, and fails the ones named "bad".
 #[derive(Default)]
@@ -206,66 +122,6 @@ fn overlapping_refreshes_share_one_limit() {
     let total = all.iter().count() + one.iter().count() + two.iter().count();
     assert_eq!(total, 6);
     assert_eq!(fake.peak.load(Ordering::SeqCst), 1);
-}
-
-/// Held by every test that starts a process. Writing a script while another test forks lets the child inherit the
-/// still-open write handle, and executing the script then fails with "Text file busy" (ETXTBSY).
-static PROCESSES: Mutex<()> = Mutex::new(());
-
-fn processes() -> std::sync::MutexGuard<'static, ()> {
-    PROCESSES.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-/// A stand-in `gh`: a shell script that ignores its arguments.
-#[cfg(unix)]
-fn fake_gh(name: &str, body: &str) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt as _;
-    let dir = std::env::temp_dir().join(format!("project-dashboard-fake-gh-{}-{name}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let script = dir.join("gh");
-    std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    script
-}
-
-#[cfg(unix)]
-#[test]
-fn a_stalled_gh_is_stopped_at_the_deadline() {
-    let _processes = processes();
-    let source = GhX {
-        program: fake_gh("stall", "sleep 30").into(),
-        timeout: Duration::from_millis(300),
-    };
-    let started = std::time::Instant::now();
-    let result = source.fetch(&std::env::temp_dir(), false);
-    assert!(
-        started.elapsed() < Duration::from_secs(10),
-        "returned after {:?}",
-        started.elapsed()
-    );
-    let err = result.unwrap_err();
-    assert!(err.to_string().contains("didn't finish within"), "{err}");
-}
-
-#[cfg(unix)]
-#[test]
-fn a_real_process_output_is_read_through_the_pipes() {
-    let _processes = processes();
-    let fixture = std::env::temp_dir().join(format!("project-dashboard-fixture-{}.json", std::process::id()));
-    std::fs::write(&fixture, CLEAN).unwrap();
-    let source = GhX {
-        program: fake_gh("ok", &format!("cat '{}'", fixture.display())).into(),
-        timeout: Duration::from_secs(30),
-    };
-    assert_eq!(source.fetch(&std::env::temp_dir(), true), Ok(fixtures::document(CLEAN)));
-    let failing = GhX {
-        program: fake_gh("fail", "echo 'HTTP 401: Bad credentials' >&2; exit 1").into(),
-        timeout: Duration::from_secs(30),
-    };
-    assert_eq!(
-        failing.fetch(&std::env::temp_dir(), false),
-        Err(FetchError::Failed("HTTP 401: Bad credentials".into()))
-    );
 }
 
 #[test]

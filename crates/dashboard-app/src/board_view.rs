@@ -7,8 +7,8 @@
 //! Dragging the border between two header cells resizes the column to its left (#14); double-clicking it restores the
 //! default. The widths are remembered in `ui-state.json`.
 //!
-//! Expanding a row shows what `gh x status` shows for that checkout: the health rows with gh-x's clean verdicts and
-//! the open PR, open issue, merged PR and workflow run tables. Items open in the browser.
+//! Expanding a row shows pmd's hosted status and Board/work items. Local health is explicitly unavailable.
+//! Items open in the browser.
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -22,7 +22,7 @@ use chrono::{DateTime, Utc};
 use dashboard_core::cache::StatusCache;
 use dashboard_core::columns::{Column, ColumnWidths};
 use dashboard_core::config::{Config, ConfigError, ConfigFile};
-use dashboard_core::priority::{Pmd, Priorities, PrioritySource};
+use dashboard_core::priority::{Pmd, PrioritySource};
 use dashboard_core::scheduler::{self, Outcome};
 use dashboard_core::source::StatusSource;
 use dashboard_core::status::{HealthRow, Issue, PullRequest, RunOutcome, Section, StatusDocument, WorkflowRun};
@@ -102,7 +102,7 @@ struct Resize {
 pub struct BoardView {
     board: Board,
     cache: StatusCache,
-    /// Caps every refresh, together, at `parallelism` gh processes.
+    /// Caps every refresh, together, at `parallelism` HTTP reads.
     limiter: Arc<scheduler::Limited>,
     /// The cards on the board, shared with running refreshes so they skip removed checkouts.
     wanted: scheduler::Wanted,
@@ -126,6 +126,8 @@ pub struct BoardView {
     priorities_wanted: bool,
     priority_generation: u64,
     last_refresh: Option<Instant>,
+    #[cfg(test)]
+    pending_refreshes: usize,
     focus: FocusHandle,
 }
 
@@ -140,7 +142,7 @@ impl BoardView {
     ) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        // One limit for every refresh, so overlapping refreshes never run more than `parallelism` gh processes.
+        // One limit for every refresh, so overlapping refreshes never run more than `parallelism` HTTP reads.
         let wanted = scheduler::Wanted::default();
         let limiter = Arc::new(scheduler::Limited::new(source, options.parallelism));
         let columns = options.columns;
@@ -165,6 +167,8 @@ impl BoardView {
             priorities_wanted: false,
             priority_generation: 0,
             last_refresh: None,
+            #[cfg(test)]
+            pending_refreshes: 0,
             focus,
         };
         view.find_threads(cx);
@@ -183,6 +187,9 @@ impl BoardView {
             }
         })
         .detach();
+        if let Some(pmd) = &view.options.pmd {
+            view.board.sync_pmd_identities(&pmd.url, &mut view.cache);
+        }
         view.sync_wanted();
         view.schedule_auto_refresh(cx);
         // Edits to config.toml show up within a couple of seconds, without a refresh.
@@ -206,12 +213,22 @@ impl BoardView {
     }
 
     #[cfg(test)]
+    pub fn pending_refreshes(&self) -> usize {
+        self.pending_refreshes
+    }
+
+    #[cfg(test)]
+    pub fn cached(&self, checkout: &Path) -> Option<&StatusDocument> {
+        self.cache.get(checkout)
+    }
+
+    #[cfg(test)]
     pub fn priorities_pending(&self) -> bool {
         self.finding_priorities
     }
 
     #[cfg(all(test, target_os = "linux"))]
-    pub fn apply_priorities(&mut self, priorities: Priorities, cx: &mut Context<Self>) {
+    pub fn apply_priorities(&mut self, priorities: dashboard_core::priority::Priorities, cx: &mut Context<Self>) {
         self.board.set_priorities(priorities);
         cx.notify();
     }
@@ -352,7 +369,7 @@ impl BoardView {
         cx.notify();
     }
 
-    /// pmd never occupies a gh-x worker or delays the UI. Coalesce repeated requests and ignore an old config's result.
+    /// Priority never occupies a status worker or delays the UI. Coalesce repeated requests and ignore an old config's result.
     pub fn refresh_priorities(&mut self, cx: &mut Context<Self>) {
         if self.finding_priorities {
             self.priorities_wanted = true;
@@ -363,7 +380,7 @@ impl BoardView {
         let source = Arc::clone(&self.options.priorities);
         let (send, receive) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = send.send(source.fetch());
+            let _ = send.send(source.fetch_result());
         });
         cx.spawn(async move |this, cx| {
             loop {
@@ -371,11 +388,13 @@ impl BoardView {
                 let priorities = match receive.try_recv() {
                     Ok(priorities) => priorities,
                     Err(TryRecvError::Empty) => continue,
-                    Err(TryRecvError::Disconnected) => Priorities::default(),
+                    Err(TryRecvError::Disconnected) => Err(dashboard_core::source::FetchError::Unavailable),
                 };
                 let _ = this.update(cx, |view, cx| {
                     view.finding_priorities = false;
-                    if view.priority_generation == generation {
+                    if view.priority_generation == generation
+                        && let Ok(priorities) = priorities
+                    {
                         view.board.set_priorities(priorities);
                     }
                     if std::mem::take(&mut view.priorities_wanted) {
@@ -462,8 +481,19 @@ impl BoardView {
 
     /// Applies config.toml if it changed since it was last read.
     pub fn check_config(&mut self, cx: &mut Context<Self>) {
+        self.check_identities(cx);
         if let Some(result) = self.config_file.as_mut().and_then(ConfigFile::changed) {
             self.apply_config(result, cx);
+        }
+    }
+
+    fn check_identities(&mut self, cx: &mut Context<Self>) {
+        if let Some(pmd) = &self.options.pmd {
+            let changed = self.board.sync_pmd_identities(&pmd.url, &mut self.cache);
+            if !changed.is_empty() {
+                self.sync_wanted();
+                self.start(changed, false, cx);
+            }
         }
     }
 
@@ -489,8 +519,11 @@ impl BoardView {
             if self.options.pmd.as_ref() != Some(&pmd) {
                 self.priority_generation += 1;
                 self.options.priorities = Arc::new(pmd.clone());
+                self.limiter.set_source(Arc::new(pmd.clone()));
+                self.board.replace_pmd_source(&pmd.url, &mut self.cache);
                 self.options.pmd = Some(pmd);
-                self.board.set_priorities(Priorities::default());
+                self.sync_wanted();
+                self.start(self.board.checkouts(), false, cx);
                 self.refresh_priorities(cx);
             }
         }
@@ -527,7 +560,7 @@ impl BoardView {
         cx.notify();
     }
 
-    /// Refreshes every card that isn't already refreshing, from gh-x's own cache when it is fresh. The config file is
+    /// Refreshes every card that isn't already refreshing, from pmd's cached state. The config file is
     /// read first, so the refresh covers the current list.
     pub fn refresh_all(&mut self, cx: &mut Context<Self>) {
         self.reload_config(cx);
@@ -543,6 +576,7 @@ impl BoardView {
 
     /// Refreshes every card that isn't already refreshing.
     fn refresh_idle(&mut self, cx: &mut Context<Self>) {
+        self.check_identities(cx);
         self.refresh_priorities(cx);
         let idle: Vec<PathBuf> = self
             .board
@@ -554,8 +588,10 @@ impl BoardView {
         self.start(idle, false, cx);
     }
 
-    /// Refreshes one card with `--refresh`, bypassing gh-x's cache.
+    /// Refreshes one card from pmd's cached state.
     pub fn refresh_one(&mut self, checkout: &Path, cx: &mut Context<Self>) {
+        self.reload_config(cx);
+        self.check_identities(cx);
         self.refresh_priorities(cx);
         if self.board.card(checkout).is_some_and(|card| !card.refreshing) {
             self.start(vec![checkout.to_owned()], true, cx);
@@ -566,9 +602,13 @@ impl BoardView {
         if checkouts.is_empty() {
             return;
         }
+        #[cfg(test)]
+        {
+            self.pending_refreshes += 1;
+        }
         let generations = self.board.start_refresh(&checkouts);
         // Work for a checkout removed (or removed and added back) since now is skipped, before it queues for a slot
-        // and again once it has one, so it never runs gh or holds a slot.
+        // and again once it has one, so it never fetches or holds a slot.
         let source: Arc<dyn StatusSource> = Arc::new(scheduler::OnlyWanted {
             limiter: Arc::clone(&self.limiter),
             wanted: self.wanted.clone(),
@@ -580,6 +620,7 @@ impl BoardView {
                 cx.background_executor().timer(POLL).await;
                 let (outcomes, done) = drain(&receiver);
                 let alive = this.update(cx, |view, cx| {
+                    view.check_identities(cx);
                     for outcome in outcomes {
                         // A card removed and added back while this ran is a new card; this result isn't for it.
                         let Some(&generation) = generations.get(&outcome.checkout) else {
@@ -590,6 +631,10 @@ impl BoardView {
                         }
                     }
                     if done {
+                        #[cfg(test)]
+                        {
+                            view.pending_refreshes -= 1;
+                        }
                         view.finished(cx);
                     }
                 });
@@ -884,6 +929,19 @@ impl BoardView {
         let prs = count("pullRequests.open", |document| document.pull_requests.open.len());
         let issues = count("issues", |document| document.issues.len());
         let error = card.error.as_ref().filter(|error| !error.is_setup());
+        let freshness = card
+            .document
+            .as_ref()
+            .and_then(|doc| doc.hosted.as_ref())
+            .map(|hosted| {
+                let age = DateTime::parse_from_rfc3339(&hosted.generated_at)
+                    .ok()
+                    .map(|at| (now - at.with_timezone(&Utc)).num_seconds().max(0));
+                format!(
+                    "pmd status age: {}",
+                    age.map_or_else(|| "unknown".into(), |seconds| format!("{seconds}s"))
+                )
+            });
         // Found once per row: both the Updated and Last activity columns show it.
         let last_activity = card.last_activity();
         // The age, with the exact local time on hover; a dash until there is something to date.
@@ -954,7 +1012,7 @@ impl BoardView {
                     )
                     .into_any_element()
             }
-            // A setup problem (no gh or gh-x) is explained once in the banner; the row just says it has nothing.
+            // A setup problem (missing or rejected pmd token) is explained once in the banner; the row just says it has nothing.
             (None, None) if card.document.is_none() && card.error.is_some() => div()
                 .id(("activity-placeholder", ix))
                 .test_support()
@@ -1014,7 +1072,14 @@ impl BoardView {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(div().min_w_0().truncate().font_semibold().child(card.name()))
+                    .child(
+                        v_flex()
+                            .min_w_0()
+                            .child(div().truncate().font_semibold().child(card.name()))
+                            .when_some(freshness, |this, freshness| {
+                                this.child(div().text_xs().truncate().child(freshness))
+                            }),
+                    )
                     // Stays while a refresh runs: until a fresh result lands, the row still shows the cached copy.
                     .when(card.from_cache, |this| {
                         this.child(
@@ -1082,7 +1147,7 @@ impl BoardView {
                             .ghost()
                             .xsmall()
                             .icon(IconName::RotateCw)
-                            .tooltip("Refresh this repository (gh x status --refresh)")
+                            .tooltip("Reload this repository from pmd")
                             .loading(card.refreshing)
                             .on_click(cx.listener(move |view, _, _, cx| {
                                 cx.stop_propagation();
@@ -1144,6 +1209,81 @@ impl BoardView {
         }
         match &card.document {
             Some(document) => {
+                if let Some(hosted) = &document.hosted {
+                    let age = DateTime::parse_from_rfc3339(&hosted.generated_at)
+                        .ok()
+                        .map(|at| format!("{}s ago", (self.now() - at.with_timezone(&Utc)).num_seconds().max(0)))
+                        .unwrap_or_else(|| "unknown age".to_owned());
+                    body = body.child(
+                        div()
+                            .id(("pmd-freshness", ix))
+                            .test_support()
+                            .text_sm()
+                            .child(format!("pmd status generated {age} · {}", hosted.generated_at)),
+                    );
+                    if let Some(error) = &hosted.work_error {
+                        body = body.child(
+                            div()
+                                .id(("pmd-work-error", ix))
+                                .test_support()
+                                .text_sm()
+                                .text_color(theme.warning)
+                                .child(if hosted.board.is_some() {
+                                    format!("Board/work refresh failed: {error} Showing last good Board/work below.")
+                                } else {
+                                    format!("Board/work unavailable: {error}")
+                                }),
+                        );
+                    }
+                    if let Some(board) = &hosted.board {
+                        let mut work = v_flex()
+                            .id(("pmd-board", ix))
+                            .test_support()
+                            .gap_1()
+                            .text_sm()
+                            .child(format!("Project Manager Board · {}", board.generated_at));
+                        for column in &board.columns {
+                            work = work.child(div().font_semibold().child(format!(
+                                "{}{}",
+                                column.title,
+                                if column.truncated {
+                                    " · truncated, complete list below"
+                                } else {
+                                    ""
+                                }
+                            )));
+                            for item in &column.items {
+                                let url = item.url.clone();
+                                work = work.child(
+                                    div()
+                                        .id(SharedString::from(format!("board-{}-{}", ix, item.id)))
+                                        .test_support()
+                                        .cursor_pointer()
+                                        .hover(|s| s.underline())
+                                        .child(format!("{} #{} {}", item.kind, item.number, item.title))
+                                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                                );
+                            }
+                        }
+                        work = work.child(div().font_semibold().child("Open work · all API pages"));
+                        for item in &hosted.work {
+                            let url = item.url.clone();
+                            work = work.child(
+                                div()
+                                    .id(SharedString::from(format!("work-{}-{}", ix, item.id)))
+                                    .test_support()
+                                    .cursor_pointer()
+                                    .hover(|s| s.underline())
+                                    .child(format!(
+                                        "{} · {} #{} {}",
+                                        item.status, item.kind, item.number, item.title
+                                    ))
+                                    .on_click(move |_, _, cx| cx.open_url(&url)),
+                            );
+                        }
+                        body = body.child(work);
+                    }
+                }
                 body = body.children(document.health_rows().iter().map(|row| health_row(row, cx)));
                 body = body.children(document.unavailable_sections().map(|section| {
                     h_flex()
@@ -1164,7 +1304,7 @@ impl BoardView {
                     div()
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
-                        .child("Loading gh x status…"),
+                        .child("Loading pmd status…"),
                 );
             }
             None => {}
@@ -1347,6 +1487,7 @@ fn state_dot(ix: usize, overall: Overall, cx: &App) -> impl IntoElement {
         Overall::Clean => (theme.success, "Clean"),
         Overall::Attention => (theme.warning, "Attention"),
         Overall::Failed => (theme.danger, "Failed"),
+        Overall::Unavailable => (theme.muted_foreground, "Local health unavailable"),
     };
     div()
         .id(SharedString::from(format!("state-{ix}-{label}")))
@@ -1387,6 +1528,9 @@ fn health_row(row: &HealthRow, cx: &App) -> impl IntoElement {
         (false, false) => ("•", theme.warning),
     };
     h_flex()
+        .id(SharedString::from(format!("health-{}", row.label)))
+        .test_support()
+        .aria_label(format!("{}: {}", row.label, row.text))
         .gap_2()
         .text_sm()
         .child(div().w(rems(0.875)).text_color(color).child(marker))

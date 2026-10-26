@@ -17,7 +17,7 @@ use std::sync::Arc;
 use dashboard_core::APP_NAME;
 use dashboard_core::cache::StatusCache;
 use dashboard_core::config::{self, Config};
-use dashboard_core::source::{GhX, StatusSource};
+use dashboard_core::source::StatusSource;
 use dashboard_core::t3;
 use dashboard_core::ui_state::UiState;
 use gpui_kit::component::TitleBar;
@@ -72,14 +72,14 @@ fn main() {
     });
 }
 
-/// The configured checkouts, shown from the cache first and then refreshed with gh x status.
+/// The configured checkouts, shown from the cache first and then refreshed from pmd.
 fn live_view(window: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<BoardView>) -> BoardView {
     let dir = config::default_dir();
     let (config, config_problem) = match Config::load_or_create(&dir) {
         Ok(config) => (config, None),
         Err(err) => (Config::default(), Some(board_view::config_problem(&err))),
     };
-    let source: Arc<dyn StatusSource> = Arc::new(GhX::default());
+    let source: Arc<dyn StatusSource> = Arc::new(dashboard_core::priority::Pmd::from_config(&config, &dir));
     BoardView::new(
         &config.repositories,
         StatusCache::load(&dir),

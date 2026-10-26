@@ -135,6 +135,14 @@ fn a_missing_corrupt_or_other_version_cache_is_empty() {
 }
 
 #[test]
+fn legacy_gh_x_cache_is_discarded_before_production_startup() {
+    let scratch = Scratch::new("legacy-cache");
+    let legacy = serde_json::json!({"version":1,"entries":{"/demo/gh-x":fixtures::document(fixtures::CLEAN)}});
+    std::fs::write(scratch.path().join(cache::FILE_NAME), legacy.to_string()).unwrap();
+    assert!(StatusCache::load(scratch.path()).is_empty());
+}
+
+#[test]
 fn the_config_file_reports_each_edit_once() {
     use dashboard_core::config::ConfigFile;
     let scratch = Scratch::new("config-watch");

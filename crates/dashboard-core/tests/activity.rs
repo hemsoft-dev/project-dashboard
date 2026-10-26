@@ -217,7 +217,7 @@ fn loading_and_failed_cards_without_a_status_sort_last() {
     board.apply(
         Outcome {
             checkout: "/src/failed".into(),
-            result: Err(dashboard_core::source::FetchError::GhMissing),
+            result: Err(dashboard_core::source::FetchError::MissingToken),
         },
         &mut cache,
     );

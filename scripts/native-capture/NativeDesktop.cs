@@ -5,12 +5,16 @@ using System.Text;
 // Only the owned Dashboard window may receive input or be captured.
 public static class NativeDesktop {
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X,Y; }
     [StructLayout(LayoutKind.Sequential)] public struct MOUSE { public int X,Y; public uint Data,Flags,Time; public UIntPtr Extra; }
     [StructLayout(LayoutKind.Sequential)] public struct KEY { public ushort Vk,Scan; public uint Flags,Time; public UIntPtr Extra; }
     [StructLayout(LayoutKind.Explicit)] public struct UNION { [FieldOffset(0)] public MOUSE Mouse; [FieldOffset(0)] public KEY Key; }
     [StructLayout(LayoutKind.Sequential)] public struct INPUT { public uint Type; public UNION Data; }
     [DllImport("user32.dll",SetLastError=true)] public static extern bool GetWindowRect(IntPtr h,out RECT r);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
+    [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h,uint flags);
+    public static bool OwnsPoint(IntPtr window,int x,int y) { return GetAncestor(WindowFromPoint(new POINT{X=x,Y=y}),2)==window; }
     [DllImport("user32.dll",SetLastError=true)] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int command);
     [DllImport("user32.dll",SetLastError=true)] public static extern bool MoveWindow(IntPtr h,int x,int y,int w,int height,bool paint);

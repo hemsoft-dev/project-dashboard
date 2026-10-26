@@ -60,6 +60,7 @@ jobs:
           python scripts/native-capture/test_fixture.py
           if ($LASTEXITCODE -ne 0) { throw 'Native fixture retention regression failed.' }
           ./scripts/native-capture/Test-CaptureText.ps1
+          ./scripts/native-capture/Test-OcrPipe.ps1
 
       # The tag reaches the script through the environment, never as command text.
       - name: Build, check and zip
@@ -71,7 +72,9 @@ jobs:
       # Owner-authorized issue-31 attempt only. A rerun must not silently repeat OS input/capture.
       - name: Native Windows pmd capture (issue 31, one attempt)
         if: github.event_name == 'pull_request' && github.event.pull_request.number == 32 && github.run_attempt == 1
-        timeout-minutes: 8
+        # 120s cold warm-up + seven 60s reads + startup/HTTP/input/cleanup bounds fit here.
+        # The enclosing job remains capped at 60 minutes; product timeouts are unchanged.
+        timeout-minutes: 15
         shell: pwsh
         env:
           CAPTURE_HEAD: ${{ github.event.pull_request.head.sha }}

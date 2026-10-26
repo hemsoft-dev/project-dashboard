@@ -2,7 +2,7 @@ name: Release
 
 # Builds the Windows release on windows-latest, checks the executable (GUI subsystem, icon, version block, starts and
 # opens its window) and zips it. On a v* tag it publishes the zip on a GitHub release; 0.x and hyphenated versions
-# are pre-releases. Pull requests that touch the packaging run the same build and checks without publishing.
+# are pre-releases. Pull requests that touch crates or packaging run the same build and checks without publishing.
 on:
   push:
     tags: ['v*']
@@ -12,12 +12,9 @@ on:
       - .github/workflows/release.yml
       - scripts/Build-WindowsRelease.ps1
       - scripts/native-capture/**
-      - crates/dashboard-app/build.rs
-      - crates/dashboard-app/src/mark.rs
-      - crates/dashboard-app/src/main.rs
+      - crates/**
       - Cargo.toml
       - Cargo.lock
-      - crates/*/Cargo.toml
       # Packaged beside the exe.
       - README.md
       - LICENSE
@@ -44,6 +41,7 @@ jobs:
         with:
           # Native evidence must describe the PR head, rather than GitHub's synthetic merge commit.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         shell: bash
@@ -86,6 +84,42 @@ jobs:
         with:
           name: issue-31-native-windows-${{ github.event.pull_request.head.sha }}
           path: native-captures/
+          retention-days: 14
+
+      # Separate issue-27 authorization. Never rerun OS captures implicitly.
+      - name: Check native width harness without a window
+        if: github.event_name == 'pull_request' && github.event.pull_request.number == 28 && github.run_attempt == 1
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          python scripts/native-capture/test_width_fixture.py
+          if ($LASTEXITCODE -ne 0) { throw 'Native width fixture regression failed.' }
+          ./scripts/native-capture/Test-WidthCapture.ps1
+
+      - name: Build baseline and preserve PR head for native width comparison
+        if: github.event_name == 'pull_request' && github.event.pull_request.number == 28 && github.run_attempt == 1
+        timeout-minutes: 15
+        shell: pwsh
+        env:
+          CAPTURE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: ./scripts/native-capture/Build-WidthComparison.ps1 -ExpectedHead $env:CAPTURE_HEAD
+
+      - name: Native Windows width comparison (issue 27, one attempt)
+        if: github.event_name == 'pull_request' && github.event.pull_request.number == 28 && github.run_attempt == 1
+        # 120s warm-up + twelve 60s reads + four bounded app starts and cleanup.
+        timeout-minutes: 22
+        shell: pwsh
+        env:
+          CAPTURE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: ./scripts/native-capture/Invoke-WidthCapture.ps1 -ExpectedHead $env:CAPTURE_HEAD
+
+      - name: Upload native width evidence and failure manifest
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.number == 28 && github.run_attempt == 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-27-native-width-windows-${{ github.event.pull_request.head.sha }}
+          path: native-width-captures/
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Upload the package

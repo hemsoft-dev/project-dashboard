@@ -11,6 +11,7 @@ pub mod edit;
 pub mod fleet;
 pub mod pmd;
 pub mod priority;
+pub mod projects;
 pub mod scheduler;
 pub mod source;
 pub mod status;

@@ -276,6 +276,10 @@ fn paths_outside_the_api_are_refused() {
     for path in [
         "/v1/work/x",
         "v1/../admin",
+        "v1/agents/mini/./x",
+        "v1/agents//x",
+        "v1/agents/..\\..\\v1\\projects\\x",
+        "v1/agents/%2e%2e/x",
         "v1/work/x?all=1",
         "healthz",
         "http://evil/v1/x",
@@ -670,4 +674,29 @@ fn rows_read_version_and_field_text_from_pmd_json() {
     assert_eq!(row.values["os"], "macos");
     assert_eq!(row.values["capabilities"], "[\"apple\"]");
     assert_eq!(Row::from_json(&json!({"os": "x"}), &["os"]), Err(WriteError::Malformed));
+}
+
+#[test]
+fn dots_inside_a_segment_are_a_name_not_a_traversal() {
+    let dir = Dir::new();
+    let stub = Stub::new(|_| Reply::json(200, json!({"id": "mini/codex/model..preview", "version": 2})));
+    let request = WriteRequest {
+        path: "v1/agents/mini/codex/model..preview".into(),
+        ..patch(1)
+    };
+    dir.writer(&stub).write(&request).unwrap();
+    assert_eq!(stub.requests()[0].path, "/v1/agents/mini/codex/model..preview");
+}
+
+#[test]
+fn a_form_checking_a_failed_save_stays_busy() {
+    let mut form = Form::create(&["name"], &BTreeMap::new());
+    form.set("name", "air");
+    form.begin_save().unwrap();
+    form.checking("Loading it…");
+    assert!(form.is_saving());
+    assert_eq!(form.message(), Some("Loading it…"));
+    form.set("name", "typed meanwhile");
+    assert_eq!(form.value("name"), "air", "no edits while checking");
+    assert_eq!(form.begin_save(), None, "and no second save");
 }

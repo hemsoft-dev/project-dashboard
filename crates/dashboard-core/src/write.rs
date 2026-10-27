@@ -506,7 +506,13 @@ impl Client {
         };
         // Paths come from the dialogs; one that escapes the API or carries its own query is a bug, not a request.
         // A query goes in `query`, encoded here.
-        if path.starts_with('/') || path.contains("..") || path.contains(['?', '#']) || !path.starts_with("v1/") {
+        // Dots inside a segment are fine (an agent alias such as `model..preview`); a `.` or `..` segment is not. No
+        // key the dialogs send has a backslash or a percent sign, which URL parsing would turn into `/` or decode
+        // into a traversal, so neither is allowed at all.
+        let traversal = path
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "." || segment == "..");
+        if path.starts_with('/') || traversal || path.contains(['?', '#', '\\', '%']) || !path.starts_with("v1/") {
             return Err(WriteError::Malformed);
         }
         let mut url = self.base.join(path).map_err(|_| WriteError::Malformed)?;

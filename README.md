@@ -163,7 +163,7 @@ with the old Board generation timestamp and an error. Status refresh errors pres
 The title bar's **Manage** button opens a menu with **Projects…**, **Work items…**, **Fleet…** and **Write access…**.
 A left click anywhere on the button opens it, and a second click or a click outside closes it. It works by keyboard
 too: Alt+M opens the menu from anywhere, or Tab to the button and press Enter, Space or Down. Up and Down move between
-entries, Enter opens one, and Esc or Tab closes the menu. An entry that isn't built yet (#34, #36) stays in the menu,
+entries, Enter opens one, and Esc or Tab closes the menu. An entry that isn't built yet (#34) stays in the menu,
 disabled, with the reason under it. A built dialog always opens, since it reads with the read token; without write
 access it is read-only, and the line under its entry says why: writes are off, or the token lacks the scope it needs.
 
@@ -188,6 +188,25 @@ something changes. The row updates from pmd's answer, and a rank or priority cha
 page, since pmd warns that paging in progress can skip or repeat an item. An item that closed on GitHub meanwhile
 (`409 item_closed`) is re-read and shown with nothing left to edit. **Back to list** asks before dropping unsaved
 edits. Without `write:work` the list and editor are read-only and say which scope is missing.
+
+**Fleet…** has a tab each for pmd's **Machines**, **Subscriptions** and **Agents**; Left and Right switch tabs on the
+tab strip, Up and Down move through a list, and Enter or a click edits a row. Every row shows its `source`: `config`
+while pmd's config file owns it, `api` once a `PUT` changed it. Editing a `config` row says that saving makes it
+API-owned, after which the file no longer updates it.
+
+- **Machines**: OS, tailnet IP (a Tailscale address, or empty), max sessions (0 to 64; 0 starts none there) and
+  capabilities.
+- **Subscriptions**: provider, plan and whether it is metered.
+- **Agents**: model, subscription (picked from the existing ones), roles and enabled. A new agent's id is built from a
+  machine picker, its provider (the harness, such as `claude` or `codex`) and an alias, as `machine/provider/alias`,
+  and is read-only once created. Each agent row has a quick **Enable** or **Disable**.
+
+Capabilities and roles are lower-case words with `_`; the editor suggests the ones in use and accepts new ones.
+**Add machine**, **Add subscription** and **Add agent** create rows with `If-None-Match: *`; a save replaces the whole
+row with `If-Match`, and Save stays off until something changes. Names and ids are lower-case letters, digits and `-`.
+pmd's `400 unknown_machine` and `unknown_subscription` show on the pickers and `409 already_exists` on the name, and
+the dialog checks the same things first. There is no delete: disable an agent, or give a machine 0 sessions. Without
+`write:fleet` the dialog is read-only and names the missing scope.
 
 Writes use their own token, separate from the read token and off until you set it up:
 

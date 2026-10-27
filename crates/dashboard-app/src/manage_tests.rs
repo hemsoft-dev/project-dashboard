@@ -262,7 +262,6 @@ fn unbuilt_entries_are_disabled_with_a_reason_and_built_ones_say_they_are_read_o
         text.contains("Not built yet (#34) · writes are off: set pmd_write_token_path"),
         "{text}"
     );
-    assert!(text.contains("Not built yet (#36)"), "{text}");
     // Work items is built: it opens read-only, and the line under it says why.
     assert!(
         text.contains("Read-only: writes are off: set pmd_write_token_path"),
@@ -312,7 +311,10 @@ async fn write_access_shows_the_token_scopes_and_what_they_allow(cx: &mut TestAp
         text.contains("Not built yet (#34) · the token lacks write:projects"),
         "{text}"
     );
-    assert!(!text.contains("Not built yet (#36) ·"), "fleet is allowed: {text}");
+    assert!(
+        !text.contains("Read-only: the token lacks write:fleet"),
+        "fleet is allowed: {text}"
+    );
     click(cx, handle, "manage-write-access");
     frame(cx, handle);
     assert_eq!(

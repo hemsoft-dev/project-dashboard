@@ -12,6 +12,8 @@ mod manage;
 #[cfg(test)]
 mod manage_tests;
 mod mark;
+#[cfg(test)]
+mod projects_tests;
 mod theme;
 #[cfg(test)]
 mod ui_tests;

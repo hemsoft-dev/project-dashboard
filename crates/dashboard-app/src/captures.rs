@@ -512,6 +512,138 @@ fn fleet(cx: &mut HeadlessAppContext, out: &Path, suffix: &str) {
     shot(cx);
 }
 
+/// The Projects dialog (#34): each state the issue names, and at 100% a frame sequence of keyboard-only add and edit.
+fn projects(cx: &mut HeadlessAppContext, out: &Path, suffix: &str) {
+    use crate::projects_tests::{FakeProjects, Folder};
+    use dashboard_core::write::WriteError;
+    let name = |state: &str| format!("projects-{state}{suffix}");
+    let folder = Folder::new();
+    let open_dialog = |cx: &mut HeadlessAppContext, scopes: &[&str], folder: &Folder| {
+        let backend = FakeProjects::new(scopes);
+        let (handle, view) = open_with(
+            cx,
+            demo::checkouts(),
+            1100.,
+            760.,
+            Options {
+                write: backend.clone(),
+                config_path: Some(folder.config_dir().join("config.toml")),
+                ..options()
+            },
+        );
+        fill(cx, &view, &demo::DemoSource);
+        let manage = cx.update(|cx| view.read(cx).manage().clone());
+        settle(cx);
+        cx.update_window(handle, |_, window, cx| {
+            manage.update(cx, |m, cx| {
+                m.open_menu(window, cx);
+                m.activate(
+                    crate::manage::Entry::Feature(dashboard_core::write::Feature::Projects),
+                    window,
+                    cx,
+                );
+            })
+        })
+        .unwrap();
+        settle(cx);
+        (handle, manage, backend)
+    };
+    let click = |cx: &mut HeadlessAppContext, handle: AnyWindowHandle, id: &str| {
+        let id = gpui_kit::SharedString::from(id.to_owned());
+        cx.update_window(handle, |_, window, cx| window.click(id, cx)).unwrap();
+        settle(cx);
+    };
+    let set = |cx: &mut HeadlessAppContext,
+               handle: AnyWindowHandle,
+               manage: &Entity<crate::manage::Manage>,
+               field: &str,
+               text: &str| {
+        let input = cx.update(|cx| manage.read(cx).input(field).unwrap());
+        let text = text.to_owned();
+        cx.update_window(handle, |_, window, cx| {
+            input.update(cx, |i, cx| i.set_value(text, window, cx))
+        })
+        .unwrap();
+        settle(cx);
+    };
+
+    let (handle, manage, backend) = open_dialog(cx, &["read", "write:projects"], &folder);
+    save(cx, handle, out, &name("list"));
+    click(cx, handle, "projects-show-untracked");
+    save(cx, handle, out, &name("list-untracked"));
+    click(cx, handle, "projects-show-untracked");
+    // hs-buddy: no checkout configured, so Link checkout shows.
+    click(cx, handle, "project-row-2");
+    click(cx, handle, "project-priority-0");
+    save(cx, handle, out, &name("edit-priority"));
+    let fork = folder.checkout("fork", "https://github.com/someone/hs-buddy.git");
+    set(cx, handle, &manage, "folder", &fork.to_string_lossy());
+    // The button can sit below the fold at 150%; press it directly.
+    cx.update(|cx| manage.update(cx, |m, cx| m.link_checkout(cx)));
+    settle(cx);
+    save(cx, handle, out, &name("link-mismatch"));
+    backend.fail_next(WriteError::StaleVersion, |rows| {
+        let row = rows.iter_mut().find(|row| row["slug"] == "hs-buddy").unwrap();
+        row["priority"] = serde_json::json!(1);
+        row["goal"] = serde_json::json!("Ship the signed installer this week");
+        row["version"] = serde_json::json!(5);
+    });
+    key(cx, handle, &["ctrl-enter"]);
+    save(cx, handle, out, &name("conflict"));
+    click(cx, handle, "conflict-discard");
+    click(cx, handle, "project-untrack");
+    save(cx, handle, out, &name("untrack-confirm"));
+    click(cx, handle, "untrack-keep");
+    click(cx, handle, "projects-back");
+    click(cx, handle, "projects-add");
+    set(cx, handle, &manage, "repo", "hemsoft-dev/Yahtzee Bench");
+    click(cx, handle, "project-priority-5");
+    key(cx, handle, &["ctrl-enter"]);
+    save(cx, handle, out, &name("add-error"));
+
+    let (read_only, _, _) = open_dialog(cx, &["read", "write:work"], &folder);
+    save(cx, read_only, out, &name("read-only"));
+
+    // Frames for the recording, at 100% only: keyboard alone, adding a project and setting its priority.
+    if !suffix.is_empty() {
+        return;
+    }
+    let (keys, _, _) = open_dialog(cx, &["read", "write:projects"], &folder);
+    let mut frame = 0;
+    let mut shot = |cx: &mut HeadlessAppContext| {
+        frame += 1;
+        save(cx, keys, out, &format!("projects-keys-{frame:02}"));
+    };
+    shot(cx);
+    // From the list, Tab to Close and Add project, then Enter opens the empty editor with focus on the repository.
+    for _ in 0..8 {
+        key(cx, keys, &["tab"]);
+        let add = cx
+            .update_window(keys, |_, window, _| window.find("projects-add").focused() == Some(true))
+            .unwrap();
+        if add {
+            break;
+        }
+    }
+    shot(cx);
+    key(cx, keys, &["enter"]);
+    shot(cx);
+    for typed in ["hemsoft-dev/", "yahtzee"] {
+        cx.update_window(keys, |_, window, cx| window.input(typed, cx)).unwrap();
+        settle(cx);
+        shot(cx);
+    }
+    // Tab past the slug (empty uses yahtzee) to P2, Enter picks it, and Ctrl+Enter adds the project.
+    for _ in 0..4 {
+        key(cx, keys, &["tab"]);
+    }
+    shot(cx);
+    key(cx, keys, &["enter"]);
+    shot(cx);
+    key(cx, keys, &["ctrl-enter"]);
+    shot(cx);
+}
+
 #[test]
 #[ignore = "writes screenshots; run with CAPTURE_DIR set"]
 fn captures() {
@@ -543,6 +675,7 @@ fn captures() {
         manage(&mut cx, &out, suffix);
         work_items(&mut cx, &out, suffix);
         fleet(&mut cx, &out, suffix);
+        projects(&mut cx, &out, suffix);
     }
     cx.update(|cx| crate::zoom::set_level(1.0, cx));
 

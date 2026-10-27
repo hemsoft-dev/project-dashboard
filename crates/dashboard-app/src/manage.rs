@@ -12,7 +12,7 @@
 //!
 //! The dialogs' logic that needs no window lives in `dashboard_core::edit` (one row's edit, its errors and the
 //! "Changed elsewhere" flow) and `dashboard_core::write` (the write token and client). Work items (#35, `work_items`)
-//! and Fleet (#36, `fleet`) fill this frame; Projects (#34) says it isn't built yet. With
+//! Fleet (#36, `fleet`) and Projects (#34, `projects`) fill this frame. With
 //! `--demo`, a **Sample dialog** entry shows the frame with a fake row, validation and a conflict.
 
 use std::cell::Cell;
@@ -37,9 +37,11 @@ use gpui_kit::{
 };
 
 pub mod fleet;
+pub mod projects;
 pub mod work_items;
 
 use fleet::FleetDialog;
+use projects::ProjectsDialog;
 use work_items::WorkItemsDialog;
 
 actions!(
@@ -67,8 +69,8 @@ const CONTROL: &str = "ManageControl";
 const WORK_LIST: &str = "ManageWorkList";
 const FLEET_TABS: &str = "ManageFleetTabs";
 
-/// The dialogs built so far. #34 adds Projects.
-const BUILT: &[Feature] = &[Feature::WorkItems, Feature::Fleet];
+/// The dialogs built so far: all three.
+const BUILT: &[Feature] = &[Feature::Projects, Feature::WorkItems, Feature::Fleet];
 
 /// The demo's sample row, at this API-shaped path.
 pub const SAMPLE_PATH: &str = "v1/sample/demo";
@@ -169,6 +171,7 @@ enum Content {
     Sample(Box<SampleDialog>),
     WorkItems(Box<WorkItemsDialog>),
     Fleet(Box<FleetDialog>),
+    Projects(Box<ProjectsDialog>),
 }
 
 struct Dialog {
@@ -295,6 +298,7 @@ impl Manage {
                 .map(|(_, input)| input.clone()),
             Content::WorkItems(work) => work.input(field),
             Content::Fleet(fleet) => fleet.input(field),
+            Content::Projects(projects) => projects.input(field),
         }
     }
 
@@ -450,7 +454,7 @@ impl Manage {
             }
             Entry::Feature(Feature::WorkItems) => Content::WorkItems(Box::new(self.new_work_items(id, window, cx))),
             Entry::Feature(Feature::Fleet) => Content::Fleet(Box::new(self.new_fleet(cx))),
-            Entry::Feature(_) => return,
+            Entry::Feature(Feature::Projects) => Content::Projects(Box::new(self.new_projects(id, window, cx))),
         };
         let dialog = Dialog {
             id,
@@ -475,15 +479,20 @@ impl Manage {
             Content::WorkItems(work) => work.focus_list(window, cx),
             // The tab strip, so Left and Right switch tabs at once.
             Content::Fleet(fleet) => fleet.focus_tabs(window, cx),
+            Content::Projects(projects) => projects.focus_list(window, cx),
         }
         let work = matches!(dialog.content, Content::WorkItems(_));
         let fleet = matches!(dialog.content, Content::Fleet(_));
+        let projects = matches!(dialog.content, Content::Projects(_));
         self.dialog = Some(dialog);
         if work {
             self.load_work(id, true, cx);
         }
         if fleet {
             self.load_fleet(id, &dashboard_core::fleet::Kind::ALL, cx);
+        }
+        if projects {
+            self.load_projects(id, cx);
         }
         cx.notify();
     }
@@ -531,8 +540,14 @@ impl Manage {
             .dialog
             .as_ref()
             .is_some_and(|dialog| matches!(dialog.content, Content::Fleet(_)));
+        let projects = self
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| matches!(dialog.content, Content::Projects(_)));
         if back && fleet {
             self.leave_fleet_editor(window, cx);
+        } else if back && projects {
+            self.leave_project_editor(window, cx);
         } else if back {
             self.leave_work_editor(window, cx);
         } else {
@@ -573,6 +588,7 @@ impl Manage {
             Content::Sample(_) => self.save_sample(window, cx),
             Content::WorkItems(_) => self.work_default_action(window, cx),
             Content::Fleet(_) => self.fleet_default_action(window, cx),
+            Content::Projects(_) => self.projects_default_action(window, cx),
         }
     }
 
@@ -587,6 +603,7 @@ impl Manage {
         match dialog.content {
             Content::WorkItems(_) => self.save_work_item(window, cx),
             Content::Fleet(_) => self.save_fleet_row(window, cx),
+            Content::Projects(_) => self.save_project(window, cx),
             _ => {}
         }
     }
@@ -876,6 +893,7 @@ impl Dialog {
             Content::Sample(sample) => sample.form.as_ref().is_some_and(Form::is_dirty),
             Content::WorkItems(work) => work.is_dirty(),
             Content::Fleet(fleet) => fleet.is_dirty(),
+            Content::Projects(projects) => projects.is_dirty(),
         }
     }
 }
@@ -1667,6 +1685,7 @@ impl Render for Manage {
                 Content::Sample(sample) => self.render_sample(&dialog, sample, window, cx),
                 Content::WorkItems(work) => self.render_work_items(&dialog, work, window, cx),
                 Content::Fleet(fleet) => self.render_fleet(&dialog, fleet, window, cx),
+                Content::Projects(projects) => self.render_projects(&dialog, projects, window, cx),
             };
             self.dialog = Some(dialog);
             Some(element)

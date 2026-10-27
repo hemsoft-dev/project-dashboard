@@ -15,8 +15,10 @@ conventions follow [CodexBar](https://github.com/hemsoft-dev/codexbar); when in 
 Franz's explicit October 25, 2026 direction replaces local gh-x reads with the
 [project-manager read API](https://github.com/hemsoft-dev/project-manager#read-api).
 Production startup, automatic refresh and user refresh read hosted status, priorities and Board/work items from pmd.
-There is no gh-x subprocess adapter or fallback, for reads or writes. Match projects by full GitHub `owner/name` from
-checkout origin, never by basename. Read origin configuration only for identity, never local git status.
+There is no gh-x subprocess adapter or fallback, for reads or writes. The app starts no child process at all, so it
+never depends on the PATH it inherits (#38, `dashboard-core/tests/no_child_process.rs`). Match projects by full GitHub
+`owner/name` from checkout origin, never by basename. Read origin configuration only for identity, never local git
+status.
 
 Render API rows and verdicts as supplied. Pmd does not supply local branch, worktree, stash or working-tree health;
 show it as unavailable. Keep the last good API data on refresh failure, with its original age and the error.

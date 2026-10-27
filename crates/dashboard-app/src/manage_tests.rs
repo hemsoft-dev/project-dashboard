@@ -2,7 +2,7 @@
 //! input or network: write access comes from in-memory backends.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dashboard_core::cache::StatusCache;
@@ -24,6 +24,8 @@ const TOKEN: &str = "pmd-secret-write-token-0123456789";
 pub(crate) struct FakeAccess {
     scopes: Vec<String>,
     stored: Mutex<Vec<String>>,
+    /// Refuse to store, as a full disk or a locked file would.
+    fail_store: AtomicBool,
 }
 
 impl FakeAccess {
@@ -31,6 +33,7 @@ impl FakeAccess {
         Arc::new(Self {
             scopes: scopes.iter().map(|s| (*s).to_owned()).collect(),
             stored: Mutex::new(Vec::new()),
+            fail_store: AtomicBool::new(false),
         })
     }
 }
@@ -46,6 +49,9 @@ impl WriteBackend for FakeAccess {
         })
     }
     fn store_token(&self, token: &str) -> Result<(), WriteError> {
+        if self.fail_store.load(Ordering::SeqCst) {
+            return Err(WriteError::Storage("the disk is full".into()));
+        }
         self.stored.lock().unwrap().push(token.to_owned());
         Ok(())
     }
@@ -568,4 +574,54 @@ async fn a_token_save_that_lands_after_its_dialog_closed_leaves_a_newer_dialog_a
     press(cx, handle, "enter");
     settle(cx, handle, &view).await;
     assert_eq!(*access.stored.lock().unwrap(), ["first-token", "second-token"]);
+}
+
+#[gpui_kit::test]
+async fn an_access_check_about_the_replaced_token_cannot_overwrite_the_new_one(cx: &mut TestAppContext) {
+    let access = FakeAccess::new(&["read", "write:work"]);
+    let (handle, view) = open(cx, access.clone(), None);
+    let manage = manage(cx, &view);
+    // Opening the menu starts a check of the token that is about to be replaced.
+    click(cx, handle, "manage-button");
+    let old_check = cx.update(|cx| manage.read(cx).access_generation());
+    click(cx, handle, "manage-write-access");
+    type_text(cx, handle, "replacement-token");
+    press(cx, handle, "enter");
+    settle(cx, handle, &view).await;
+    let new_access = cx.update(|cx| manage.read(cx).access().clone());
+    assert!(matches!(new_access, Access::Known(_)));
+    // The old check answers last, with the replaced token's name and scopes: it is dropped.
+    cx.update(|cx| {
+        manage.update(cx, |manage, cx| {
+            manage.finish_access(
+                old_check,
+                Ok(Whoami {
+                    name: "old-token@home".into(),
+                    scopes: vec!["read".into()],
+                }),
+                cx,
+            )
+        })
+    });
+    assert_eq!(cx.update(|cx| manage.read(cx).access().clone()), new_access);
+}
+
+#[gpui_kit::test]
+async fn a_failed_token_store_says_why_and_rechecks_the_token_still_in_place(cx: &mut TestAppContext) {
+    let access = FakeAccess::new(&["read", "write:work"]);
+    access.fail_store.store(true, Ordering::SeqCst);
+    let (handle, view) = open(cx, access.clone(), None);
+    let manage = manage(cx, &view);
+    click(cx, handle, "manage-button");
+    click(cx, handle, "manage-write-access");
+    type_text(cx, handle, "replacement-token");
+    press(cx, handle, "enter");
+    settle(cx, handle, &view).await;
+    frame(cx, handle);
+    assert!(text_of(cx, handle, "dialog-message").starts_with("Can't store the token"));
+    assert!(access.stored.lock().unwrap().is_empty());
+    // Access isn't left at "Checking…": the old token was checked again.
+    assert!(cx.update(|cx| matches!(manage.read(cx).access(), Access::Known(_))));
+    let input = cx.update(|cx| manage.read(cx).input("token").unwrap().read(cx).value().to_string());
+    assert_eq!(input, "replacement-token", "the pasted token stays for another try");
 }

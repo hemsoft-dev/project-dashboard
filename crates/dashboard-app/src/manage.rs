@@ -18,7 +18,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use dashboard_core::edit::{Form, Next, Row};
-use dashboard_core::write::{Access, Feature, Method, WriteBackend, WriteError, WriteRequest, entry_state};
+use dashboard_core::write::{Access, Feature, Method, Whoami, WriteBackend, WriteError, WriteRequest, entry_state};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{
     ActiveTheme as _, FocusTrapElement as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex,
@@ -146,7 +146,7 @@ pub struct Manage {
     sample: Option<Arc<dyn WriteBackend>>,
     config_path: Option<PathBuf>,
     access: Access,
-    /// Bumped when the backend changes, so an older whoami can't overwrite newer access.
+    /// Bumped when the backend changes or a token is stored, so an older whoami can't overwrite newer access.
     generation: u64,
     button: FocusHandle,
     button_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
@@ -270,18 +270,29 @@ impl Manage {
         let generation = self.generation;
         cx.spawn(async move |this, cx| {
             let result = cx.background_executor().spawn(async move { backend.whoami() }).await;
-            let _ = this.update(cx, |manage, cx| {
-                if manage.generation == generation {
-                    manage.access = match result {
-                        Ok(whoami) => Access::Known(whoami),
-                        Err(error) => Access::Failed(error),
-                    };
-                    cx.notify();
-                }
-            });
+            let _ = this.update(cx, |manage, cx| manage.finish_access(generation, result, cx));
         })
         .detach();
         cx.notify();
+    }
+
+    /// A whoami landed. Only the newest check counts: a new backend or a newly stored token starts a new generation, so
+    /// an answer about the token it replaced is dropped.
+    pub fn finish_access(&mut self, generation: u64, result: Result<Whoami, WriteError>, cx: &mut Context<Self>) {
+        if self.generation != generation {
+            return;
+        }
+        self.access = match result {
+            Ok(whoami) => Access::Known(whoami),
+            Err(error) => Access::Failed(error),
+        };
+        cx.notify();
+    }
+
+    /// The current access generation, for tests that land an older check.
+    #[cfg(test)]
+    pub fn access_generation(&self) -> u64 {
+        self.generation
     }
 
     pub fn toggle_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -478,7 +489,6 @@ impl Manage {
     /// kept, logged or shown; the field is cleared once it is stored.
     pub fn store_token(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let backend = Arc::clone(&self.backend);
-        let generation = self.generation;
         let Some(id) = self.dialog.as_ref().map(|dialog| dialog.id) else {
             return;
         };
@@ -496,6 +506,10 @@ impl Manage {
         }
         dialog.storing = true;
         dialog.error = None;
+        // A check still running is about the token being replaced: a new generation drops its answer.
+        self.generation += 1;
+        let generation = self.generation;
+        self.access = Access::Checking;
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -512,13 +526,14 @@ impl Manage {
                         Err(error) => dialog.error = Some(error.to_string()),
                     }
                 }
-                if let Ok(whoami) = result
-                    && manage.generation == generation
-                {
-                    manage.access = match whoami {
-                        Ok(whoami) => Access::Known(whoami),
-                        Err(error) => Access::Failed(error),
-                    };
+                match result {
+                    Ok(whoami) => manage.finish_access(generation, whoami, cx),
+                    // Nothing was stored, so the old token still stands: check it again.
+                    Err(_) if manage.generation == generation => {
+                        manage.access = Access::Unchecked;
+                        manage.check_access(cx);
+                    }
+                    Err(_) => {}
                 }
                 cx.notify();
             });

@@ -808,3 +808,28 @@ async fn a_late_answer_never_undoes_a_newer_row(cx: &mut TestAppContext) {
     let row = cx.update(|cx| manage.read(cx).fleet().unwrap().rows(Kind::Agent)[0].clone());
     assert_eq!((row.version, row.value("model")), (2, "claude-opus-5-6"));
 }
+
+#[gpui_kit::test]
+async fn a_taken_agent_id_can_be_fixed_by_changing_any_part_of_it(cx: &mut TestAppContext) {
+    let backend = FakeFleet::new(&["read", "write:fleet"]);
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    click(cx, handle, "fleet-tab-agent");
+    click(cx, handle, "fleet-add");
+    click(cx, handle, "fleet-machine-mini");
+    set_input(cx, handle, &manage, "provider", "codex");
+    set_input(cx, handle, &manage, "alias", "gpt-6.1-sol");
+    set_input(cx, handle, &manage, "model", "gpt-6.1-sol");
+    click(cx, handle, "fleet-subscription-chatgpt-pro");
+    click(cx, handle, "fleet-save");
+    settle(cx, handle, &view).await;
+    assert_eq!(text_of(cx, handle, "field-alias-error"), "Already exists in pmd.");
+    // The same alias on another machine is a new id: the error goes and the create is sent.
+    click(cx, handle, "fleet-machine-air");
+    assert!(!exists(cx, handle, "field-alias-error"));
+    press(cx, handle, "ctrl-enter");
+    settle(cx, handle, &view).await;
+    let writes = backend.writes.lock().unwrap().clone();
+    assert_eq!(writes.len(), 2);
+    assert_eq!(writes[1].path, "v1/agents/air/codex/gpt-6.1-sol");
+}

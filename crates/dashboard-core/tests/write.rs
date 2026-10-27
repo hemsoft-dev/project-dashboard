@@ -278,6 +278,8 @@ fn paths_outside_the_api_are_refused() {
         "v1/../admin",
         "v1/agents/mini/./x",
         "v1/agents//x",
+        "v1/agents/..\\..\\v1\\projects\\x",
+        "v1/agents/%2e%2e/x",
         "v1/work/x?all=1",
         "healthz",
         "http://evil/v1/x",

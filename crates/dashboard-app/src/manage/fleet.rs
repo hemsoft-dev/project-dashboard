@@ -332,6 +332,7 @@ impl Manage {
                 };
                 if editor.key == key && editor.form.value(field) != text {
                     editor.form.set(field, text);
+                    clear_key_error(editor, field);
                     cx.notify();
                 }
             })
@@ -406,6 +407,7 @@ impl Manage {
             value.to_owned()
         };
         editor.form.set(field, text);
+        clear_key_error(editor, field);
         editor.sync_inputs(window, cx);
         cx.notify();
     }
@@ -1236,28 +1238,38 @@ fn capitalized(text: &str) -> String {
         .map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
 }
 
-/// A tab's columns and their widths in rems; `None` takes the rest.
-fn columns(kind: Kind) -> Vec<(&'static str, Option<f32>)> {
+/// How wide a column is, in rems.
+#[derive(Clone, Copy)]
+enum Width {
+    Fixed(f32),
+    /// Shares the rest, but never narrower than this, so a zoomed list still shows it.
+    Fill(f32),
+}
+
+/// A tab's columns and their widths. An agent's id is the column that tells rows apart, so it keeps room even at
+/// 200% zoom while the model and roles give way.
+fn columns(kind: Kind) -> Vec<(&'static str, Width)> {
+    use Width::{Fill, Fixed};
     match kind {
         Kind::Machine => vec![
-            ("Name", Some(8.)),
-            ("OS", Some(6.)),
-            ("Tailnet IP", Some(9.)),
-            ("Max sessions", Some(7.)),
-            ("Capabilities", None),
+            ("Name", Fixed(8.)),
+            ("OS", Fixed(6.)),
+            ("Tailnet IP", Fixed(9.)),
+            ("Max sessions", Fixed(7.)),
+            ("Capabilities", Fill(0.)),
         ],
         Kind::Subscription => vec![
-            ("Id", Some(10.)),
-            ("Provider", Some(8.)),
-            ("Plan", None),
-            ("Metered", Some(5.)),
+            ("Id", Fixed(10.)),
+            ("Provider", Fixed(8.)),
+            ("Plan", Fill(0.)),
+            ("Metered", Fixed(5.)),
         ],
         Kind::Agent => vec![
-            ("Id", None),
-            ("Model", Some(9.)),
-            ("Subscription", Some(7.5)),
-            ("Roles", Some(8.)),
-            ("Enabled", Some(4.)),
+            ("Id", Fill(11.)),
+            ("Model", Fill(0.)),
+            ("Subscription", Fixed(7.5)),
+            ("Roles", Fill(0.)),
+            ("Enabled", Fixed(4.)),
         ],
     }
 }
@@ -1280,10 +1292,18 @@ fn cell(row: &FleetRow, field: &str) -> String {
     if text.is_empty() { "—".to_owned() } else { text }
 }
 
-fn column(width: Option<f32>) -> gpui_kit::Div {
+fn column(width: Width) -> gpui_kit::Div {
     match width {
-        Some(width) => div().w(rems(width)).flex_none(),
-        None => div().flex_1().min_w_0(),
+        Width::Fixed(width) => div().w(rems(width)).flex_none(),
+        Width::Fill(min) => div().flex_1().min_w(rems(min)),
+    }
+}
+
+/// `409 already_exists` sits on one field of the key; changing any key field (an agent's machine, provider or alias)
+/// makes a new key, so the error no longer applies.
+fn clear_key_error(editor: &mut FleetEditor, field: &str) {
+    if editor.kind.key_fields().contains(&field) {
+        editor.form.clear_error(editor.kind.key_field());
     }
 }
 

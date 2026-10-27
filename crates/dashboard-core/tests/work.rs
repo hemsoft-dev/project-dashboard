@@ -47,6 +47,12 @@ fn an_item_reads_its_status_source_override_and_rank_into_the_editor() {
     assert_eq!(row.values["statusReason"], "needs Apple review");
     assert_eq!(row.values["priority"], "0");
     assert_eq!(row.values["rank"], "-5");
+    let unknown = WorkItem::from_json(&item(json!({"priority": 6, "priorityOverride": 9}))).unwrap();
+    assert_eq!(
+        (unknown.priority, unknown.priority_override),
+        (None, None),
+        "unknown tiers read as none"
+    );
     let closed = WorkItem::from_json(&item(json!({"status": "done", "ghState": "closed"}))).unwrap();
     assert!(closed.is_closed());
     assert_eq!(WorkItem::from_json(&json!({"id": 1})), Err(WriteError::Malformed));

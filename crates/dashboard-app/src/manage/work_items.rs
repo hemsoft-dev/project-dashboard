@@ -576,7 +576,8 @@ fn show_reread(
     cx: &mut Context<Manage>,
 ) {
     match (next, fresh) {
-        (Next::Reread, Ok(item)) => {
+        // Closed meanwhile: there is nothing to reapply or edit, so it shows as closed.
+        (Next::Reread, Ok(item)) if !item.is_closed() => {
             editor.form.conflict(item.row());
             editor.item = item;
             editor.reapply.focus.focus(window, cx);

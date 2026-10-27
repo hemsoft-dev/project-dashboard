@@ -64,8 +64,12 @@ pub struct WorkItem {
 }
 
 impl WorkItem {
+    /// A priority outside P0–P5 is unknown, so it reads as none and shows as `—`, as the Board's do.
     pub fn from_json(value: &Value) -> Result<Self, WriteError> {
-        serde_json::from_value(value.clone()).map_err(|_| WriteError::Malformed)
+        let mut item: Self = serde_json::from_value(value.clone()).map_err(|_| WriteError::Malformed)?;
+        item.priority = item.priority.filter(|p| *p <= 5);
+        item.priority_override = item.priority_override.filter(|p| *p <= 5);
+        Ok(item)
     }
 
     /// The API path of this item.

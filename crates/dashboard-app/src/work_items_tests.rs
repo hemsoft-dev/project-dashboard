@@ -798,3 +798,34 @@ async fn a_failed_reload_under_the_same_filters_keeps_the_last_good_rows(cx: &mu
     settle(cx, handle, &view).await;
     assert!(exists(cx, handle, "work-load-more"));
 }
+
+#[gpui_kit::test]
+async fn an_unknown_priority_shows_as_a_dash(cx: &mut TestAppContext) {
+    let mut list = sample_items();
+    list[0]["priority"] = json!(6);
+    let backend = FakeWork::new(&["read", "write:work"], list);
+    let (handle, view, _) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    assert!(text_of(cx, handle, "work-row-0").contains("Ready · auto, —, rank 0"));
+}
+
+#[gpui_kit::test]
+async fn an_item_that_closed_before_the_conflict_reread_shows_as_closed(cx: &mut TestAppContext) {
+    let backend = FakeWork::new(&["read", "write:work"], sample_items());
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    click(cx, handle, "work-row-0");
+    click(cx, handle, "work-status-blocked");
+    backend.fail_next(WriteError::StaleVersion, |items| {
+        items[0]["status"] = json!("done");
+        items[0]["ghState"] = json!("merged");
+        items[0]["version"] = json!(8);
+    });
+    click(cx, handle, "work-save");
+    settle(cx, handle, &view).await;
+    frame(cx, handle);
+    assert!(cx.update(|cx| manage.read(cx).work_items().unwrap().is_closed_item()));
+    assert!(!exists(cx, handle, "conflict"));
+    assert!(!exists(cx, handle, "conflict-reapply"));
+    assert!(exists(cx, handle, "work-closed"));
+}

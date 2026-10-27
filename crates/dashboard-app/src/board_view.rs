@@ -1037,7 +1037,6 @@ impl BoardView {
                     .test_support()
                     .aria_label(format!("Last activity: {}, {}", activity.label, activity.title))
                     .min_w_0()
-                    .gap_2()
                     .cursor_pointer()
                     .hover(|style| style.underline())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -1045,22 +1044,29 @@ impl BoardView {
                         cx.stop_propagation();
                         cx.open_url(&url);
                     })
-                    // The title only gets space the label leaves; on a narrow window the label truncates too.
+                    // Workflow names can be longer than their titles. Let the label use its natural width up to
+                    // a third of this cell. At its minimum, keep a label prefix instead of two bare ellipses.
                     .child(
                         div()
                             .id(("activity-summary", ix))
                             .test_support()
                             .min_w_0()
+                            .when(!activity.title.is_empty(), |this| {
+                                this.min_w(ACTIVITY_MIN).max_w(gpui_kit::relative(1. / 3.))
+                            })
                             .truncate()
                             .child(activity.label.clone()),
                     )
                     .child(
                         div()
+                            .id(("activity-title", ix))
+                            .test_support()
                             .flex_1()
                             .min_w_0()
                             .truncate()
                             .text_color(theme.muted_foreground)
-                            .child(activity.title.clone()),
+                            // The gap shrinks with the description, so the minimum label always fits the cell.
+                            .child(div().pl_2().truncate().child(activity.title.clone())),
                     )
                     .into_any_element()
             }
@@ -1186,7 +1192,14 @@ impl BoardView {
             .child(column_cell(Column::Updated, &self.columns).child(updated))
             // Takes the width the other columns leave, and shrinks first on a narrow window, so the refresh button
             // stays in view.
-            .child(div().flex_1().min_w(ACTIVITY_MIN).child(activity))
+            .child(
+                div()
+                    .id(("activity-cell", ix))
+                    .test_support()
+                    .flex_1()
+                    .min_w(ACTIVITY_MIN)
+                    .child(activity),
+            )
             .child(
                 h_flex()
                     .w(ACTIONS)

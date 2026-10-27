@@ -644,13 +644,8 @@ fn projects(cx: &mut HeadlessAppContext, out: &Path, suffix: &str) {
     shot(cx);
 }
 
-#[test]
-#[ignore = "writes screenshots; run with CAPTURE_DIR set"]
-fn captures() {
-    let Some(out) = std::env::var_os("CAPTURE_DIR").map(PathBuf::from) else {
-        return;
-    };
-    std::fs::create_dir_all(&out).unwrap();
+/// A headless app with the dashboard's theme, keys and zoom.
+fn headless() -> HeadlessAppContext {
     // The Mac platform can only be created on the main thread; a test runs on another, so take its text system only.
     #[cfg(target_os = "macos")]
     let text_system: Arc<dyn gpui_kit::PlatformTextSystem> = Arc::new(gpui_apple::AppleTextSystem::new());
@@ -665,6 +660,64 @@ fn captures() {
         crate::board_view::bind_keys(cx);
         crate::zoom::init(cx, None);
     });
+    cx
+}
+
+#[test]
+#[ignore = "writes screenshots; run with CAPTURE_DIR set"]
+fn activity_width_captures() {
+    let Some(out) = std::env::var_os("CAPTURE_DIR").map(PathBuf::from) else {
+        return;
+    };
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cx = headless();
+    for (level, repository) in [(1.0, 18.0), (1.3, 20.88)] {
+        cx.update(|cx| {
+            crate::zoom::set_level(level, cx);
+            crate::zoom::hide_toast(cx);
+        });
+        for width in [760., 1100., 1680.] {
+            let checkouts = vec!["/demo/short-label".into(), "/demo/long-label".into()];
+            let mut view = None;
+            let window = cx
+                .open_window(size(px(width), px(400.)), |window, cx| {
+                    let mut options = options();
+                    options
+                        .columns
+                        .set(dashboard_core::columns::Column::Repository, repository);
+                    let board = cx.new(|cx| {
+                        BoardView::new(
+                            &checkouts,
+                            StatusCache::default(),
+                            Arc::new(crate::ui_tests::ActivityLayoutSource),
+                            options,
+                            window,
+                            cx,
+                        )
+                    });
+                    view = Some(board.clone());
+                    cx.new(|cx| Root::new(board, window, cx))
+                })
+                .unwrap();
+            fill(&mut cx, &view.unwrap(), &crate::ui_tests::ActivityLayoutSource);
+            save(
+                &mut cx,
+                window.into(),
+                &out,
+                &format!("activity-{width}-{}", (level * 100.) as u32),
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "writes screenshots; run with CAPTURE_DIR set"]
+fn captures() {
+    let Some(out) = std::env::var_os("CAPTURE_DIR").map(PathBuf::from) else {
+        return;
+    };
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cx = headless();
 
     // The Manage menu and its dialogs (#33), at the app's default size and at 150%.
     for (level, suffix) in [(1.0, ""), (1.5, "-150")] {

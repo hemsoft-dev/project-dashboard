@@ -93,6 +93,8 @@ pub(crate) struct FakeFleet {
     pub fail_lists: Mutex<Option<WriteError>>,
     /// The next list of this kind (0, 1, 2) answers with these rows, an older snapshot.
     pub stale_list: Mutex<Option<(usize, Vec<Value>)>>,
+    /// The next write's answer is this older row, as a reply delayed past a later write would be.
+    pub late_answer: Mutex<Option<Value>>,
 }
 
 fn kind_of(path: &str) -> Option<(usize, &str, &str)> {
@@ -120,6 +122,7 @@ impl FakeFleet {
             fail_next: Mutex::default(),
             fail_lists: Mutex::default(),
             stale_list: Mutex::default(),
+            late_answer: Mutex::default(),
         })
     }
 
@@ -171,6 +174,9 @@ impl WriteBackend for FakeFleet {
                 change(&mut rows);
             }
             return Err(error);
+        }
+        if let Some(late) = self.late_answer.lock().unwrap().take() {
+            return Ok(late);
         }
         let (ix, key, key_name) = kind_of(&request.path).ok_or(WriteError::NotFound)?;
         let existing = rows[ix].iter().position(|row| row[key_name] == key);
@@ -780,4 +786,25 @@ async fn a_create_found_after_a_timeout_reaches_the_list_even_with_its_editor_cl
     let rows = cx.update(|cx| manage.read(cx).fleet().unwrap().rows(Kind::Subscription).to_vec());
     assert!(rows.iter().any(|row| row.key == "grok-heavy"));
     assert_eq!(backend.writes.lock().unwrap().len(), 1);
+}
+
+#[gpui_kit::test]
+async fn a_late_answer_never_undoes_a_newer_row(cx: &mut TestAppContext) {
+    let backend = FakeFleet::new(&["read", "write:fleet"]);
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    click(cx, handle, "fleet-tab-agent");
+    // An edit lands first: version 2, model changed.
+    let old = backend.rows.lock().unwrap()[2][0].clone();
+    click(cx, handle, "fleet-row-0");
+    set_input(cx, handle, &manage, "model", "claude-opus-5-6");
+    click(cx, handle, "fleet-save");
+    settle(cx, handle, &view).await;
+    click(cx, handle, "fleet-back");
+    // A toggle's answer arrives late, carrying the row as it was at version 1.
+    *backend.late_answer.lock().unwrap() = Some(old);
+    click(cx, handle, "fleet-toggle-0");
+    settle(cx, handle, &view).await;
+    let row = cx.update(|cx| manage.read(cx).fleet().unwrap().rows(Kind::Agent)[0].clone());
+    assert_eq!((row.version, row.value("model")), (2, "claude-opus-5-6"));
 }

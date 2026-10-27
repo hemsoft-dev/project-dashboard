@@ -662,11 +662,7 @@ impl Manage {
                 };
                 fleet.toggling.retain(|key| *key != row.key);
                 match result {
-                    Ok(saved) => {
-                        if let Some(row) = fleet.rows[2].iter_mut().find(|row| row.key == saved.key) {
-                            *row = saved;
-                        }
-                    }
+                    Ok(saved) => upsert(fleet, saved, cx),
                     Err(WriteError::StaleVersion) => {
                         fleet.message = Some((
                             format!("Agent {} changed elsewhere; reloaded it. Try again.", row.key),
@@ -1188,10 +1184,12 @@ fn merge(loaded: Vec<FleetRow>, current: &[FleetRow]) -> Vec<FleetRow> {
     rows
 }
 
-/// Puts a row pmd returned in its list, replacing the old one or adding a new one, and keeps the controls in step.
+/// Puts a row pmd returned in its list, replacing the old one or adding a new one, and keeps the controls in step. A
+/// row the list holds at a newer version stays: an answer that arrives late never undoes a later write.
 fn upsert(fleet: &mut FleetDialog, row: FleetRow, cx: &mut Context<Manage>) {
     let rows = &mut fleet.rows[slot(row.kind)];
     match rows.iter_mut().find(|known| known.key == row.key) {
+        Some(known) if known.version > row.version => {}
         Some(known) => *known = row,
         None => rows.push(row),
     }

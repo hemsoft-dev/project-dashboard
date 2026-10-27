@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, FixedOffset, Utc};
-use dashboard_core::activity::{ActivityKind, ago, last_activity, time_in};
+use dashboard_core::activity::{ActivityKind, age_words, ago, clock_time_in, last_activity, time_in};
 use dashboard_core::cache::StatusCache;
 use dashboard_core::fixtures::{self, ATTENTION, CLEAN, UNAVAILABLE};
 use dashboard_core::scheduler::Outcome;
@@ -230,4 +230,37 @@ fn loading_and_failed_cards_without_a_status_sort_last() {
     );
     assert_eq!(board.order(SortOrder::NewestFirst), [2, 0, 1]);
     assert_eq!(board.order(SortOrder::OldestFirst), [2, 0, 1]);
+}
+
+#[test]
+fn ages_read_in_one_or_two_units_never_seconds() {
+    let now = at("2026-10-27T22:00:00Z");
+    let before = |seconds: i64| age_words(now - chrono::Duration::seconds(seconds), now);
+    assert_eq!(before(0), "just now");
+    assert_eq!(before(59), "just now");
+    assert_eq!(before(-30), "just now");
+    assert_eq!(before(60), "1m ago");
+    assert_eq!(before(19 * 60 + 32), "19m ago");
+    assert_eq!(before(3_600), "1h ago");
+    assert_eq!(before(19_414), "5h 23m ago");
+    assert_eq!(before(86_400), "1d ago");
+    assert_eq!(before(3 * 86_400 + 4 * 3_600 + 59 * 60), "3d 4h ago");
+    assert_eq!(before(40 * 86_400), "40d ago");
+}
+
+#[test]
+fn clock_times_are_local_and_readable_without_utc() {
+    let eastern = FixedOffset::west_opt(4 * 3_600).unwrap();
+    let now = at("2026-10-27T22:20:00Z");
+    // Franz's Board stamp, 22:08:36Z, is 6:08 PM in New York.
+    assert_eq!(clock_time_in(at("2026-10-27T22:08:36Z"), now, &eastern), "Tue 6:08 PM");
+    assert_eq!(clock_time_in(at("2026-10-22T13:05:00Z"), now, &eastern), "Thu 9:05 AM");
+    assert_eq!(
+        clock_time_in(at("2026-10-20T13:05:00Z"), now, &eastern),
+        "Oct 20, 9:05 AM"
+    );
+    assert_eq!(
+        clock_time_in(at("2025-12-31T23:00:00Z"), now, &eastern),
+        "Dec 31 2025, 7:00 PM"
+    );
 }

@@ -1,7 +1,7 @@
 //! A repository's last activity: the most recently updated open or merged pull request, open issue or workflow run in
 //! its `gh x status --json` document. Only gh-x's own timestamps are read.
 
-use chrono::{DateTime, Local, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Local, TimeZone, Utc};
 
 use crate::status::StatusDocument;
 
@@ -95,6 +95,53 @@ pub fn last_activity(document: &StatusDocument) -> Option<Activity> {
             Some(newest) if newest.at >= item.at => Some(newest),
             _ => Some(item),
         })
+}
+
+/// "just now", "14m ago", "5h 23m ago", "3d 4h ago": one or two units, so a long age still reads at a glance. A time in
+/// the future (clock skew) reads "just now".
+pub fn age_words(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let secs = (now - at).num_seconds().max(0);
+    let (days, hours, minutes) = (secs / 86_400, secs % 86_400 / 3_600, secs % 3_600 / 60);
+    match (days, hours, minutes) {
+        _ if secs < 60 => "just now".to_owned(),
+        (0, 0, m) => format!("{m}m ago"),
+        (0, h, 0) => format!("{h}h ago"),
+        (0, h, m) => format!("{h}h {m}m ago"),
+        (d, 0, _) => format!("{d}d ago"),
+        (d, h, _) => format!("{d}d {h}h ago"),
+    }
+}
+
+/// `at` on `zone`'s clock, as a person reads it: "Tue 6:08 PM" within the last six days, "Oct 20, 6:08 PM" earlier in
+/// the year, "Oct 20 2025, 6:08 PM" before that.
+pub fn clock_time_in<Tz: TimeZone>(at: DateTime<Utc>, now: DateTime<Utc>, zone: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let local = at.with_timezone(zone);
+    let format = if now - at < chrono::Duration::days(6) {
+        "%a %-I:%M %p"
+    } else if local.year() == now.with_timezone(zone).year() {
+        "%b %-d, %-I:%M %p"
+    } else {
+        "%b %-d %Y, %-I:%M %p"
+    };
+    local.format(format).to_string()
+}
+
+/// [`clock_time_in`] on this computer's clock.
+pub fn clock_time(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    clock_time_in(at, now, &Local)
+}
+
+/// "Tue 6:08 PM (5h 23m ago)".
+pub fn moment(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    format!("{} ({})", clock_time(at, now), age_words(at, now))
+}
+
+/// An RFC 3339 time from pmd or gh-x, if it parses.
+pub fn parse_time(text: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(text).ok().map(|at| at.to_utc())
 }
 
 /// "just now", "14m ago", "3h ago", "2d ago". A time in the future (clock skew) reads "just now".

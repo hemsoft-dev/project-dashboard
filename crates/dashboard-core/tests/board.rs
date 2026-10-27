@@ -209,3 +209,48 @@ fn a_refresh_for_a_removed_card_does_not_land_on_its_replacement() {
         Overall::Clean
     );
 }
+
+#[test]
+fn hosted_signals_order_blocked_then_waiting_then_failing_checks() {
+    use dashboard_core::Signals;
+    let signals = |blocked, waiting_on_franz, failing: &[&str], board| Signals {
+        blocked,
+        waiting_on_franz,
+        failing: failing.iter().map(|text| text.to_string()).collect(),
+        board,
+    };
+    assert_eq!(signals(1, 2, &["PR #12"], true).overall(), Overall::Blocked);
+    assert_eq!(signals(0, 2, &["PR #12"], true).overall(), Overall::WaitingOnFranz);
+    assert_eq!(signals(0, 0, &["PR #12"], true).overall(), Overall::ChecksFailing);
+    assert_eq!(signals(0, 0, &["PR #12"], false).overall(), Overall::ChecksFailing);
+    assert_eq!(signals(0, 0, &[], false).overall(), Overall::Unavailable);
+    assert_eq!(signals(0, 0, &[], true).overall(), Overall::Clean);
+    assert_eq!(
+        signals(1, 2, &["PR #12", "CI on main"], false).describe(),
+        [
+            "Blocked: 1",
+            "Waiting on Franz: 2",
+            "Checks failing: PR #12, CI on main",
+            "Board unavailable"
+        ]
+    );
+}
+
+#[test]
+fn failing_checks_are_open_prs_that_fail_and_the_default_branchs_newest_failed_runs() {
+    let mut document = fixtures::document(ATTENTION);
+    // The attention fixture: PR #232's checks fail; its failed run is on a feature branch, so it doesn't count.
+    assert_eq!(document.failing_checks(), ["PR #232"]);
+    let mut failed = document.workflow_runs[0].clone();
+    failed.branch = "main".into();
+    failed.started_at = Some("2026-10-21T06:29:00Z".into());
+    let mut fixed = failed.clone();
+    fixed.status = "✓".into();
+    fixed.started_at = Some("2026-10-21T06:29:30Z".into());
+    document.workflow_runs.push(failed);
+    assert_eq!(document.failing_checks(), ["PR #232", "CI on main"]);
+    // A newer passing run of the same workflow on main clears it.
+    document.workflow_runs.push(fixed);
+    assert_eq!(document.failing_checks(), ["PR #232"]);
+    assert!(fixtures::document(CLEAN).failing_checks().is_empty());
+}

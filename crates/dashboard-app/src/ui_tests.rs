@@ -304,11 +304,11 @@ async fn an_unavailable_section_reads_unavailable_in_the_expanded_card_not_none(
     cx.run_until_parked();
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find("unavailable-Open pull requests").is_some());
+        assert!(window.try_find("unavailable-Open PRs").is_some());
         assert!(window.try_find("unavailable-Open issues").is_some());
         // The merged list and runs loaded (empty), so they don't claim to be unavailable.
         assert!(window.try_find("unavailable-Recently merged").is_none());
-        assert!(window.try_find("unavailable-Workflow runs").is_none());
+        assert!(window.try_find("unavailable-CI runs").is_none());
     })
     .unwrap();
 }
@@ -931,7 +931,7 @@ async fn at_the_minimum_width_every_row_can_scroll_its_refresh_button_into_view(
             );
         }
         // The state is named for screen readers, not only colored.
-        assert_eq!(window.find("state-3-Failed").label(), Some("State: Failed"));
+        assert_eq!(window.find("state-3-Failed").label(), Some("State: Refresh failed"));
     })
     .unwrap();
 }
@@ -2076,13 +2076,13 @@ async fn enrichment_errors_keep_six_prs_counts_diagnostics_and_clickable_rows(cx
         let document = fixtures::document(fixtures::ENRICHMENT_ERRORS);
         for (title, count, reason) in [
             (
-                "Open pull requests",
+                "Open PRs",
                 6,
                 "truncated supplemental connections for pull request(s) 32",
             ),
             ("Open issues", 2, "issue enrichment timed out"),
             ("Recently merged", 1, "merged pull request enrichment timed out"),
-            ("Workflow runs", 2, "workflow run enrichment timed out"),
+            ("CI runs", 2, "workflow run enrichment timed out"),
         ] {
             assert_eq!(
                 window.find(format!("heading-{title}")).label(),
@@ -2105,7 +2105,7 @@ async fn enrichment_errors_keep_six_prs_counts_diagnostics_and_clickable_rows(cx
         for run in &document.workflow_runs {
             assert!(window.try_find(format!("run-0-{}", run.id)).is_some());
         }
-        let note = window.find("unavailable-Open pull requests").bounds();
+        let note = window.find("unavailable-Open PRs").bounds();
         let row = window.find("pr-0-27").bounds();
         assert!(note.origin.y + note.size.height <= row.origin.y);
         window.click("pr-0-32", cx);
@@ -2154,10 +2154,7 @@ async fn unavailable_rows_survive_even_without_diagnostic_text(cx: &mut TestAppC
         for number in 27..=32 {
             assert!(window.try_find(format!("pr-0-{number}")).is_some());
         }
-        assert_eq!(
-            window.find("heading-Open pull requests").label(),
-            Some("Open pull requests (6)")
-        );
+        assert_eq!(window.find("heading-Open PRs").label(), Some("Open PRs (6)"));
     })
     .unwrap();
 }
@@ -2188,7 +2185,7 @@ impl StatusSource for ActivityLayoutSource {
 }
 
 #[gpui_kit::test]
-async fn hosted_status_renders_unavailable_health_and_board_identity_links(cx: &mut TestAppContext) {
+async fn hosted_details_put_blocked_and_waiting_first_then_open_work_in_plain_words(cx: &mut TestAppContext) {
     let checkout = PathBuf::from("/demo/codexbar");
     let (handle, view) = open_board(
         cx,
@@ -2199,16 +2196,56 @@ async fn hosted_status_renders_unavailable_health_and_board_identity_links(cx: &
     );
     cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
     settle(cx, handle, &view).await;
-    assert_eq!(overall(cx, &view), [Overall::Unavailable]);
+    assert_eq!(overall(cx, &view), [Overall::Blocked]);
     cx.update(|cx| view.update(cx, |view, cx| view.toggle_expanded(&checkout, cx)));
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
+        // Under the name: both ages in words, never seconds.
         assert_eq!(
-            window.find("health-Working tree").label(),
-            Some("Working tree: Unavailable: local health is not supplied by pmd")
+            window.find(("pmd-age", 0usize)).label(),
+            Some("checked 12m ago · changed 5h 23m ago")
         );
-        assert!(window.try_find(("pmd-freshness", 0usize)).is_some());
-        assert!(window.try_find(("pmd-board", 0usize)).is_some());
+        // Blocked at the top, then waiting on Franz, then open PRs and issues, then In progress. Ready items the
+        // lists already show (#231) aren't repeated; the one they don't (#31) is.
+        let headings = [
+            "Blocked (1)",
+            "Waiting on Franz (1)",
+            "Open PRs (2)",
+            "Open issues (2)",
+            "In progress (1)",
+            "Other work not started (1)",
+            "Recently merged (1)",
+            "CI runs (2)",
+        ];
+        let tops: Vec<_> = headings
+            .iter()
+            .map(|heading| {
+                let title = heading.rsplit_once(" (").unwrap().0;
+                let found = window.find(format!("heading-{title}"));
+                assert_eq!(found.label(), Some(*heading));
+                found.bounds().top()
+            })
+            .collect();
+        assert!(tops.is_sorted(), "{tops:?}");
+        assert!(window.try_find("heading-Ready").is_none());
+        // Where the data came from, last, in local time with no UTC timestamp; local health is one line.
+        let about = window.find(("pmd-freshness", 0usize));
+        let text = about.label().unwrap();
+        assert!(
+            text.starts_with("Status changed ") && text.contains("(5h 23m ago)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("pmd last checked ") && text.contains("Board as of "),
+            "{text}"
+        );
+        assert!(
+            !text.contains('Z') && !text.contains("UTC") && !text.contains("2026-"),
+            "{text}"
+        );
+        assert!(about.bounds().top() > *tops.last().unwrap());
+        assert!(window.try_find(("local-health", 0usize)).is_some());
+        assert!(window.try_find("health-Working tree").is_none());
         window.click("work-0-fixture-stable-id", cx);
     })
     .unwrap();
@@ -2216,6 +2253,52 @@ async fn hosted_status_renders_unavailable_health_and_board_identity_links(cx: &
         cx.opened_url(),
         Some("https://github.com/hemsoft-dev/codexbar/issues/31".into())
     );
+}
+
+#[gpui_kit::test]
+async fn hosted_dots_show_blocked_waiting_failing_checks_and_ok(cx: &mut TestAppContext) {
+    let checkouts: Vec<PathBuf> = ["codexbar", "hs-buddy", "summarist", "gh-x", "minibot"]
+        .iter()
+        .map(|name| PathBuf::from("/demo").join(name))
+        .collect();
+    let (handle, view) = open_board(
+        cx,
+        checkouts,
+        StatusCache::default(),
+        Arc::new(demo::HostedSource),
+        options(),
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    // Old but unchanged status (5h) doesn't grey a dot: only pmd's work items and checks color it.
+    assert_eq!(
+        overall(cx, &view),
+        [
+            Overall::Blocked,
+            Overall::WaitingOnFranz,
+            Overall::ChecksFailing,
+            Overall::Clean,
+            Overall::Unavailable
+        ]
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("state-0-Blocked").label(), Some("State: Blocked"));
+        assert_eq!(
+            window.find("state-1-WaitingOnFranz").label(),
+            Some("State: Waiting on Franz")
+        );
+        assert_eq!(
+            window.find("state-2-ChecksFailing").label(),
+            Some("State: Checks failing")
+        );
+        assert_eq!(window.find("state-3-Clean").label(), Some("State: OK"));
+        assert_eq!(
+            window.find("state-4-Unavailable").label(),
+            Some("State: Board unavailable")
+        );
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]
@@ -2251,7 +2334,7 @@ async fn cached_hosted_status_keeps_age_and_last_error_then_recovers(cx: &mut Te
     .unwrap();
     cx.update(|cx| view.update(cx, |view, cx| view.refresh_one(&checkout, cx)));
     settle(cx, handle, &view).await;
-    assert_eq!(overall(cx, &view), [Overall::Unavailable]);
+    assert_eq!(overall(cx, &view), [Overall::Blocked]);
     assert!(cx.update(|cx| view.read(cx).board().cards()[0].error.is_none()));
 }
 
@@ -2276,6 +2359,7 @@ fn pmd_response(path: &str, token: &str) -> pmd_http::Reply {
         "/v1/projects/gh-x/status" => format!(r#"{{"project":"gh-x","generatedAt":"{stamp}","lastError":null,"status":{}}}"#, fixtures::CLEAN),
         "/v1/board?project=gh-x" => r#"{"generatedAt":"STAMP","columns":[{"status":"ready","title":"Ready","items":[ITEM],"truncated":false},{"status":"in_progress","title":"In progress","items":[],"truncated":false},{"status":"waiting_on_franz","title":"Waiting on Franz","items":[],"truncated":false},{"status":"blocked","title":"Blocked","items":[],"truncated":false}]}"#.replace("STAMP",stamp).replace("ITEM",&item),
         "/v1/work?project=gh-x&limit=500" => format!(r#"{{"items":[{item}],"nextCursor":null}}"#),
+        "/healthz" => r#"{"sweepAgeSeconds":60,"webhookAgeSeconds":null,"githubLow":false}"#.to_owned(),
         _ => panic!("unexpected fixture path {path}"),
     };
     pmd_http::Reply { code: 200, body }

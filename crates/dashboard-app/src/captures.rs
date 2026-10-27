@@ -841,7 +841,19 @@ fn captures() {
     cx.run_until_parked();
     save(&mut cx, empty, &out, "empty-board");
 
-    // Hosted status, unavailable local health, truncated Board and complete work list.
+    // pmd rows: ages in words under each name, and dots for blocked, waiting on Franz, failing checks, OK, Board
+    // unavailable and a failed refresh.
+    let names = ["codexbar", "hs-buddy", "summarist", "gh-x", "minibot", "weather-cli"];
+    let (dots, dots_view) = open(
+        &mut cx,
+        names.iter().map(|name| PathBuf::from("/demo").join(name)).collect(),
+        520.,
+    );
+    fill(&mut cx, &dots_view, &demo::HostedSource);
+    save(&mut cx, dots, &out, "pmd-dots");
+
+    // Hosted details: Blocked and Waiting on Franz first, then open PRs and issues in plain words, In progress, and
+    // where the data came from, in local time.
     let (hosted, hosted_view) = open(&mut cx, vec![PathBuf::from("/demo/codexbar")], 980.);
     fill(&mut cx, &hosted_view, &demo::HostedSource);
     cx.update(|cx| hosted_view.update(cx, |view, cx| view.toggle_expanded(Path::new("/demo/codexbar"), cx)));

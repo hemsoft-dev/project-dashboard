@@ -61,8 +61,61 @@ pub enum Overall {
     Attention,
     /// The latest refresh failed.
     Failed,
-    /// Hosted data carries no overall/local-health verdict.
+    /// pmd's status loaded but its Board didn't, and nothing else is flagged: whether anything is blocked is unknown.
     Unavailable,
+    /// pmd has a work item marked blocked.
+    Blocked,
+    /// pmd has a work item waiting on Franz.
+    WaitingOnFranz,
+    /// An open PR's checks fail, or the default branch's newest run of a workflow failed.
+    ChecksFailing,
+}
+
+/// What a pmd-hosted project's state dot reflects. pmd supplies no overall verdict, so the dashboard reads the work
+/// items and checks it does supply, as they are.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Signals {
+    pub blocked: usize,
+    pub waiting_on_franz: usize,
+    /// "PR #12" or "CI on main", per [`StatusDocument::failing_checks`].
+    pub failing: Vec<String>,
+    /// Whether pmd's Board loaded; without it, blocked and waiting are unknown.
+    pub board: bool,
+}
+
+impl Signals {
+    /// The state these signals give, most urgent first: blocked, waiting on Franz, failing checks.
+    pub fn overall(&self) -> Overall {
+        if self.blocked > 0 {
+            Overall::Blocked
+        } else if self.waiting_on_franz > 0 {
+            Overall::WaitingOnFranz
+        } else if !self.failing.is_empty() {
+            Overall::ChecksFailing
+        } else if !self.board {
+            Overall::Unavailable
+        } else {
+            Overall::Clean
+        }
+    }
+
+    /// Every signal, for the dot's tooltip: "Blocked: 1 · Waiting on Franz: 2 · Checks failing: PR #12".
+    pub fn describe(&self) -> Vec<String> {
+        let mut parts = Vec::new();
+        if self.blocked > 0 {
+            parts.push(format!("Blocked: {}", self.blocked));
+        }
+        if self.waiting_on_franz > 0 {
+            parts.push(format!("Waiting on Franz: {}", self.waiting_on_franz));
+        }
+        if !self.failing.is_empty() {
+            parts.push(format!("Checks failing: {}", self.failing.join(", ")));
+        }
+        if !self.board {
+            parts.push("Board unavailable".to_owned());
+        }
+        parts
+    }
 }
 
 impl Card {
@@ -96,13 +149,27 @@ impl Card {
         self.document.as_ref().and_then(last_activity)
     }
 
+    /// What pmd's data flags for this project, or `None` without pmd data.
+    pub fn signals(&self) -> Option<Signals> {
+        let document = self.document.as_ref()?;
+        let hosted = document.hosted.as_ref()?;
+        Some(Signals {
+            blocked: hosted.items("blocked").len(),
+            waiting_on_franz: hosted.items("waiting_on_franz").len(),
+            failing: document.failing_checks(),
+            board: hosted.board.is_some(),
+        })
+    }
+
     pub fn overall(&self) -> Overall {
         if self.error.is_some() {
             return Overall::Failed;
         }
         match &self.document {
             None => Overall::Loading,
-            Some(document) if document.hosted.is_some() && document.verdict.is_none() => Overall::Unavailable,
+            Some(document) if document.hosted.is_some() && document.verdict.is_none() => {
+                self.signals().unwrap_or_default().overall()
+            }
             Some(document) if document.is_clean() => Overall::Clean,
             Some(_) => Overall::Attention,
         }

@@ -17,7 +17,12 @@ const TOTAL_TIMEOUT: Duration = Duration::from_secs(15);
 #[serde(rename_all = "camelCase")]
 pub struct Hosted {
     pub service_url: String,
+    /// When pmd last regenerated this status, which it does only when the repository changed.
     pub generated_at: String,
+    /// When pmd last confirmed it: its last successful sweep, or `generated_at` if that's later. `None` when pmd
+    /// hasn't swept since it started, or `/healthz` didn't answer; older caches don't have it either.
+    #[serde(default)]
+    pub checked_at: Option<String>,
     pub last_error: Option<LastError>,
     pub board: Option<WorkBoard>,
     pub work: Vec<WorkItem>,
@@ -50,6 +55,45 @@ pub struct WorkItem {
     pub title: String,
     pub url: String,
     pub status: String,
+}
+impl Hosted {
+    /// When pmd last regenerated this status: when the repository last changed.
+    pub fn changed(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        crate::activity::parse_time(&self.generated_at)
+    }
+
+    /// When pmd last confirmed this status, if known.
+    pub fn checked(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.checked_at.as_deref().and_then(crate::activity::parse_time)
+    }
+
+    /// The open work items with `status`, from the complete work list. If that is empty, the Board's column, which
+    /// may be truncated.
+    pub fn items(&self, status: &str) -> Vec<&WorkItem> {
+        if !self.work.is_empty() {
+            return self.work.iter().filter(|item| item.status == status).collect();
+        }
+        self.board
+            .iter()
+            .flat_map(|board| &board.columns)
+            .filter(|column| column.status == status)
+            .flat_map(|column| &column.items)
+            .collect()
+    }
+
+    /// The work item tracking issue or PR `number` (`kind` is `issue` or `pr`), if pmd has one open.
+    pub fn item_for(&self, kind: &str, number: u64) -> Option<&WorkItem> {
+        crate::work::STATUSES
+            .iter()
+            .flat_map(|status| self.items(status))
+            .find(|item| item.kind == kind && item.number == number)
+    }
+}
+/// The part of `/healthz` the dashboard reads: seconds since pmd's last successful sweep of every tracked repository.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Health {
+    sweep_age_seconds: Option<i64>,
 }
 #[derive(Deserialize)]
 pub(crate) struct Projects {
@@ -405,6 +449,7 @@ impl Pmd {
         }
         // Local fields from another machine are never meaningful for this checkout.
         doc.health = None;
+        let checked_at = checked_at(&api, &envelope.generated_at);
         let (board, work, work_error) = match api.work(&project.slug) {
             Ok((board, work)) => (Some(board), work, None),
             Err(error) => (None, Vec::new(), Some(error.to_string())),
@@ -412,6 +457,7 @@ impl Pmd {
         doc.hosted = Some(Hosted {
             service_url: self.url.clone(),
             generated_at: envelope.generated_at,
+            checked_at,
             last_error: envelope.last_error,
             board,
             work,
@@ -426,6 +472,14 @@ impl Pmd {
         }
         Ok(doc)
     }
+}
+/// When pmd last confirmed a status generated at `generated_at`: the later of its last successful sweep and the status
+/// itself. `None` if `/healthz` fails or pmd hasn't swept since it started; the status still loads.
+fn checked_at(api: &ReadApi, generated_at: &str) -> Option<String> {
+    let health: Health = api.get("healthz", &[]).ok()?;
+    let swept = chrono::Utc::now() - chrono::Duration::seconds(health.sweep_age_seconds.filter(|age| *age >= 0)?);
+    let generated = chrono::DateTime::parse_from_rfc3339(generated_at).ok()?.to_utc();
+    Some(swept.max(generated).to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
 }
 impl StatusSource for Pmd {
     fn fetch(&self, checkout: &Path, _: bool) -> Result<StatusDocument, FetchError> {

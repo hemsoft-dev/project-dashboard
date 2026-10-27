@@ -697,3 +697,29 @@ async fn a_save_that_lands_after_the_editor_or_dialog_closed_still_reaches_the_l
     assert_eq!(wrote.get(), 2, "the Board still reloads");
     assert_eq!(backend.writes.lock().unwrap().len(), 2);
 }
+
+#[gpui_kit::test]
+async fn a_status_change_under_a_status_filter_reloads_the_list(cx: &mut TestAppContext) {
+    let backend = FakeWork::new(&["read", "write:work"], sample_items());
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    click(cx, handle, "work-filter-status-blocked");
+    settle(cx, handle, &view).await;
+    assert_eq!(items(cx, &manage).len(), 1);
+    click(cx, handle, "work-row-0");
+    click(cx, handle, "work-status-ready");
+    click(cx, handle, "work-save");
+    settle(cx, handle, &view).await;
+    click(cx, handle, "work-back");
+    assert!(items(cx, &manage).is_empty(), "the item left the Blocked filter");
+    assert!(has(&last_query(&backend), "status", "blocked"));
+    // Without a status filter, a status change keeps the list as it is.
+    click(cx, handle, "work-filter-status-open");
+    settle(cx, handle, &view).await;
+    let lists = backend.lists.lock().unwrap().len();
+    click(cx, handle, "work-row-0");
+    click(cx, handle, "work-status-blocked");
+    click(cx, handle, "work-save");
+    settle(cx, handle, &view).await;
+    assert_eq!(backend.lists.lock().unwrap().len(), lists);
+}

@@ -431,6 +431,7 @@ impl Manage {
         let Some((id, work)) = self.open_work() else {
             return;
         };
+        let status_filter = work.filter.status.is_some();
         let Some(editor) = work.editor.as_mut() else {
             return;
         };
@@ -456,7 +457,9 @@ impl Manage {
         editor.sync_disabled(writable, cx);
         let key = editor.key;
         let path = editor.item.path();
-        let reorders = work::reorders(&body);
+        // A rank or priority change reorders the list; a status change under a status filter can take the row out
+        // of it. Either way the list reloads from its first page.
+        let reorders = work::reorders(&body) || (status_filter && body.get("status").is_some());
         let request = WriteRequest {
             method: Method::Patch,
             path: path.clone(),

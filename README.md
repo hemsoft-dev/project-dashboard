@@ -161,8 +161,9 @@ with the old Board generation timestamp and an error. Status refresh errors pres
 ### Manage menu and writes
 
 The title bar's **Manage** button opens a menu with **Projects…**, **Work items…**, **Fleet…** and **Write access…**.
-It works by keyboard: Tab to the button, then Enter, Space or Down opens the menu, Up and Down move between entries,
-Enter opens one, and Esc or Tab closes the menu. An entry that can't open yet stays in the menu, disabled, with the
+A left click anywhere on the button opens it, and a second click or a click outside closes it. It works by keyboard
+too: Alt+M opens the menu from anywhere, or Tab to the button and press Enter, Space or Down. Up and Down move between
+entries, Enter opens one, and Esc or Tab closes the menu. An entry that can't open yet stays in the menu, disabled, with the
 reason under it: the dialog isn't built yet (#34, #35, #36), writes are off, or the token lacks the scope it needs.
 
 Each entry opens one dialog at a time. Focus moves into it, Tab and Shift+Tab stay inside it, Enter runs its default

@@ -239,6 +239,143 @@ fn manage(cx: &mut HeadlessAppContext, out: &Path, suffix: &str) {
     }
 }
 
+/// The Work items dialog (#35): each state the issue names, and at 100% a frame sequence of a keyboard-only status
+/// change for the recording.
+fn work_items(cx: &mut HeadlessAppContext, out: &Path, suffix: &str) {
+    use crate::work_items_tests::{FakeWork, sample_items};
+    use dashboard_core::write::WriteError;
+    let name = |state: &str| format!("work-{state}{suffix}");
+    let open_dialog = |cx: &mut HeadlessAppContext, scopes: &[&str]| {
+        let backend = FakeWork::new(scopes, sample_items());
+        let (handle, view) = open_with(
+            cx,
+            demo::checkouts(),
+            1100.,
+            760.,
+            Options {
+                write: backend.clone(),
+                ..options()
+            },
+        );
+        fill(cx, &view, &demo::DemoSource);
+        let manage = cx.update(|cx| view.read(cx).manage().clone());
+        settle(cx);
+        cx.update_window(handle, |_, window, cx| {
+            manage.update(cx, |m, cx| {
+                m.open_menu(window, cx);
+                m.activate(
+                    crate::manage::Entry::Feature(dashboard_core::write::Feature::WorkItems),
+                    window,
+                    cx,
+                );
+            })
+        })
+        .unwrap();
+        settle(cx);
+        (handle, manage, backend)
+    };
+    let click = |cx: &mut HeadlessAppContext, handle: AnyWindowHandle, id: &str| {
+        let id = gpui_kit::SharedString::from(id.to_owned());
+        cx.update_window(handle, |_, window, cx| window.click(id, cx)).unwrap();
+        settle(cx);
+    };
+    let set = |cx: &mut HeadlessAppContext,
+               handle: AnyWindowHandle,
+               manage: &Entity<crate::manage::Manage>,
+               field: &str,
+               text: &str| {
+        let input = cx.update(|cx| manage.read(cx).input(field).unwrap());
+        let text = text.to_owned();
+        cx.update_window(handle, |_, window, cx| {
+            input.update(cx, |i, cx| i.set_value(text, window, cx))
+        })
+        .unwrap();
+        settle(cx);
+    };
+
+    let (handle, manage, backend) = open_dialog(cx, &["read", "write:work"]);
+    click(cx, handle, "work-filter-kind-issue");
+    save(cx, handle, out, &name("list-filtered"));
+    click(cx, handle, "work-filter-kind-all");
+    click(cx, handle, "work-row-0");
+    save(cx, handle, out, &name("editor-auto"));
+    click(cx, handle, "work-priority-inherit");
+    click(cx, handle, "work-back");
+    click(cx, handle, "work-row-3");
+    save(cx, handle, out, &name("editor-blocked"));
+    click(cx, handle, "work-priority-inherit");
+    save(cx, handle, out, &name("editor-inherit"));
+    set(
+        cx,
+        handle,
+        &manage,
+        "statusReason",
+        &"needs the code-signing certificate from the vendor; ".repeat(10),
+    );
+    set(cx, handle, &manage, "rank", "first");
+    key(cx, handle, &["ctrl-enter"]);
+    save(cx, handle, out, &name("validation-error"));
+    set(
+        cx,
+        handle,
+        &manage,
+        "statusReason",
+        "needs the signing certificate from the vendor",
+    );
+    set(cx, handle, &manage, "rank", "-3");
+    backend.fail_next(WriteError::StaleVersion, |items| {
+        items[3]["status"] = serde_json::json!("waiting_on_franz");
+        items[3]["statusReason"] = serde_json::json!("asked Franz for the certificate");
+        items[3]["version"] = serde_json::json!(8);
+    });
+    key(cx, handle, &["ctrl-enter"]);
+    save(cx, handle, out, &name("conflict"));
+    click(cx, handle, "conflict-discard");
+    click(cx, handle, "work-status-ready");
+    backend.fail_next(WriteError::ItemClosed, |items| {
+        items[3]["status"] = serde_json::json!("done");
+        items[3]["ghState"] = serde_json::json!("closed");
+        items[3]["version"] = serde_json::json!(9);
+    });
+    key(cx, handle, &["ctrl-enter"]);
+    save(cx, handle, out, &name("closed"));
+
+    let (read_only, _, _) = open_dialog(cx, &["read", "write:fleet"]);
+    save(cx, read_only, out, &name("read-only"));
+    key(cx, read_only, &["enter"]);
+    save(cx, read_only, out, &name("read-only-editor"));
+
+    // Frames for the recording, at 100% only: keyboard alone, from the list to a saved Blocked status.
+    if !suffix.is_empty() {
+        return;
+    }
+    let (keys, keys_manage, _) = open_dialog(cx, &["read", "write:work"]);
+    let mut frame = 0;
+    let mut shot = |cx: &mut HeadlessAppContext| {
+        frame += 1;
+        save(cx, keys, out, &format!("work-keys-{frame:02}"));
+    };
+    shot(cx);
+    for step in ["down", "down", "enter", "tab", "tab", "tab", "enter"] {
+        key(cx, keys, &[step]);
+        shot(cx);
+    }
+    let reason = cx.update(|cx| keys_manage.read(cx).input("statusReason").unwrap());
+    cx.update_window(keys, |_, window, cx| reason.update(cx, |i, cx| i.focus(window, cx)))
+        .unwrap();
+    for typed in ["waiting", " on", " the", " vendor"] {
+        cx.update_window(keys, |_, window, cx| window.input(typed, cx)).unwrap();
+        settle(cx);
+        shot(cx);
+    }
+    for step in ["ctrl-enter", "shift-tab", "shift-tab", "shift-tab"] {
+        key(cx, keys, &[step]);
+        shot(cx);
+    }
+    click(cx, keys, "work-back");
+    shot(cx);
+}
+
 #[test]
 #[ignore = "writes screenshots; run with CAPTURE_DIR set"]
 fn captures() {
@@ -268,6 +405,7 @@ fn captures() {
             crate::zoom::hide_toast(cx);
         });
         manage(&mut cx, &out, suffix);
+        work_items(&mut cx, &out, suffix);
     }
     cx.update(|cx| crate::zoom::set_level(1.0, cx));
 

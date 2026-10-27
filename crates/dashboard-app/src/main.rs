@@ -13,6 +13,8 @@ mod mark;
 mod theme;
 #[cfg(test)]
 mod ui_tests;
+#[cfg(test)]
+mod work_items_tests;
 mod zoom;
 
 use std::sync::Arc;

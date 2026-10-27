@@ -576,8 +576,9 @@ fn is_token(token: &str) -> bool {
 /// Stores `token` at `path` so only its owner can read it, replacing any older token in one step.
 ///
 /// The token goes into a new file beside `path` that is owner-only before any byte is written (mode 600 on Unix; on
-/// Windows a protected DACL that grants only the file's owner, with nothing inherited), and that file then replaces
-/// `path`. A rename keeps the new file's permissions, so the token is never readable by others, even briefly.
+/// Windows the file is created with a protected DACL that grants only its owner, with nothing inherited), and that file
+/// then replaces `path`. A rename keeps the new file's permissions, so the token is never readable by others, even
+/// briefly.
 pub fn store_token(path: &Path, token: &str) -> Result<(), WriteError> {
     let token = token.trim();
     if !is_token(token) {
@@ -625,9 +626,7 @@ fn owner_only_file(path: &Path) -> std::io::Result<std::fs::File> {
 
 #[cfg(windows)]
 fn owner_only_file(path: &Path) -> std::io::Result<std::fs::File> {
-    let file = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
-    windows_acl::restrict_to_owner(path)?;
-    Ok(file)
+    windows_acl::create_owner_only(path)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -651,17 +650,15 @@ mod windows_acl {
     //! the folder's inherited entries nor other users apply.
     use std::os::windows::ffi::OsStrExt as _;
     use std::path::Path;
-    use std::ptr::{null, null_mut};
+    use std::ptr::null_mut;
 
-    use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};
+    use windows_sys::Win32::Foundation::{ERROR_SUCCESS, GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree};
     use windows_sys::Win32::Security::Authorization::{
         ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-        GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT, SetNamedSecurityInfoW,
+        GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
     };
-    use windows_sys::Win32::Security::{
-        ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
-        PSECURITY_DESCRIPTOR,
-    };
+    use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+    use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL};
 
     pub const OWNER_ONLY: &str = "D:P(A;;FA;;;OW)";
 
@@ -669,7 +666,11 @@ mod windows_acl {
         text.encode_wide().chain(std::iter::once(0)).collect()
     }
 
-    pub fn restrict_to_owner(path: &Path) -> std::io::Result<()> {
+    /// Creates `path` (it must not exist) with the owner-only DACL attached from the start, opened for writing with no
+    /// sharing. Tightening a file's DACL after creating it would leave a window in which another process could open it
+    /// under the folder's inherited entries and keep that handle.
+    pub fn create_owner_only(path: &Path) -> std::io::Result<std::fs::File> {
+        use std::os::windows::io::FromRawHandle as _;
         let sddl = wide(OWNER_ONLY.as_ref());
         let path = wide(path.as_os_str());
         let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
@@ -685,30 +686,30 @@ mod windows_acl {
         if converted == 0 {
             return Err(std::io::Error::last_os_error());
         }
-        let mut present = 0;
-        let mut defaulted = 0;
-        let mut dacl: *mut ACL = null_mut();
-        // SAFETY: `descriptor` is valid until LocalFree; `dacl` points into it.
-        let status = unsafe {
-            if GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted) == 0 {
-                Err(std::io::Error::last_os_error())
-            } else {
-                Ok(SetNamedSecurityInfoW(
-                    path.as_ptr(),
-                    SE_FILE_OBJECT,
-                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                    null_mut(),
-                    null_mut(),
-                    dacl,
-                    null(),
-                ))
-            }
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor,
+            bInheritHandle: 0,
         };
-        // SAFETY: allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
+        // SAFETY: `path` is NUL-terminated and `attributes` points to a valid descriptor for the call's duration.
+        let handle = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                GENERIC_WRITE,
+                0,
+                &attributes,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL,
+                null_mut(),
+            )
+        };
+        let error = (handle == INVALID_HANDLE_VALUE).then(std::io::Error::last_os_error);
+        // SAFETY: allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW; CreateFileW copied what it needs.
         unsafe { LocalFree(descriptor as _) };
-        match status? {
-            ERROR_SUCCESS => Ok(()),
-            code => Err(std::io::Error::from_raw_os_error(code as i32)),
+        match error {
+            Some(error) => Err(error),
+            // SAFETY: a valid handle that nothing else owns; the File closes it.
+            None => Ok(unsafe { std::fs::File::from_raw_handle(handle as _) }),
         }
     }
 

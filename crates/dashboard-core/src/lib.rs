@@ -8,6 +8,7 @@ pub mod cache;
 pub mod columns;
 pub mod config;
 pub mod edit;
+pub mod fleet;
 pub mod pmd;
 pub mod priority;
 pub mod scheduler;

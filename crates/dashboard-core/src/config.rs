@@ -116,6 +116,30 @@ impl Config {
         toml::to_string_pretty(self).expect("a config always serializes")
     }
 
+    /// Adds `checkout` to `repositories` in `dir/config.toml`, keeping every other byte of the file, comments
+    /// included: the path goes into the existing array as text. The edited file must read back as the old config plus
+    /// that one path, or nothing is written. Returns `false` when the checkout is listed already.
+    pub fn add_repository(dir: &Path, checkout: &Path) -> Result<bool, ConfigError> {
+        let path = dir.join(FILE_NAME);
+        let text = std::fs::read_to_string(&path).map_err(|err| ConfigError::Read(path.clone(), err))?;
+        let config = Self::parse(&text, &path)?;
+        if config.repositories.iter().any(|known| known == checkout) {
+            return Ok(false);
+        }
+        let mut expected = config.clone();
+        expected.repositories.push(checkout.to_path_buf());
+        let edited = insert_repository(&text, &checkout.to_string_lossy())
+            .filter(|edited| Self::parse(edited, &path).is_ok_and(|parsed| parsed == expected))
+            .ok_or_else(|| {
+                ConfigError::Parse(
+                    path.clone(),
+                    "its repositories list couldn't be edited safely; add the folder to it by hand".to_owned(),
+                )
+            })?;
+        std::fs::write(&path, edited).map_err(|err| ConfigError::Write(path, err))?;
+        Ok(true)
+    }
+
     /// Loads `dir/config.toml`. On first run, when it doesn't exist, discovers the git checkouts one level under the
     /// root and writes them as the starting list.
     pub fn load_or_create(dir: &Path) -> Result<Self, ConfigError> {
@@ -256,4 +280,104 @@ impl ConfigFile {
             Err(err) => Err(ConfigError::Parse(path, err.to_string())),
         }
     }
+}
+
+/// `text` with `entry` added to its top-level `repositories` array, or a new `repositories` line at the top when there
+/// is none. Strings and comments inside the array are skipped while looking for its closing bracket. `None` when the
+/// array can't be found.
+fn insert_repository(text: &str, entry: &str) -> Option<String> {
+    let value = toml::Value::String(entry.to_owned()).to_string();
+    let mut offset = 0;
+    let mut start = None;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('[') && !trimmed.starts_with("[[") {
+            // A table: top-level keys end here.
+            break;
+        }
+        if let Some(rest) = trimmed.strip_prefix("repositories")
+            && let Some(rest) = rest.trim_start().strip_prefix('=')
+            && rest.trim_start().starts_with('[')
+        {
+            let bracket = line.len() - rest.trim_start().len();
+            start = Some(offset + bracket);
+            break;
+        }
+        offset += line.len();
+    }
+    let Some(open) = start else {
+        return Some(format!("repositories = [{value}]\n{text}"));
+    };
+    // Find the closing bracket, skipping strings and comments, and whether anything is listed.
+    let bytes = text.as_bytes();
+    let mut i = open + 1;
+    let mut last_value_end = None;
+    while i < bytes.len() {
+        match bytes[i] {
+            b']' => break,
+            b'#' => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            quote @ (b'"' | b'\'') => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote {
+                    if quote == b'"' && bytes[i] == b'\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                last_value_end = Some(i + 1);
+            }
+            b',' => last_value_end = None,
+            _ => {}
+        }
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return None;
+    }
+    let close = i;
+    let inner = &text[open + 1..close];
+    let multiline = inner.contains('\n');
+    // A new line in a multi-line list takes the indent of the list's last entry.
+    let indent = inner
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .map_or("  ", |line| &line[..line.len() - line.trim_start().len()]);
+    let mut edited = String::with_capacity(text.len() + value.len() + 8);
+    match last_value_end {
+        // The last entry has no trailing comma: add one right after it.
+        Some(end) => {
+            edited.push_str(&text[..end]);
+            edited.push(',');
+            if multiline {
+                edited.push_str(&text[end..close]);
+                let before = edited.trim_end_matches([' ', '\t']).len();
+                edited.truncate(before);
+                edited.push_str(&format!("{indent}{value},\n"));
+            } else {
+                edited.push_str(&format!(" {value}"));
+                edited.push_str(&text[end..close]);
+            }
+        }
+        None => {
+            edited.push_str(&text[..close]);
+            let empty = inner.trim().is_empty();
+            if multiline {
+                let before = edited.trim_end_matches([' ', '\t']).len();
+                edited.truncate(before);
+                edited.push_str(&format!("{indent}{value},\n"));
+            } else if empty {
+                edited.push_str(&value);
+            } else {
+                edited.push_str(&format!(" {value}"));
+            }
+        }
+    }
+    edited.push_str(&text[close..]);
+    Some(edited)
 }

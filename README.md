@@ -163,14 +163,35 @@ with the old Board generation timestamp and an error. Status refresh errors pres
 The title bar's **Manage** button opens a menu with **Projects…**, **Work items…**, **Fleet…** and **Write access…**.
 A left click anywhere on the button opens it, and a second click or a click outside closes it. It works by keyboard
 too: Alt+M opens the menu from anywhere, or Tab to the button and press Enter, Space or Down. Up and Down move between
-entries, Enter opens one, and Esc or Tab closes the menu. An entry that isn't built yet (#34) stays in the menu,
-disabled, with the reason under it. A built dialog always opens, since it reads with the read token; without write
-access it is read-only, and the line under its entry says why: writes are off, or the token lacks the scope it needs.
+entries, Enter opens one, and Esc or Tab closes the menu. Every dialog opens, since it reads with the read token;
+without write access it is read-only, and the line under its entry says why: writes are off, or the token lacks the
+scope it needs.
 
 Each entry opens one dialog at a time. Focus moves into it, Tab and Shift+Tab stay inside it, Enter runs its default
 action, and Esc or the close button closes it and returns focus to the Manage button. A dialog with unsaved edits
 asks before discarding them. The table behind a dialog ignores the mouse, and **F5** still refreshes it. After a
 write lands, the dashboard reloads pmd data at once.
+
+**Projects…** lists every pmd project, tracked or not, by priority (no tier last) then slug, with its repository,
+P0 to P5 or `—`, whether it is tracked, and whether a configured checkout matches it. A text filter searches slug,
+repository, goal and notes; **Show untracked** adds the untracked ones. Up and Down move through the list, and Enter or
+a click edits a project:
+
+- **Priority**: P0 to P5, or **No tier** (`null`). pmd's projects table is the source of truth for priority (Franz,
+  2026-10-26, option C of [project-manager#50](https://github.com/hemsoft-dev/project-manager/issues/50)): a save is
+  final, PORTFOLIO.md is regenerated from pmd, and there is nothing to reset. Picking a priority writes nothing until
+  **Save**. P5 is dormant and must be untracked.
+- **Goal** and **notes** (one line each, at most 1000 characters) and **requires**, the machine capabilities it needs.
+- **Untrack…** asks first, and says the project's data and work items are kept and it can be tracked again; **Track
+  again** reverses it. There is no delete.
+- **Link checkout**, for a project no configured checkout matches: type the checkout's folder, and the dashboard checks
+  that its origin is the project's `owner/name` with the same identity rules it reads status with, then adds it to
+  `repositories` in `config.toml`, keeping the file's comments. A mismatch shows the origin it found and writes nothing.
+
+**Add project** takes `owner/name`, a slug (empty uses the repository's name, lower case), priority, goal, notes and
+requires, and sends `PUT /v1/projects/{slug}` with `If-None-Match: *`; pmd's `unknown_repo` and `repo_not_installed`
+show on the repository, `already_exists` on the slug. Edits send the whole project with `If-Match`. After a save the
+table's Priority column follows without F5. Without `write:projects` the list opens read-only and says so.
 
 **Work items…** lists open work from `GET /v1/work`, 50 at a time with **Load more**. Filter by project slugs
 (separated by commas), status, kind and highest priority; each change reloads from the first page. Each row shows the
@@ -212,8 +233,7 @@ Writes use their own token, separate from the read token and off until you set i
 
 1. On mini, mint a token with `read` and the write scopes you want. No write scope implies `read`, and the dashboard
    needs `read` to show what the token allows and to re-read a row after a conflict:
-   `pmd token add project-dashboard@home --scopes read,write:work,write:fleet` (add `write:projects` for
-   **Projects…**).
+   `pmd token add project-dashboard@home --scopes read,write:work,write:fleet,write:projects`.
 2. Add `pmd_write_token_path = "pmd-write-token"` to `config.toml`. Relative paths resolve beside `config.toml`.
 3. Open **Manage › Write access…** and paste the token into the masked field. **Write access…** shows the token file,
    the token's name and scopes from `GET /v1/whoami`, and which dialogs those scopes allow: `write:work` for

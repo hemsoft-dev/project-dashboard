@@ -163,13 +163,31 @@ with the old Board generation timestamp and an error. Status refresh errors pres
 The title bar's **Manage** button opens a menu with **Projects…**, **Work items…**, **Fleet…** and **Write access…**.
 A left click anywhere on the button opens it, and a second click or a click outside closes it. It works by keyboard
 too: Alt+M opens the menu from anywhere, or Tab to the button and press Enter, Space or Down. Up and Down move between
-entries, Enter opens one, and Esc or Tab closes the menu. An entry that can't open yet stays in the menu, disabled, with the
-reason under it: the dialog isn't built yet (#34, #35, #36), writes are off, or the token lacks the scope it needs.
+entries, Enter opens one, and Esc or Tab closes the menu. An entry that isn't built yet (#34, #36) stays in the menu,
+disabled, with the reason under it. A built dialog always opens, since it reads with the read token; without write
+access it is read-only, and the line under its entry says why: writes are off, or the token lacks the scope it needs.
 
 Each entry opens one dialog at a time. Focus moves into it, Tab and Shift+Tab stay inside it, Enter runs its default
 action, and Esc or the close button closes it and returns focus to the Manage button. A dialog with unsaved edits
 asks before discarding them. The table behind a dialog ignores the mouse, and **F5** still refreshes it. After a
 write lands, the dashboard reloads pmd data at once.
+
+**Work items…** lists open work from `GET /v1/work`, 50 at a time with **Load more**. Filter by project slugs
+(separated by commas), status, kind and highest priority; each change reloads from the first page. Each row shows the
+project, number and title, kind, status and whether it is automatic or manual, the effective priority (`own` when the
+item overrides its project's) and rank. Up and Down move through the list, and Enter or a click opens the editor:
+
+- **Status**: Ready, In progress, Waiting on Franz, Blocked, or **Back to automatic** to hand it back to pmd's rules.
+- **Reason**: up to 500 characters, with a counter, shown on the Board. It is disabled for an automatic status. A new
+  status saved without a reason, or **Back to automatic**, clears the current reason, and the editor says so first.
+- **Priority**: P0 to P5, or **Inherit project priority**.
+- **Rank**: a whole number from -1000000000 to 1000000000; lower sorts first within a priority.
+
+**Save** or Ctrl+Enter sends `PATCH /v1/work/{id}` with only the changed fields and `If-Match`; Save is off until
+something changes. The row updates from pmd's answer, and a rank or priority change reloads the list from its first
+page, since pmd warns that paging in progress can skip or repeat an item. An item that closed on GitHub meanwhile
+(`409 item_closed`) is re-read and shown with nothing left to edit. **Back to list** asks before dropping unsaved
+edits. Without `write:work` the list and editor are read-only and say which scope is missing.
 
 Writes use their own token, separate from the read token and off until you set it up:
 

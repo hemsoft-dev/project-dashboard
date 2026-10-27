@@ -243,11 +243,11 @@ fn manage_menu_works_by_keyboard(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn unbuilt_and_tokenless_entries_are_disabled_with_a_reason_and_do_nothing(cx: &mut TestAppContext) {
+fn unbuilt_entries_are_disabled_with_a_reason_and_built_ones_say_they_are_read_only(cx: &mut TestAppContext) {
     let (handle, view) = open(cx, Arc::new(dashboard_core::write::Off), None);
     let manage = manage(cx, &view);
     click(cx, handle, "manage-button");
-    click(cx, handle, "manage-work-items");
+    click(cx, handle, "manage-projects");
     assert_eq!(
         cx.update(|cx| manage.read(cx).dialog()),
         None,
@@ -255,16 +255,24 @@ fn unbuilt_and_tokenless_entries_are_disabled_with_a_reason_and_do_nothing(cx: &
     );
     assert!(cx.update(|cx| manage.read(cx).is_menu_open()));
     // Enter on a disabled entry does nothing either.
-    press(cx, handle, "down");
     press(cx, handle, "enter");
     assert_eq!(cx.update(|cx| manage.read(cx).dialog()), None);
     let text = rendered_text(cx, handle);
     assert!(
-        text.contains("Not built yet (#35) · writes are off: set pmd_write_token_path"),
+        text.contains("Not built yet (#34) · writes are off: set pmd_write_token_path"),
         "{text}"
     );
-    assert!(text.contains("Not built yet (#34)"), "{text}");
     assert!(text.contains("Not built yet (#36)"), "{text}");
+    // Work items is built: it opens read-only, and the line under it says why.
+    assert!(
+        text.contains("Read-only: writes are off: set pmd_write_token_path"),
+        "{text}"
+    );
+    click(cx, handle, "manage-work-items");
+    assert_eq!(
+        cx.update(|cx| manage.read(cx).dialog()),
+        Some(Entry::Feature(Feature::WorkItems))
+    );
 }
 
 #[gpui_kit::test]
@@ -299,8 +307,9 @@ async fn write_access_shows_the_token_scopes_and_what_they_allow(cx: &mut TestAp
     settle(cx, handle, &view).await;
     frame(cx, handle);
     let text = rendered_text(cx, handle);
+    assert!(text.contains("Read-only: the token lacks write:work"), "{text}");
     assert!(
-        text.contains("Not built yet (#35) · the token lacks write:work"),
+        text.contains("Not built yet (#34) · the token lacks write:projects"),
         "{text}"
     );
     assert!(!text.contains("Not built yet (#36) ·"), "fleet is allowed: {text}");

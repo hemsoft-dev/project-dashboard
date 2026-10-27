@@ -94,30 +94,46 @@ pub enum Access {
     Failed(WriteError),
 }
 
-/// Whether a Manage entry can open, or the one-line reason it can't.
-pub fn entry_state(feature: Feature, built: bool, access: &Access) -> Result<(), String> {
-    let token = match access {
+/// Why the write token can't write for `feature` right now, in lower case, or `None` when it can.
+fn token_reason(feature: Feature, access: &Access) -> Option<String> {
+    match access {
         Access::Off => Some("writes are off: set pmd_write_token_path".to_owned()),
         Access::Unchecked | Access::Checking => Some("checking write access…".to_owned()),
         Access::Failed(WriteError::MissingToken) => Some("no write token yet: add one in Write access…".to_owned()),
         Access::Failed(_) => Some("write access unknown: see Write access…".to_owned()),
         Access::Known(whoami) if !whoami.allows(feature) => Some(format!("the token lacks {}", feature.scope())),
         Access::Known(_) => None,
-    };
-    let reasons: Vec<String> = (!built)
-        .then(|| format!("not built yet (#{})", feature.issue()))
-        .into_iter()
-        .chain(token)
-        .collect();
+    }
+}
+
+/// Sentence case for a line under a menu entry or at the top of a dialog.
+fn sentence(reasons: Vec<String>) -> Result<(), String> {
     if reasons.is_empty() {
         return Ok(());
     }
     let mut reason = reasons.join(" · ");
-    // Sentence case for the line under the entry.
     if let Some(first) = reason.get(..1) {
         reason = first.to_uppercase() + &reason[1..];
     }
     Err(reason)
+}
+
+/// Whether a Manage entry can open, or the one-line reason it can't. A built dialog always opens: it reads with the
+/// read token, and without write access it is read-only ([`write_state`] says why).
+pub fn entry_state(feature: Feature, built: bool, access: &Access) -> Result<(), String> {
+    if built {
+        return Ok(());
+    }
+    sentence(
+        std::iter::once(format!("not built yet (#{})", feature.issue()))
+            .chain(token_reason(feature, access))
+            .collect(),
+    )
+}
+
+/// Whether a dialog can write, or the one-line reason it is read-only, such as the scope the token lacks.
+pub fn write_state(feature: Feature, access: &Access) -> Result<(), String> {
+    sentence(token_reason(feature, access).into_iter().collect())
 }
 
 /// Whether a create already landed when its answer timed out.
@@ -137,8 +153,10 @@ pub enum CreateCheck {
 pub enum WriteError {
     /// `pmd_write_token_path` is unset.
     WritesOff,
-    /// The token file is missing, unreadable or not a token.
+    /// The write token file is missing, unreadable or not a token.
     MissingToken,
+    /// The read token file is missing, unreadable or not a token, so nothing can be read.
+    MissingReadToken,
     /// `400` with pmd's code (`bad_request`, `unknown_repo`, `unknown_machine`, …) and message.
     BadRequest {
         code: String,
@@ -218,6 +236,7 @@ impl std::fmt::Display for WriteError {
         match self {
             Self::WritesOff => f.write_str("Writes are off. Set pmd_write_token_path in config.toml."),
             Self::MissingToken => f.write_str("The pmd write token is missing, unreadable or invalid."),
+            Self::MissingReadToken => f.write_str("The pmd read token is missing, unreadable or invalid."),
             Self::BadRequest { message, .. } => f.write_str(message),
             Self::Unauthorized => f.write_str("pmd rejected the write token (HTTP 401)."),
             Self::InsufficientScope { message } => write!(f, "Not allowed: {message}."),
@@ -290,6 +309,14 @@ pub trait WriteBackend: Send + Sync {
     fn store_token(&self, token: &str) -> Result<(), WriteError>;
     /// Reads one row with the read token, as the conflict flow does after `409 stale_version`.
     fn read(&self, path: &str) -> Result<Value, WriteError>;
+    /// Reads a listing with the read token and a query, such as `v1/work` with filters and a cursor.
+    fn list(&self, path: &str, query: &[(String, String)]) -> Result<Value, WriteError> {
+        if query.is_empty() {
+            self.read(path)
+        } else {
+            Err(WriteError::Malformed)
+        }
+    }
     /// Sends one write with the write token. Never retried automatically.
     fn write(&self, request: &WriteRequest) -> Result<Value, WriteError>;
 }
@@ -341,7 +368,15 @@ impl PmdWriter {
         let write = load_token(path)?;
         // The read token is only needed for re-reads; a missing one just means it can't be scrubbed or used.
         let read = load_token(&self.read_token_path).ok();
-        Client::new(&self.url, write, read, self.timeout)
+        Client::new(&self.url, Some(write), read, self.timeout)
+    }
+
+    /// Reads need only the read token, so a dialog opens read-only when writes are off. A write token, when there is
+    /// one, is still scrubbed from anything pmd says.
+    fn reader(&self) -> Result<Client, WriteError> {
+        let read = load_token(&self.read_token_path).map_err(|_| WriteError::MissingReadToken)?;
+        let write = self.write_token_path.as_deref().and_then(|path| load_token(path).ok());
+        Client::new(&self.url, write, Some(read), self.timeout)
     }
 }
 
@@ -352,7 +387,7 @@ impl WriteBackend for PmdWriter {
 
     fn whoami(&self) -> Result<Whoami, WriteError> {
         let client = self.client()?;
-        let value = client.send(reqwest::Method::GET, "v1/whoami", None, None, Auth::Write)?;
+        let value = client.send(reqwest::Method::GET, "v1/whoami", &[], None, None, Auth::Write)?;
         serde_json::from_value(value).map_err(|_| WriteError::Malformed)
     }
 
@@ -362,7 +397,13 @@ impl WriteBackend for PmdWriter {
     }
 
     fn read(&self, path: &str) -> Result<Value, WriteError> {
-        self.client()?.send(reqwest::Method::GET, path, None, None, Auth::Read)
+        self.reader()?
+            .send(reqwest::Method::GET, path, &[], None, None, Auth::Read)
+    }
+
+    fn list(&self, path: &str, query: &[(String, String)]) -> Result<Value, WriteError> {
+        self.reader()?
+            .send(reqwest::Method::GET, path, query, None, None, Auth::Read)
     }
 
     fn write(&self, request: &WriteRequest) -> Result<Value, WriteError> {
@@ -374,6 +415,7 @@ impl WriteBackend for PmdWriter {
         let result = client.send(
             method,
             &request.path,
+            &[],
             Some(request.precondition),
             Some(&request.body),
             Auth::Write,
@@ -381,7 +423,7 @@ impl WriteBackend for PmdWriter {
         match result {
             // A create that timed out may still have landed: look before the dialog offers a retry.
             Err(WriteError::Timeout { .. }) if request.precondition == Precondition::IfNoneMatch => {
-                let create = match client.send(reqwest::Method::GET, &request.path, None, None, Auth::Read) {
+                let create = match client.send(reqwest::Method::GET, &request.path, &[], None, None, Auth::Read) {
                     Ok(_) => CreateCheck::Exists,
                     Err(WriteError::NotFound) => CreateCheck::Absent,
                     Err(_) => CreateCheck::Unknown,
@@ -399,16 +441,17 @@ enum Auth {
     Write,
 }
 
-/// One configured HTTP client with both tokens. Deliberately not `Debug`, so a token can't be printed by accident.
+/// One configured HTTP client with the tokens it has. Deliberately not `Debug`, so a token can't be printed by
+/// accident.
 struct Client {
     client: reqwest::blocking::Client,
     base: reqwest::Url,
-    write: String,
+    write: Option<String>,
     read: Option<String>,
 }
 
 impl Client {
-    fn new(url: &str, write: String, read: Option<String>, timeout: Duration) -> Result<Self, WriteError> {
+    fn new(url: &str, write: Option<String>, read: Option<String>, timeout: Duration) -> Result<Self, WriteError> {
         let base = reqwest::Url::parse(&format!("{}/", url.trim_end_matches('/'))).map_err(|_| WriteError::Network)?;
         if !matches!(base.scheme(), "http" | "https")
             || !base.username().is_empty()
@@ -435,9 +478,9 @@ impl Client {
 
     /// Replaces either token wherever pmd echoed it, and keeps a message to one bounded line.
     fn scrub(&self, text: &str) -> String {
-        let mut text = text.replace(&self.write, "[redacted]");
-        if let Some(read) = &self.read {
-            text = text.replace(read, "[redacted]");
+        let mut text = text.to_owned();
+        for token in [&self.write, &self.read].into_iter().flatten() {
+            text = text.replace(token.as_str(), "[redacted]");
         }
         let mut line: String = text
             .chars()
@@ -452,19 +495,24 @@ impl Client {
         &self,
         method: reqwest::Method,
         path: &str,
+        query: &[(String, String)],
         precondition: Option<Precondition>,
         body: Option<&Value>,
         auth: Auth,
     ) -> Result<Value, WriteError> {
         let token = match auth {
-            Auth::Write => &self.write,
+            Auth::Write => self.write.as_ref().ok_or(WriteError::MissingToken)?,
             Auth::Read => self.read.as_ref().ok_or(WriteError::MissingToken)?,
         };
-        // Paths come from the dialogs; one that escapes the API or carries a query is a bug, not a request.
+        // Paths come from the dialogs; one that escapes the API or carries its own query is a bug, not a request.
+        // A query goes in `query`, encoded here.
         if path.starts_with('/') || path.contains("..") || path.contains(['?', '#']) || !path.starts_with("v1/") {
             return Err(WriteError::Malformed);
         }
-        let url = self.base.join(path).map_err(|_| WriteError::Malformed)?;
+        let mut url = self.base.join(path).map_err(|_| WriteError::Malformed)?;
+        if !query.is_empty() {
+            url.query_pairs_mut().extend_pairs(query);
+        }
         let mut request = self.client.request(method, url).bearer_auth(token);
         match precondition {
             Some(Precondition::IfMatch(version)) => request = request.header("If-Match", version.to_string()),

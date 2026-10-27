@@ -27,10 +27,12 @@ Unknown priorities render as `—`; priority requests remain independent of stat
 
 Writes are allowed, through pmd's [write API](https://github.com/hemsoft-dev/project-manager#write-api) only (#33).
 The write client and the write token live in `dashboard-core/src/write.rs`; one row's edit and the shared
-"Changed elsewhere" flow in `edit.rs`; the Manage menu and the modal frame in `dashboard-app/src/manage.rs`. Writes
-use their own token from `pmd_write_token_path`, stored owner-only and never in `config.toml`, `ui-state.json`, the
-status cache, logs, errors, the UI or fixtures. Unset, writes are off. Every write carries `If-Match` or
-`If-None-Match` and is never retried automatically.
+"Changed elsewhere" flow in `edit.rs`; the Manage menu and the modal frame in `dashboard-app/src/manage.rs`, and each
+dialog in its own module beside it (`manage/work_items.rs`, with its data and patch in `dashboard-core/src/work.rs`).
+Writes use their own token from `pmd_write_token_path`, stored owner-only and never in `config.toml`,
+`ui-state.json`, the status cache, logs, errors, the UI or fixtures. Unset, writes are off. Every write carries
+`If-Match` or `If-None-Match` and is never retried automatically. A dialog reads with the read token, so without write
+access it opens read-only.
 
 ## Workspace
 

@@ -133,6 +133,11 @@ impl Form {
         &self.values
     }
 
+    /// The row as last read; `None` while creating.
+    pub fn base(&self) -> Option<&Row> {
+        self.base.as_ref()
+    }
+
     /// The row's version as last read; `None` while creating.
     pub fn version(&self) -> Option<u64> {
         self.base.as_ref().map(|row| row.version)
@@ -171,6 +176,11 @@ impl Form {
 
     pub fn field_error(&self, field: &str) -> Option<&str> {
         self.field_errors.get(field).map(String::as_str)
+    }
+
+    /// Drops a field's error, as when the field stops applying (a reason under an automatic status).
+    pub fn clear_error(&mut self, field: &str) {
+        self.field_errors.remove(field);
     }
 
     /// A problem the dialog found in a field before sending, such as text where a number goes.

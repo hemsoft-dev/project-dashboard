@@ -21,7 +21,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use dashboard_core::edit::{Form, Next, Row};
-use dashboard_core::write::{Access, Feature, Method, Whoami, WriteBackend, WriteError, WriteRequest, entry_state};
+use dashboard_core::write::{
+    Access, Feature, Method, Whoami, WriteBackend, WriteError, WriteRequest, entry_state, write_state,
+};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{
     ActiveTheme as _, FocusTrapElement as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex,
@@ -34,15 +36,34 @@ use gpui_kit::{
     rems,
 };
 
-actions!(manage, [OpenMenu, Close, NextEntry, Previous, Activate, DefaultAction]);
+pub mod work_items;
+
+use work_items::WorkItemsDialog;
+
+actions!(
+    manage,
+    [
+        OpenMenu,
+        Close,
+        NextEntry,
+        Previous,
+        Activate,
+        DefaultAction,
+        SaveItem,
+        WorkUp,
+        WorkDown,
+        OpenItem
+    ]
+);
 
 const BUTTON: &str = "ManageButton";
 const MENU: &str = "ManageMenu";
 const DIALOG: &str = "ManageDialog";
 const CONTROL: &str = "ManageControl";
+const WORK_LIST: &str = "ManageWorkList";
 
-/// The dialogs built so far. #34, #35 and #36 add theirs.
-const BUILT: &[Feature] = &[];
+/// The dialogs built so far. #34 and #36 add theirs.
+const BUILT: &[Feature] = &[Feature::WorkItems];
 
 /// The demo's sample row, at this API-shaped path.
 pub const SAMPLE_PATH: &str = "v1/sample/demo";
@@ -63,6 +84,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", Previous, Some(MENU)),
         KeyBinding::new("escape", Close, Some(DIALOG)),
         KeyBinding::new("enter", DefaultAction, Some(DIALOG)),
+        KeyBinding::new("ctrl-enter", SaveItem, Some(DIALOG)),
+        KeyBinding::new("up", WorkUp, Some(WORK_LIST)),
+        KeyBinding::new("down", WorkDown, Some(WORK_LIST)),
+        KeyBinding::new("enter", OpenItem, Some(WORK_LIST)),
         KeyBinding::new("enter", Activate, Some(CONTROL)),
         KeyBinding::new("space", Activate, Some(CONTROL)),
     ]);
@@ -112,6 +137,8 @@ struct Control {
 struct Confirm {
     keep: FocusHandle,
     discard: FocusHandle,
+    /// Discarding goes back to the Work items list instead of closing the dialog.
+    back: bool,
 }
 
 struct WriteAccessDialog {
@@ -133,6 +160,7 @@ struct SampleDialog {
 enum Content {
     WriteAccess(WriteAccessDialog),
     Sample(Box<SampleDialog>),
+    WorkItems(Box<WorkItemsDialog>),
 }
 
 struct Dialog {
@@ -205,7 +233,8 @@ impl Manage {
         self.config_path = config_path;
         self.generation += 1;
         self.access = initial_access(self.backend.as_ref());
-        if self.dialog.as_ref().is_some_and(|d| d.entry == Entry::WriteAccess) {
+        // Any open dialog depends on access: Write access shows it, and the others are read-only until it is known.
+        if self.dialog.as_ref().is_some_and(|dialog| dialog.entry != Entry::Sample) {
             self.check_access(cx);
         }
         cx.notify();
@@ -256,6 +285,7 @@ impl Manage {
                 .iter()
                 .find(|(name, _)| *name == field)
                 .map(|(_, input)| input.clone()),
+            Content::WorkItems(work) => work.input(field),
         }
     }
 
@@ -409,6 +439,7 @@ impl Manage {
                     discard_theirs: control(cx),
                 }))
             }
+            Entry::Feature(Feature::WorkItems) => Content::WorkItems(Box::new(self.new_work_items(id, window, cx))),
             Entry::Feature(_) => return,
         };
         let dialog = Dialog {
@@ -430,8 +461,14 @@ impl Manage {
                 let first = sample.inputs[0].1.clone();
                 first.update(cx, |input, cx| input.focus(window, cx));
             }
+            // The list, so Up, Down and Enter work at once.
+            Content::WorkItems(work) => work.focus_list(window, cx),
         }
+        let work = matches!(dialog.content, Content::WorkItems(_));
         self.dialog = Some(dialog);
+        if work {
+            self.load_work(id, true, cx);
+        }
         cx.notify();
     }
 
@@ -445,16 +482,40 @@ impl Manage {
             return;
         }
         if dialog.is_dirty(cx) {
-            let confirm = Confirm {
-                keep: cx.focus_handle().tab_stop(true),
-                discard: cx.focus_handle().tab_stop(true),
-            };
-            confirm.keep.focus(window, cx);
-            dialog.confirm = Some(confirm);
-            cx.notify();
+            self.ask_before_discarding(false, window, cx);
             return;
         }
         self.close_dialog(window, cx);
+    }
+
+    /// Shows "Discard unsaved changes?" in place of the footer. Discarding closes the dialog, or with `back` returns
+    /// to the Work items list.
+    fn ask_before_discarding(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dialog) = self.dialog.as_mut() else {
+            return;
+        };
+        let confirm = Confirm {
+            keep: cx.focus_handle().tab_stop(true),
+            discard: cx.focus_handle().tab_stop(true),
+            back,
+        };
+        confirm.keep.focus(window, cx);
+        dialog.confirm = Some(confirm);
+        cx.notify();
+    }
+
+    /// "Discard" on the unsaved-edit question.
+    fn discard_and_leave(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let back = self
+            .dialog
+            .as_mut()
+            .and_then(|dialog| dialog.confirm.take())
+            .is_some_and(|confirm| confirm.back);
+        if back {
+            self.leave_work_editor(window, cx);
+        } else {
+            self.close_dialog(window, cx);
+        }
     }
 
     pub fn keep_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -488,6 +549,17 @@ impl Manage {
                 self.reapply(window, cx)
             }
             Content::Sample(_) => self.save_sample(window, cx),
+            Content::WorkItems(_) => self.work_default_action(window, cx),
+        }
+    }
+
+    /// Ctrl+Enter in a dialog: saves the item being edited.
+    fn save_item(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dialog) = self.dialog.as_ref() else {
+            return;
+        };
+        if dialog.confirm.is_none() && matches!(dialog.content, Content::WorkItems(_)) {
+            self.save_work_item(window, cx);
         }
     }
 
@@ -774,6 +846,7 @@ impl Dialog {
         match &self.content {
             Content::WriteAccess(dialog) => !dialog.input.read(cx).value().trim().is_empty(),
             Content::Sample(sample) => sample.form.as_ref().is_some_and(Form::is_dirty),
+            Content::WorkItems(work) => work.is_dirty(),
         }
     }
 }
@@ -900,9 +973,17 @@ impl Manage {
         let mut items = Vec::new();
         for (entry, control) in &self.entries {
             let entry = *entry;
-            let state = self.enabled(entry);
+            // A built dialog opens without write access too, read-only; the line under it says why.
+            let state = self.enabled(entry).and_then(|()| match entry {
+                Entry::Feature(feature) => match write_state(feature, &self.access) {
+                    Err(reason) => Err(format!("Read-only: {}", lower_first(&reason))),
+                    Ok(()) => Ok(()),
+                },
+                _ => Ok(()),
+            });
+            let read_only = matches!(&state, Err(reason) if reason.starts_with("Read-only"));
             let focused = control.focus.is_focused(window);
-            let disabled = state.is_err();
+            let disabled = state.is_err() && !read_only;
             let label = entry.label();
             items.push(
                 v_flex()
@@ -1006,6 +1087,7 @@ impl Manage {
             body,
             message,
             footer,
+            wide,
         } = frame;
         let title = title.as_str();
         let theme = cx.theme().clone();
@@ -1051,7 +1133,7 @@ impl Manage {
                     false,
                     false,
                     false,
-                    |manage, window, cx| manage.close_dialog(window, cx),
+                    |manage, window, cx| manage.discard_and_leave(window, cx),
                     cx,
                 ))
                 .into_any_element(),
@@ -1088,7 +1170,7 @@ impl Manage {
                                     .key_context(DIALOG)
                                     .track_focus(&dialog.focus)
                                     .occlude()
-                                    .w(rems(32.))
+                                    .w(rems(if wide { 56. } else { 32. }))
                                     .max_w(window.viewport_size().width - px(32.))
                                     .max_h(max_height)
                                     .gap_3()
@@ -1104,6 +1186,9 @@ impl Manage {
                                     .on_action(cx.listener(|manage, _: &DefaultAction, window, cx| {
                                         manage.default_action(window, cx)
                                     }))
+                                    .on_action(
+                                        cx.listener(|manage, _: &SaveItem, window, cx| manage.save_item(window, cx)),
+                                    )
                                     .child(
                                         h_flex()
                                             .gap_2()
@@ -1196,6 +1281,7 @@ impl Manage {
                     body,
                     message: None,
                     footer: vec![cancel],
+                    wide: false,
                 },
                 window,
                 cx,
@@ -1288,6 +1374,7 @@ impl Manage {
                 body,
                 message,
                 footer: vec![cancel, save],
+                wide: false,
             },
             window,
             cx,
@@ -1321,6 +1408,7 @@ impl Manage {
                     body: div().text_sm().child(text).into_any_element(),
                     message: None,
                     footer: vec![cancel],
+                    wide: false,
                 },
                 window,
                 cx,
@@ -1407,6 +1495,7 @@ impl Manage {
                 body: body.into_any_element(),
                 message,
                 footer,
+                wide: false,
             },
             window,
             cx,
@@ -1421,6 +1510,8 @@ struct Frame {
     body: AnyElement,
     message: Option<(String, bool)>,
     footer: Vec<AnyElement>,
+    /// A wider panel, for a dialog with a list.
+    wide: bool,
 }
 
 /// The reusable "Changed elsewhere" panel: for each field that differs, the user's value next to the new one.
@@ -1485,6 +1576,14 @@ fn conflict_panel(conflict: &dashboard_core::edit::Conflict, labels: &[(&str, &s
         .into_any_element()
 }
 
+/// "The token lacks …" as "the token lacks …", to follow a colon.
+fn lower_first(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map_or_else(String::new, |first| first.to_lowercase().chain(chars).collect())
+}
+
 fn fact(id: &'static str, label: &str, value: String, cx: &App) -> AnyElement {
     let theme = cx.theme();
     h_flex()
@@ -1537,6 +1636,7 @@ impl Render for Manage {
             let element = match &dialog.content {
                 Content::WriteAccess(content) => self.render_write_access(&dialog, content, window, cx),
                 Content::Sample(sample) => self.render_sample(&dialog, sample, window, cx),
+                Content::WorkItems(work) => self.render_work_items(&dialog, work, window, cx),
             };
             self.dialog = Some(dialog);
             Some(element)

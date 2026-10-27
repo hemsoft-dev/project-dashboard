@@ -15,22 +15,29 @@ conventions follow [CodexBar](https://github.com/hemsoft-dev/codexbar); when in 
 Franz's explicit October 25, 2026 direction replaces local gh-x reads with the
 [project-manager read API](https://github.com/hemsoft-dev/project-manager#read-api).
 Production startup, automatic refresh and user refresh read hosted status, priorities and Board/work items from pmd.
-There is no gh-x subprocess adapter or fallback. Match projects by full GitHub `owner/name` from checkout origin,
-never by basename. Read origin configuration only for identity, never local git status.
+There is no gh-x subprocess adapter or fallback, for reads or writes. Match projects by full GitHub `owner/name` from
+checkout origin, never by basename. Read origin configuration only for identity, never local git status.
 
 Render API rows and verdicts as supplied. Pmd does not supply local branch, worktree, stash or working-tree health;
 show it as unavailable. Keep the last good API data on refresh failure, with its original age and the error.
-A user refresh reloads pmd's cache; the read API has no force-sync endpoint. Never log or commit the bearer token.
+A user refresh reloads pmd's cache; the read API has no force-sync endpoint. Never log or commit a bearer token.
 Unknown priorities render as `—`; priority requests remain independent of status workers.
+
+Writes are allowed, through pmd's [write API](https://github.com/hemsoft-dev/project-manager#write-api) only (#33).
+The write client and the write token live in `dashboard-core/src/write.rs`; one row's edit and the shared
+"Changed elsewhere" flow in `edit.rs`; the Manage menu and the modal frame in `dashboard-app/src/manage.rs`. Writes
+use their own token from `pmd_write_token_path`, stored owner-only and never in `config.toml`, `ui-state.json`, the
+status cache, logs, errors, the UI or fixtures. Unset, writes are off. Every write carries `If-Match` or
+`If-None-Match` and is never retried automatically.
 
 ## Workspace
 
 ```text
 crates/
   dashboard-core/   # Data model, no UI: the gh x status --json schema (status.rs), the config file (config.rs),
-                    # the status cache (cache.rs), the pmd adapter (pmd.rs), the source boundary (source.rs), the parallel refresh (scheduler.rs)
-                    # and the board (lib.rs). Fixtures: tests/fixtures/status-*.json.
-  dashboard-app/    # GPUI views and the `project-dashboard` binary. `--demo` shows the fixtures.
+                    # the status cache (cache.rs), the pmd adapter (pmd.rs), the source boundary (source.rs), the parallel refresh (scheduler.rs),
+                    # the write client and token (write.rs), one row's edit (edit.rs) and the board (lib.rs). Fixtures: tests/fixtures/status-*.json.
+  dashboard-app/    # GPUI views and the `project-dashboard` binary. `--demo` shows the fixtures. manage.rs: the Manage menu.
                     # src/mark.rs draws the icon; build.rs embeds it and the version block on Windows.
 scripts/Build-WindowsRelease.ps1   # Release build, executable checks and zip (.github/workflows/release.yml).
 ```
@@ -47,7 +54,7 @@ cargo run -p dashboard-app                                    # open the dashboa
 cargo fmt --all --check                                       # format
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked                               # unit tests and headless UI tests
-CAPTURE_DIR=$PWD/captures cargo test -p dashboard-app captures -- --ignored   # PNGs (Linux; absolute path)
+CAPTURE_DIR=$PWD/captures cargo test -p dashboard-app captures -- --ignored   # PNGs (Linux or macOS; absolute path)
 ```
 
 On Linux, building needs GPUI's headers:
@@ -61,8 +68,8 @@ Every change passes these before merge; CI runs them on `ubuntu-latest` and `win
 2. **Lint**: `cargo clippy --workspace --all-targets --locked -- -D warnings` clean.
 3. **Tests**: `cargo test --workspace --locked` all green.
 
-UI changes include screenshots in the pull request. Render them with the headless capture test on Linux, so no
-window opens on anyone's desktop.
+UI changes include screenshots in the pull request. Render them with the headless capture test on Linux or macOS, so
+no window opens on anyone's desktop.
 
 ## Tests
 

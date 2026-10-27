@@ -227,7 +227,8 @@ pub fn patch(form: &Form) -> Result<Option<Value>, Vec<FieldProblem>> {
     };
     let rank = form.value("rank").trim();
     let rank_value = match rank.parse::<i64>() {
-        Ok(number) if number.abs() <= MAX_RANK => Some(number),
+        // Compared as a range: `abs` of `i64::MIN` overflows.
+        Ok(number) if (-MAX_RANK..=MAX_RANK).contains(&number) => Some(number),
         _ => {
             problems.push((
                 "rank",

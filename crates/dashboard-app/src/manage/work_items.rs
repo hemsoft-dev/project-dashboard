@@ -66,6 +66,7 @@ pub struct WorkItemsDialog {
     generation: u64,
     selected: usize,
     load_more: Control,
+    retry: Control,
     editor: Option<Editor>,
     editors_opened: u64,
 }
@@ -223,6 +224,7 @@ impl Manage {
             generation: 0,
             selected: 0,
             load_more: control(cx),
+            retry: control(cx),
             editor: None,
             editors_opened: 0,
         };
@@ -243,6 +245,8 @@ impl Manage {
         };
         let cursor = if reset {
             work.generation += 1;
+            // The old listing's cursor means nothing for the new query.
+            work.next_cursor = None;
             None
         } else {
             match &work.next_cursor {
@@ -278,7 +282,14 @@ impl Manage {
                         }
                         work.next_cursor = page.next_cursor;
                     }
-                    Err(error) => work.load_error = Some(error.to_string()),
+                    Err(error) => {
+                        if cursor.is_none() {
+                            // The rows on screen belong to the old filters: drop them rather than mix listings.
+                            work.items.clear();
+                            work.selected = 0;
+                        }
+                        work.load_error = Some(error.to_string());
+                    }
                 }
                 cx.notify();
             });
@@ -385,7 +396,7 @@ impl Manage {
         self.leave_work_editor(window, cx);
     }
 
-    pub(super) fn leave_work_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn leave_work_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some((_, work)) = self.open_work() {
             work.editor = None;
             work.list.focus(window, cx);
@@ -404,6 +415,10 @@ impl Manage {
             return;
         }
         editor.form.set(field, value);
+        if field == "status" && value == AUTO {
+            // An automatic status sends no reason, so a problem with the reason no longer stops the save.
+            editor.form.clear_error("statusReason");
+        }
         editor.bug = None;
         editor.sync_disabled(writable, cx);
         cx.notify();
@@ -457,20 +472,26 @@ impl Manage {
                 .and_then(|value| WorkItem::from_json(&value));
             let next = this.update_in(cx, |manage, window, cx| {
                 let writable = manage.work_writable();
+                if let Ok(item) = &result {
+                    // pmd took the write: the Board hears of it and the list shows it, even when the editor or the
+                    // dialog closed while it was on its way.
+                    cx.emit(ManageEvent::Wrote);
+                    if let Some(work) = manage.work_of(id) {
+                        if let Some(row) = work.items.iter_mut().find(|row| row.id == item.id) {
+                            *row = item.clone();
+                        }
+                        if reorders {
+                            manage.load_work(id, true, cx);
+                        }
+                    }
+                }
                 let work = manage.work_of(id)?;
                 let editor = work.editor.as_mut().filter(|editor| editor.key == key)?;
                 let next = match result {
                     Ok(item) => {
                         editor.form.saved(item.row());
-                        editor.item = item.clone();
+                        editor.item = item;
                         editor.sync_inputs(window, cx);
-                        if let Some(row) = work.items.iter_mut().find(|row| row.id == item.id) {
-                            *row = item;
-                        }
-                        if reorders {
-                            manage.load_work(id, true, cx);
-                        }
-                        cx.emit(ManageEvent::Wrote);
                         None
                     }
                     Err(error) => {
@@ -825,6 +846,22 @@ impl Manage {
                 |manage, _, cx| {
                     if let Some((id, _)) = manage.open_work() {
                         manage.load_work(id, false, cx);
+                    }
+                },
+                cx,
+            ));
+        }
+        if work.load_error.is_some() && !work.loading {
+            footer.push(button(
+                "work-retry",
+                "Retry",
+                &work.retry.focus,
+                false,
+                false,
+                false,
+                |manage, _, cx| {
+                    if let Some((id, _)) = manage.open_work() {
+                        manage.load_work(id, true, cx);
                     }
                 },
                 cx,

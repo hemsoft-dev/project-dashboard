@@ -56,6 +56,8 @@ pub(crate) struct FakeWork {
     /// The next write fails with this, after an optional change to the items made "elsewhere".
     #[allow(clippy::type_complexity)]
     pub fail_next: Mutex<Option<(WriteError, Option<Box<dyn FnOnce(&mut Vec<Value>) + Send>>)>>,
+    /// Listings fail while this is set.
+    pub fail_lists: Mutex<Option<WriteError>>,
 }
 
 impl FakeWork {
@@ -66,6 +68,7 @@ impl FakeWork {
             lists: Mutex::default(),
             writes: Mutex::default(),
             fail_next: Mutex::default(),
+            fail_lists: Mutex::default(),
         })
     }
 
@@ -100,6 +103,9 @@ impl WriteBackend for FakeWork {
     fn list(&self, path: &str, query: &[(String, String)]) -> Result<Value, WriteError> {
         assert_eq!(path, "v1/work");
         self.lists.lock().unwrap().push(query.to_vec());
+        if let Some(error) = self.fail_lists.lock().unwrap().clone() {
+            return Err(error);
+        }
         let get = |key: &str| query.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
         let items = self.items.lock().unwrap();
         let matching: Vec<Value> = items
@@ -610,4 +616,84 @@ async fn unsaved_edits_ask_before_back_or_escape_discards_them(cx: &mut TestAppC
     assert!(exists(cx, handle, "work-list"));
     assert!(cx.update(|cx| manage.read(cx).dialog()).is_some());
     assert!(backend.writes.lock().unwrap().is_empty());
+}
+
+#[gpui_kit::test]
+async fn back_to_automatic_drops_a_reason_error_so_the_save_goes_through(cx: &mut TestAppContext) {
+    let backend = FakeWork::new(&["read", "write:work"], sample_items());
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    click(cx, handle, "work-row-3");
+    set_input(cx, handle, &manage, "statusReason", &"x".repeat(501));
+    press(cx, handle, "ctrl-enter");
+    assert!(exists(cx, handle, "field-statusReason-error"));
+    click(cx, handle, "work-status-auto");
+    assert!(!exists(cx, handle, "field-statusReason-error"));
+    press(cx, handle, "ctrl-enter");
+    settle(cx, handle, &view).await;
+    assert_eq!(backend.writes.lock().unwrap()[0].body, json!({"status": "auto"}));
+}
+
+#[gpui_kit::test]
+async fn a_failed_reload_drops_the_old_listing_and_retries_from_the_first_page(cx: &mut TestAppContext) {
+    let many = (0..62).map(|ix| work_item(ix, "gh-x", "issue", "An item")).collect();
+    let backend = FakeWork::new(&["read", "write:work"], many);
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    assert!(exists(cx, handle, "work-load-more"));
+    *backend.fail_lists.lock().unwrap() = Some(WriteError::Network);
+    click(cx, handle, "work-filter-kind-pr");
+    settle(cx, handle, &view).await;
+    assert!(items(cx, &manage).is_empty(), "no rows from the old filters");
+    assert!(!exists(cx, handle, "work-load-more"), "no cursor from the old listing");
+    assert_eq!(text_of(cx, handle, "dialog-message"), "pmd is unavailable.");
+    *backend.fail_lists.lock().unwrap() = None;
+    click(cx, handle, "work-retry");
+    settle(cx, handle, &view).await;
+    assert!(has(&last_query(&backend), "kind", "pr"));
+    assert!(!last_query(&backend).iter().any(|(k, _)| k == "cursor"));
+    assert!(!exists(cx, handle, "work-retry"));
+}
+
+#[gpui_kit::test]
+async fn a_save_that_lands_after_the_editor_or_dialog_closed_still_reaches_the_list_and_the_board(
+    cx: &mut TestAppContext,
+) {
+    let backend = FakeWork::new(&["read", "write:work"], sample_items());
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    let wrote = std::rc::Rc::new(std::cell::Cell::new(0));
+    let seen = wrote.clone();
+    cx.update(|cx| {
+        cx.subscribe(&manage, move |_, _: &crate::manage::ManageEvent, _| {
+            seen.set(seen.get() + 1)
+        })
+        .detach()
+    });
+    open_dialog(cx, handle, &view).await;
+    click(cx, handle, "work-row-0");
+    click(cx, handle, "work-status-blocked");
+    // Save, then leave the editor before pmd answers.
+    cx.update_window(handle, |_, window, cx| {
+        manage.update(cx, |m, cx| {
+            m.save_work_item(window, cx);
+            m.leave_work_editor(window, cx);
+        })
+    })
+    .unwrap();
+    settle(cx, handle, &view).await;
+    assert_eq!(wrote.get(), 1);
+    assert_eq!(items(cx, &manage)[0].status, "blocked", "the list shows pmd's answer");
+    // Save, then close the whole dialog before pmd answers.
+    click(cx, handle, "work-row-1");
+    click(cx, handle, "work-status-ready");
+    cx.update_window(handle, |_, window, cx| {
+        manage.update(cx, |m, cx| {
+            m.save_work_item(window, cx);
+            m.close_dialog(window, cx);
+        })
+    })
+    .unwrap();
+    settle(cx, handle, &view).await;
+    assert_eq!(wrote.get(), 2, "the Board still reloads");
+    assert_eq!(backend.writes.lock().unwrap().len(), 2);
 }

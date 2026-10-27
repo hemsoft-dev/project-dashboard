@@ -153,6 +153,12 @@ fn the_same_checks_as_pmd_stop_a_save_on_the_field() {
     edit.set("statusReason", "é".repeat(500));
     edit.set("rank", "twelve");
     assert_eq!(work::patch(&edit).unwrap_err()[0].0, "rank");
+    edit.set("rank", "-9223372036854775808");
+    assert_eq!(
+        work::patch(&edit).unwrap_err()[0].0,
+        "rank",
+        "i64::MIN is out of range, not a panic"
+    );
     edit.set("rank", "-1000000000");
     assert!(
         work::patch(&edit).is_ok(),

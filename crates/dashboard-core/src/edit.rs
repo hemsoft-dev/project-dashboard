@@ -178,6 +178,11 @@ impl Form {
         self.field_errors.get(field).map(String::as_str)
     }
 
+    /// Drops a field's error, as when the field stops applying (a reason under an automatic status).
+    pub fn clear_error(&mut self, field: &str) {
+        self.field_errors.remove(field);
+    }
+
     /// A problem the dialog found in a field before sending, such as text where a number goes.
     pub fn reject(&mut self, field: &str, reason: impl Into<String>) {
         self.field_errors.insert(field.to_owned(), reason.into());

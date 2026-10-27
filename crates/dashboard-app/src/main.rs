@@ -6,6 +6,8 @@ mod board_view;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod captures;
 mod demo;
+#[cfg(test)]
+mod fleet_tests;
 mod manage;
 #[cfg(test)]
 mod manage_tests;

@@ -734,7 +734,7 @@ impl Manage {
                 .child(filter_row("Up to", priority_chips, cx)),
         );
         if let Err(reason) = &writable {
-            body = body.child(read_only_note(reason, cx));
+            body = body.child(read_only_note("work-read-only", reason, cx));
         }
         let rows = work.items.iter().enumerate().map(|(ix, item)| {
             let selected = ix == work.selected;
@@ -961,7 +961,7 @@ impl Manage {
                 ),
         );
         if let Err(reason) = &writable {
-            body = body.child(read_only_note(reason, cx));
+            body = body.child(read_only_note("work-read-only", reason, cx));
         }
         if editor.closed {
             let text = "This item closed on GitHub. Its status is Done and comes from GitHub now, so there is nothing \
@@ -1025,6 +1025,7 @@ impl Manage {
             .collect::<Vec<_>>();
         body = body.child(field_row(
             "Status",
+            "status",
             h_flex().gap_1().flex_wrap().children(status_chips),
             form.field_error("status"),
             cx,
@@ -1071,7 +1072,13 @@ impl Manage {
                         .child(note),
                 )
             });
-        body = body.child(field_row("Reason", reason, form.field_error("statusReason"), cx));
+        body = body.child(field_row(
+            "Reason",
+            "statusReason",
+            reason,
+            form.field_error("statusReason"),
+            cx,
+        ));
         let priority_chips = PRIORITY_CHOICES
             .iter()
             .zip(&editor.priorities)
@@ -1097,6 +1104,7 @@ impl Manage {
             .collect::<Vec<_>>();
         body = body.child(field_row(
             "Priority",
+            "priority",
             h_flex().gap_1().flex_wrap().children(priority_chips),
             form.field_error("priority"),
             cx,
@@ -1117,7 +1125,7 @@ impl Manage {
                     .text_color(theme.muted_foreground)
                     .child("Lower sorts first within a priority."),
             );
-        body = body.child(field_row("Rank", rank, form.field_error("rank"), cx));
+        body = body.child(field_row("Rank", "rank", rank, form.field_error("rank"), cx));
         let back = button(
             "work-back",
             "Back to list",
@@ -1256,11 +1264,11 @@ fn row_label(item: &WorkItem) -> String {
     )
 }
 
-fn read_only_note(reason: &str, cx: &Context<Manage>) -> AnyElement {
+pub(super) fn read_only_note(id: &'static str, reason: &str, cx: &Context<Manage>) -> AnyElement {
     let theme = cx.theme();
     let text = format!("Read-only. {reason}.");
     h_flex()
-        .id("work-read-only")
+        .id(id)
         .test_support()
         .aria_label(text.clone())
         .gap_2()
@@ -1275,7 +1283,7 @@ fn read_only_note(reason: &str, cx: &Context<Manage>) -> AnyElement {
         .into_any_element()
 }
 
-fn filter_row(label: &str, chips: Vec<AnyElement>, cx: &Context<Manage>) -> AnyElement {
+pub(super) fn filter_row(label: &str, chips: Vec<AnyElement>, cx: &Context<Manage>) -> AnyElement {
     h_flex()
         .gap_2()
         .items_center()
@@ -1291,12 +1299,15 @@ fn filter_row(label: &str, chips: Vec<AnyElement>, cx: &Context<Manage>) -> AnyE
         .into_any_element()
 }
 
-fn field_row(label: &str, control: impl IntoElement, error: Option<&str>, cx: &Context<Manage>) -> AnyElement {
+/// A labelled control with its error under it, as `field-{field}-error`.
+pub(super) fn field_row(
+    label: &str,
+    field: &str,
+    control: impl IntoElement,
+    error: Option<&str>,
+    cx: &Context<Manage>,
+) -> AnyElement {
     let theme = cx.theme();
-    let field = LABELS
-        .iter()
-        .find(|(_, name)| *name == label)
-        .map_or(label, |(field, _)| field);
     h_flex()
         .gap_2()
         .items_start()
@@ -1332,7 +1343,7 @@ fn field_row(label: &str, control: impl IntoElement, error: Option<&str>, cx: &C
 }
 
 /// One choice in a group: a compact toggle that holds focus, with Enter or Space choosing it and a ring for focus.
-fn chip(
+pub(super) fn chip(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
     focus: &FocusHandle,

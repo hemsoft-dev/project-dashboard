@@ -378,6 +378,140 @@ fn work_items(cx: &mut HeadlessAppContext, out: &Path, suffix: &str) {
     shot(cx);
 }
 
+/// The Fleet dialog (#36): each state the issue names, and at 100% a frame sequence of a keyboard-only
+/// `maxSessions` change for the recording.
+fn fleet(cx: &mut HeadlessAppContext, out: &Path, suffix: &str) {
+    use crate::fleet_tests::FakeFleet;
+    use dashboard_core::write::WriteError;
+    let name = |state: &str| format!("fleet-{state}{suffix}");
+    let open_dialog = |cx: &mut HeadlessAppContext, scopes: &[&str]| {
+        let backend = FakeFleet::new(scopes);
+        let (handle, view) = open_with(
+            cx,
+            demo::checkouts(),
+            1100.,
+            760.,
+            Options {
+                write: backend.clone(),
+                ..options()
+            },
+        );
+        fill(cx, &view, &demo::DemoSource);
+        let manage = cx.update(|cx| view.read(cx).manage().clone());
+        settle(cx);
+        cx.update_window(handle, |_, window, cx| {
+            manage.update(cx, |m, cx| {
+                m.open_menu(window, cx);
+                m.activate(
+                    crate::manage::Entry::Feature(dashboard_core::write::Feature::Fleet),
+                    window,
+                    cx,
+                );
+            })
+        })
+        .unwrap();
+        settle(cx);
+        (handle, manage, backend)
+    };
+    let click = |cx: &mut HeadlessAppContext, handle: AnyWindowHandle, id: &str| {
+        let id = gpui_kit::SharedString::from(id.to_owned());
+        cx.update_window(handle, |_, window, cx| window.click(id, cx)).unwrap();
+        settle(cx);
+    };
+    let set = |cx: &mut HeadlessAppContext,
+               handle: AnyWindowHandle,
+               manage: &Entity<crate::manage::Manage>,
+               field: &str,
+               text: &str| {
+        let input = cx.update(|cx| manage.read(cx).input(field).unwrap());
+        let text = text.to_owned();
+        cx.update_window(handle, |_, window, cx| {
+            input.update(cx, |i, cx| i.set_value(text, window, cx))
+        })
+        .unwrap();
+        settle(cx);
+    };
+
+    let (handle, manage, backend) = open_dialog(cx, &["read", "write:fleet"]);
+    save(cx, handle, out, &name("machines"));
+    click(cx, handle, "fleet-row-3");
+    save(cx, handle, out, &name("config-note"));
+    set(cx, handle, &manage, "maxSessions", "2");
+    save(cx, handle, out, &name("max-sessions-edit"));
+    backend.fail_next(WriteError::StaleVersion, |rows| {
+        rows[0][3]["maxSessions"] = serde_json::json!(4);
+        rows[0][3]["source"] = serde_json::json!("api");
+        rows[0][3]["version"] = serde_json::json!(6);
+    });
+    key(cx, handle, &["ctrl-enter"]);
+    save(cx, handle, out, &name("conflict"));
+    click(cx, handle, "conflict-discard");
+    click(cx, handle, "fleet-back");
+    click(cx, handle, "fleet-tab-subscription");
+    save(cx, handle, out, &name("subscriptions"));
+    click(cx, handle, "fleet-tab-agent");
+    click(cx, handle, "fleet-toggle-3");
+    save(cx, handle, out, &name("agents-toggle"));
+    click(cx, handle, "fleet-add");
+    click(cx, handle, "fleet-machine-laptop");
+    set(cx, handle, &manage, "provider", "claude");
+    set(cx, handle, &manage, "alias", "sonnet-5.5");
+    set(cx, handle, &manage, "model", "claude-sonnet-5-5");
+    click(cx, handle, "fleet-subscription-claude-max");
+    click(cx, handle, "fleet-suggest-roles-review");
+    backend.fail_next(
+        WriteError::BadRequest {
+            code: "unknown_subscription".into(),
+            message: "agent \"laptop/claude/sonnet-5.5\" uses subscription \"claude-max\", which pmd does not have"
+                .into(),
+        },
+        |_| {},
+    );
+    key(cx, handle, &["ctrl-enter"]);
+    save(cx, handle, out, &name("add-agent-error"));
+
+    let (read_only, _, _) = open_dialog(cx, &["read", "write:work"]);
+    click(cx, read_only, "fleet-tab-agent");
+    save(cx, read_only, out, &name("read-only"));
+
+    // Frames for the recording, at 100% only: keyboard alone, from the tab strip to a saved maxSessions.
+    if !suffix.is_empty() {
+        return;
+    }
+    let (keys, _, _) = open_dialog(cx, &["read", "write:fleet"]);
+    let mut frame = 0;
+    let mut shot = |cx: &mut HeadlessAppContext| {
+        frame += 1;
+        save(cx, keys, out, &format!("fleet-keys-{frame:02}"));
+    };
+    shot(cx);
+    // Tab to the list, Down to mini, Enter to edit it, Tab to Max sessions, then type 2 over the 3.
+    for step in ["tab", "down", "down", "down", "enter", "tab"] {
+        key(cx, keys, &[step]);
+        shot(cx);
+    }
+    for step in ["end", "backspace"] {
+        key(cx, keys, &[step]);
+    }
+    cx.update_window(keys, |_, window, cx| window.input("2", cx)).unwrap();
+    settle(cx);
+    shot(cx);
+    key(cx, keys, &["ctrl-enter"]);
+    shot(cx);
+    for _ in 0..12 {
+        key(cx, keys, &["tab"]);
+        let back = cx
+            .update_window(keys, |_, window, _| window.find("fleet-back").focused() == Some(true))
+            .unwrap();
+        if back {
+            break;
+        }
+    }
+    shot(cx);
+    key(cx, keys, &["enter"]);
+    shot(cx);
+}
+
 #[test]
 #[ignore = "writes screenshots; run with CAPTURE_DIR set"]
 fn captures() {
@@ -408,6 +542,7 @@ fn captures() {
         });
         manage(&mut cx, &out, suffix);
         work_items(&mut cx, &out, suffix);
+        fleet(&mut cx, &out, suffix);
     }
     cx.update(|cx| crate::zoom::set_level(1.0, cx));
 

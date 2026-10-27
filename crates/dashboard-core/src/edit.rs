@@ -231,6 +231,12 @@ impl Form {
         Next::Show
     }
 
+    /// The save failed with an error the dialog knows belongs to `field`, such as `409 already_exists` on a name.
+    pub fn failed_on(&mut self, field: &str, error: &WriteError) {
+        self.saving = false;
+        self.field_errors.insert(field.to_owned(), error.to_string());
+    }
+
     /// The re-read after `409 stale_version` landed: show the user's values next to the new ones.
     pub fn conflict(&mut self, theirs: Row) {
         self.saving = false;

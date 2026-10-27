@@ -307,10 +307,14 @@ fn every_pmd_answer_to_a_fleet_put_lands_where_the_dialog_shows_it() {
             .writer(&stub)
             .write(&put(Kind::Agent, &key, precondition, body))
             .unwrap_err();
-        let next = edit.failed(&error);
-        if let Some(extra) = fleet::error_field(Kind::Agent, &error) {
-            edit.reject(extra, error.to_string());
-        }
+        let next = match fleet::error_field(Kind::Agent, &error) {
+            Some(field) => {
+                edit.failed_on(field, &error);
+                assert_eq!(edit.message(), None, "on the field only, not twice");
+                Next::Show
+            }
+            None => edit.failed(&error),
+        };
         assert_eq!(next, expected, "{error:?}");
         match field {
             Some(field) => assert!(edit.field_error(field).is_some(), "{error:?} on {field}"),

@@ -11,8 +11,8 @@
 //! the dialog sits inside the dashboard's element tree, so the refresh action bubbles up to it as before.
 //!
 //! The dialogs' logic that needs no window lives in `dashboard_core::edit` (one row's edit, its errors and the
-//! "Changed elsewhere" flow) and `dashboard_core::write` (the write token and client). Projects, Work items and Fleet
-//! (#34, #35, #36) add their content to this frame; until then their entries say they aren't built yet. With
+//! "Changed elsewhere" flow) and `dashboard_core::write` (the write token and client). Work items (#35, `work_items`)
+//! and Fleet (#36, `fleet`) fill this frame; Projects (#34) says it isn't built yet. With
 //! `--demo`, a **Sample dialog** entry shows the frame with a fake row, validation and a conflict.
 
 use std::cell::Cell;
@@ -36,8 +36,10 @@ use gpui_kit::{
     rems,
 };
 
+pub mod fleet;
 pub mod work_items;
 
+use fleet::FleetDialog;
 use work_items::WorkItemsDialog;
 
 actions!(
@@ -52,7 +54,9 @@ actions!(
         SaveItem,
         WorkUp,
         WorkDown,
-        OpenItem
+        OpenItem,
+        FleetPreviousTab,
+        FleetNextTab
     ]
 );
 
@@ -61,9 +65,10 @@ const MENU: &str = "ManageMenu";
 const DIALOG: &str = "ManageDialog";
 const CONTROL: &str = "ManageControl";
 const WORK_LIST: &str = "ManageWorkList";
+const FLEET_TABS: &str = "ManageFleetTabs";
 
-/// The dialogs built so far. #34 and #36 add theirs.
-const BUILT: &[Feature] = &[Feature::WorkItems];
+/// The dialogs built so far. #34 adds Projects.
+const BUILT: &[Feature] = &[Feature::WorkItems, Feature::Fleet];
 
 /// The demo's sample row, at this API-shaped path.
 pub const SAMPLE_PATH: &str = "v1/sample/demo";
@@ -88,6 +93,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", WorkUp, Some(WORK_LIST)),
         KeyBinding::new("down", WorkDown, Some(WORK_LIST)),
         KeyBinding::new("enter", OpenItem, Some(WORK_LIST)),
+        KeyBinding::new("left", FleetPreviousTab, Some(FLEET_TABS)),
+        KeyBinding::new("right", FleetNextTab, Some(FLEET_TABS)),
         KeyBinding::new("enter", Activate, Some(CONTROL)),
         KeyBinding::new("space", Activate, Some(CONTROL)),
     ]);
@@ -161,6 +168,7 @@ enum Content {
     WriteAccess(WriteAccessDialog),
     Sample(Box<SampleDialog>),
     WorkItems(Box<WorkItemsDialog>),
+    Fleet(Box<FleetDialog>),
 }
 
 struct Dialog {
@@ -286,6 +294,7 @@ impl Manage {
                 .find(|(name, _)| *name == field)
                 .map(|(_, input)| input.clone()),
             Content::WorkItems(work) => work.input(field),
+            Content::Fleet(fleet) => fleet.input(field),
         }
     }
 
@@ -440,6 +449,7 @@ impl Manage {
                 }))
             }
             Entry::Feature(Feature::WorkItems) => Content::WorkItems(Box::new(self.new_work_items(id, window, cx))),
+            Entry::Feature(Feature::Fleet) => Content::Fleet(Box::new(self.new_fleet(cx))),
             Entry::Feature(_) => return,
         };
         let dialog = Dialog {
@@ -463,11 +473,17 @@ impl Manage {
             }
             // The list, so Up, Down and Enter work at once.
             Content::WorkItems(work) => work.focus_list(window, cx),
+            // The tab strip, so Left and Right switch tabs at once.
+            Content::Fleet(fleet) => fleet.focus_tabs(window, cx),
         }
         let work = matches!(dialog.content, Content::WorkItems(_));
+        let fleet = matches!(dialog.content, Content::Fleet(_));
         self.dialog = Some(dialog);
         if work {
             self.load_work(id, true, cx);
+        }
+        if fleet {
+            self.load_fleet(id, &dashboard_core::fleet::Kind::ALL, cx);
         }
         cx.notify();
     }
@@ -511,7 +527,13 @@ impl Manage {
             .as_mut()
             .and_then(|dialog| dialog.confirm.take())
             .is_some_and(|confirm| confirm.back);
-        if back {
+        let fleet = self
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| matches!(dialog.content, Content::Fleet(_)));
+        if back && fleet {
+            self.leave_fleet_editor(window, cx);
+        } else if back {
             self.leave_work_editor(window, cx);
         } else {
             self.close_dialog(window, cx);
@@ -550,6 +572,7 @@ impl Manage {
             }
             Content::Sample(_) => self.save_sample(window, cx),
             Content::WorkItems(_) => self.work_default_action(window, cx),
+            Content::Fleet(_) => self.fleet_default_action(window, cx),
         }
     }
 
@@ -558,8 +581,13 @@ impl Manage {
         let Some(dialog) = self.dialog.as_ref() else {
             return;
         };
-        if dialog.confirm.is_none() && matches!(dialog.content, Content::WorkItems(_)) {
-            self.save_work_item(window, cx);
+        if dialog.confirm.is_some() {
+            return;
+        }
+        match dialog.content {
+            Content::WorkItems(_) => self.save_work_item(window, cx),
+            Content::Fleet(_) => self.save_fleet_row(window, cx),
+            _ => {}
         }
     }
 
@@ -847,6 +875,7 @@ impl Dialog {
             Content::WriteAccess(dialog) => !dialog.input.read(cx).value().trim().is_empty(),
             Content::Sample(sample) => sample.form.as_ref().is_some_and(Form::is_dirty),
             Content::WorkItems(work) => work.is_dirty(),
+            Content::Fleet(fleet) => fleet.is_dirty(),
         }
     }
 }
@@ -1637,6 +1666,7 @@ impl Render for Manage {
                 Content::WriteAccess(content) => self.render_write_access(&dialog, content, window, cx),
                 Content::Sample(sample) => self.render_sample(&dialog, sample, window, cx),
                 Content::WorkItems(work) => self.render_work_items(&dialog, work, window, cx),
+                Content::Fleet(fleet) => self.render_fleet(&dialog, fleet, window, cx),
             };
             self.dialog = Some(dialog);
             Some(element)

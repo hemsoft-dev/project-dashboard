@@ -184,7 +184,7 @@ impl BoardView {
             config_file,
             options,
             expanded: HashSet::new(),
-            sort: SortOrder::default(),
+            sort: SortOrder::NewestFirst,
             columns,
             resizing: None,
             repository_laid_out: Rc::new(Cell::new(None)),

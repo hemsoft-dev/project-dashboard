@@ -491,7 +491,16 @@ async fn the_table_has_one_row_per_repository_with_counts_update_time_and_last_a
 #[gpui_kit::test]
 async fn rows_expand_and_collapse_and_several_stay_open_across_refreshes(cx: &mut TestAppContext) {
     let (handle, view) = twelve(cx).await;
+    // Keep both target rows in view when codexbar expands; activity order puts the failed row last.
+    cx.update(|cx| {
+        view.update(cx, |view, cx| {
+            view.cycle_sort(cx);
+            view.cycle_sort(cx);
+        })
+    });
+    cx.run_until_parked();
     cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
         window.click(("row", 1usize), cx);
         window.click(("expand", 3usize), cx);
     })
@@ -532,6 +541,95 @@ async fn rows_expand_and_collapse_and_several_stay_open_across_refreshes(cx: &mu
 }
 
 #[gpui_kit::test]
+async fn startup_sorts_cached_and_fresh_activity_newest_first(cx: &mut TestAppContext) {
+    let checkouts = demo::checkouts().into_iter().take(5).collect::<Vec<_>>();
+    let mut cache = StatusCache::default();
+    // Equal activity times retain config order; unknown times follow every known time.
+    cache.insert(checkouts[0].clone(), fixtures::document(ATTENTION));
+    cache.insert(checkouts[1].clone(), fixtures::document(ATTENTION));
+    cache.insert(checkouts[4].clone(), fixtures::document(CLEAN));
+    let (handle, view) = open_board(cx, checkouts.clone(), cache, Arc::new(demo::DemoSource), options());
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::NewestFirst);
+    let assert_order = |cx: &mut TestAppContext, indices: &[usize]| {
+        let expected = indices.iter().map(|&ix| checkouts[ix].clone()).collect::<Vec<_>>();
+        assert_eq!(cx.update(|cx| view.read(cx).row_order()), expected);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("sort-updated").label(), Some("Updated, newest first"));
+            for pair in indices.windows(2) {
+                assert!(
+                    window.find(("row", pair[0])).bounds().origin.y < window.find(("row", pair[1])).bounds().origin.y
+                );
+            }
+        })
+        .unwrap();
+    };
+    assert_order(cx, &[0, 1, 4, 2, 3]);
+    cx.update_window(handle, |_, window, cx| window.press("f5", cx))
+        .unwrap();
+    settle(cx, handle, &view).await;
+    // Fresh activity changes the order; unavailable and failed repositories remain last.
+    assert_order(cx, &[4, 1, 0, 2, 3]);
+}
+
+#[gpui_kit::test]
+async fn a_later_start_resets_manual_sort_without_changing_saved_preferences(cx: &mut TestAppContext) {
+    use dashboard_core::ui_state::{STATE_FILE, UiState};
+
+    let dir = ConfigDir::new("startup-sort", &[]);
+    let mut saved = UiState {
+        zoom: 1.3,
+        ..UiState::default()
+    };
+    saved.columns.set(Column::Repository, 20.88);
+    saved.save(&dir.0).unwrap();
+    let saved_bytes = std::fs::read(dir.0.join(STATE_FILE)).unwrap();
+    for manual in [SortOrder::OldestFirst, SortOrder::Config, SortOrder::PriorityFirst] {
+        let (_, view) = open_board(
+            cx,
+            four(),
+            StatusCache::default(),
+            Arc::new(demo::DemoSource),
+            Options {
+                columns: UiState::load(&dir.0).columns,
+                ui_state_dir: Some(dir.0.clone()),
+                ..options()
+            },
+        );
+        assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::NewestFirst);
+        cx.update(|cx| {
+            view.update(cx, |view, cx| {
+                if manual == SortOrder::PriorityFirst {
+                    view.cycle_priority_sort(cx);
+                } else {
+                    view.cycle_sort(cx);
+                    if manual == SortOrder::Config {
+                        view.cycle_sort(cx);
+                    }
+                }
+            })
+        });
+        assert_eq!(cx.update(|cx| view.read(cx).sort()), manual);
+        let state = UiState::load(&dir.0);
+        assert_eq!(state, saved);
+        assert_eq!(std::fs::read(dir.0.join(STATE_FILE)).unwrap(), saved_bytes);
+    }
+    let (_, restarted) = open_board(
+        cx,
+        four(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        Options {
+            columns: UiState::load(&dir.0).columns,
+            ui_state_dir: Some(dir.0.clone()),
+            ..options()
+        },
+    );
+    assert_eq!(cx.update(|cx| restarted.read(cx).sort()), SortOrder::NewestFirst);
+    assert_eq!(cx.update(|cx| restarted.read(cx).columns()), saved.columns);
+}
+
+#[gpui_kit::test]
 async fn the_updated_header_sorts_newest_first_then_oldest_first_then_config_order(cx: &mut TestAppContext) {
     let (handle, view) = twelve(cx).await;
     let names = |cx: &mut TestAppContext| {
@@ -552,6 +650,9 @@ async fn the_updated_header_sorts_newest_first_then_oldest_first_then_config_ord
             .unwrap();
         cx.run_until_parked();
     };
+    // This test exercises the complete existing cycle starting from explicit config order.
+    click(cx);
+    click(cx);
     assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::Config);
     assert_eq!(header(cx), "Updated, not sorted");
     assert_eq!(names(cx)[..4], ["gh-x", "codexbar", "minibot", "weather-cli"]);
@@ -599,6 +700,11 @@ async fn the_updated_header_sorts_newest_first_then_oldest_first_then_config_ord
             "weather-cli",
         ]
     );
+    let oldest = names(cx);
+    press(cx, handle, "f5");
+    settle(cx, handle, &view).await;
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::OldestFirst);
+    assert_eq!(names(cx), oldest);
     click(cx);
     assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::Config);
     assert_eq!(header(cx), "Updated, not sorted");
@@ -609,6 +715,10 @@ async fn the_updated_header_sorts_newest_first_then_oldest_first_then_config_ord
             .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
             .collect::<Vec<_>>()
     );
+    press(cx, handle, "f5");
+    settle(cx, handle, &view).await;
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::Config);
+    assert_eq!(cx.update(|cx| view.read(cx).row_order()), demo::checkouts());
 }
 
 #[gpui_kit::test]
@@ -999,7 +1109,7 @@ async fn dragging_a_column_border_resizes_the_header_and_every_row(cx: &mut Test
     assert_eq!(width_of(cx, handle, ("prs", 3usize)), px(5.25 * 16.));
     assert_eq!(handle_center(cx, handle, Column::PullRequests).x, before.x + px(32.));
     // Dragging a border never sorts or expands anything.
-    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::Config);
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::NewestFirst);
     assert!(!cx.update(|cx| view.read(cx).is_expanded(Path::new("/demo/gh-x"))));
 }
 
@@ -1644,6 +1754,10 @@ async fn priority_values_precede_prs_and_sort_without_expanding_rows(cx: &mut Te
     assert_eq!(order[1], Path::new("/demo/hs-buddy"));
     assert_eq!(order[2], Path::new("/demo/gh-x"));
     assert_eq!(order[6], Path::new("/demo/minibot"));
+    press(cx, handle, "f5");
+    settle(cx, handle, &view).await;
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::PriorityFirst);
+    assert_eq!(cx.update(|cx| view.read(cx).row_order()), order);
     assert!(!cx.update(|cx| view.read(cx).is_expanded(Path::new("/demo/gh-x"))));
     cx.update_window(handle, |_, window, cx| window.click("sort-priority", cx))
         .unwrap();
@@ -1683,7 +1797,7 @@ async fn priority_width_survives_a_restart_and_dragging_does_not_sort(cx: &mut T
     assert_eq!(cx.update(|cx| view.read(cx).columns()).get(Column::Priority), width);
     assert_eq!(width_of(cx, handle, "sort-priority"), px(width * 16.));
     assert_eq!(width_of(cx, handle, ("priority", 0usize)), px(width * 16.));
-    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::Config);
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::NewestFirst);
     let saved = dashboard_core::ui_state::UiState::load(&dir).columns;
     assert_eq!(saved.get(Column::Priority), width);
     let (restored, _) = open_board(

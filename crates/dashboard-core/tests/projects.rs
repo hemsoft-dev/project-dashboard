@@ -304,10 +304,14 @@ fn linking_a_checkout_appends_it_and_keeps_every_comment() {
     );
     assert!(after.contains("# trailing ]"), "{after}");
     assert!(after.contains("refresh_minutes = 5 # minutes"), "{after}");
+    // However the platform quotes the path (Windows paths get a literal string), the new line takes the list's
+    // four-space indent and ends with a comma before the closing bracket.
+    let line = after.lines().find(|line| line.contains("tickdown")).unwrap();
     assert!(
-        after.contains(&format!("\n    {:?},\n]", tickdown.to_string_lossy())),
-        "the new line takes the list's indent: {after}"
+        line.starts_with("    ") && !line.starts_with("     ") && line.ends_with(','),
+        "{after}"
     );
+    assert!(after.contains(&format!("{line}\n]")), "{after}");
     let config = Config::parse(&after, &dir.join("config.toml")).unwrap();
     assert_eq!(config.repositories, [existing, tickdown.clone()]);
     // Linking it again changes nothing.

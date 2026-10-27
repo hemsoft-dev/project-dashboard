@@ -192,6 +192,51 @@ fn manage(cx: &mut HeadlessAppContext, out: &Path, suffix: &str) {
         .unwrap();
     settle(cx);
     save(cx, on, out, &name("write-access-scopes"));
+
+    // Frames for the keyboard recording, at 100% only: focus the button, open the menu, walk to Write access…, open
+    // it, Tab around the dialog (focus stays inside), Shift+Tab back, then Esc returns focus to the button.
+    if !suffix.is_empty() {
+        return;
+    }
+    let (keys, keys_view) = open_with(
+        cx,
+        demo::checkouts(),
+        1100.,
+        760.,
+        Options {
+            write: FakeAccess::new(&["read", "write:work"]),
+            ..options()
+        },
+    );
+    fill(cx, &keys_view, &demo::DemoSource);
+    let keys_manage = manage_of(cx, &keys_view);
+    let button = cx.update(|cx| keys_manage.read(cx).button_focus().clone());
+    cx.update_window(keys, |_, window, cx| button.focus(window, cx))
+        .unwrap();
+    settle(cx);
+    let mut frame = 0;
+    let mut shot = |cx: &mut HeadlessAppContext| {
+        frame += 1;
+        save(cx, keys, out, &format!("keys-{frame:02}"));
+    };
+    shot(cx);
+    for step in [
+        "enter",
+        "down",
+        "down",
+        "down",
+        "enter",
+        "tab",
+        "tab",
+        "tab",
+        "tab",
+        "tab",
+        "shift-tab",
+        "escape",
+    ] {
+        key(cx, keys, &[step]);
+        shot(cx);
+    }
 }
 
 #[test]

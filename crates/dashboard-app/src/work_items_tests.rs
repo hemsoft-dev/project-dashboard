@@ -775,3 +775,26 @@ async fn a_new_write_token_path_rechecks_access_for_the_open_dialog(cx: &mut Tes
     settle(cx, handle, &view).await;
     assert_eq!(replacement.writes.lock().unwrap().len(), 1, "the unsaved edit saves");
 }
+
+#[gpui_kit::test]
+async fn a_failed_reload_under_the_same_filters_keeps_the_last_good_rows(cx: &mut TestAppContext) {
+    let many = (0..62).map(|ix| work_item(ix, "gh-x", "issue", "An item")).collect();
+    let backend = FakeWork::new(&["read", "write:work"], many);
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    click(cx, handle, "work-row-0");
+    set_input(cx, handle, &manage, "rank", "-7");
+    // The save lands; the reload it starts fails.
+    *backend.fail_lists.lock().unwrap() = Some(WriteError::Network);
+    click(cx, handle, "work-save");
+    settle(cx, handle, &view).await;
+    click(cx, handle, "work-back");
+    assert_eq!(items(cx, &manage).len(), 50, "the last good rows stay");
+    assert_eq!(items(cx, &manage)[0].rank, -7, "with the saved row");
+    assert_eq!(text_of(cx, handle, "dialog-message"), "pmd is unavailable.");
+    assert!(!exists(cx, handle, "work-load-more"), "no cursor until a reload works");
+    *backend.fail_lists.lock().unwrap() = None;
+    click(cx, handle, "work-retry");
+    settle(cx, handle, &view).await;
+    assert!(exists(cx, handle, "work-load-more"));
+}

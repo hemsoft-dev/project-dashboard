@@ -53,6 +53,8 @@ const PRIORITY_CHOICES: [&str; 7] = ["0", "1", "2", "3", "4", "5", ""];
 pub struct WorkItemsDialog {
     project: Entity<InputState>,
     filter: WorkFilter,
+    /// The filters the rows on screen were listed with.
+    rows_filter: WorkFilter,
     status_filters: Vec<Control>,
     kind_filters: Vec<Control>,
     priority_filters: Vec<Control>,
@@ -212,6 +214,7 @@ impl Manage {
         let dialog = WorkItemsDialog {
             project,
             filter: WorkFilter::default(),
+            rows_filter: WorkFilter::default(),
             status_filters: controls(STATUS_FILTERS.len(), cx),
             kind_filters: controls(KIND_FILTERS.len(), cx),
             priority_filters: controls(PRIORITY_FILTERS.len(), cx),
@@ -255,7 +258,8 @@ impl Manage {
             }
         };
         let generation = work.generation;
-        let query = work.filter.query(cursor.as_deref());
+        let filter = work.filter.clone();
+        let query = filter.query(cursor.as_deref());
         work.loading = true;
         work.load_error = None;
         cx.spawn(async move |this, cx| {
@@ -275,6 +279,7 @@ impl Manage {
                 match result {
                     Ok(page) => {
                         if cursor.is_none() {
+                            work.rows_filter = filter;
                             work.items = page.items;
                             work.selected = work.selected.min(work.items.len().saturating_sub(1));
                         } else {
@@ -283,8 +288,9 @@ impl Manage {
                         work.next_cursor = page.next_cursor;
                     }
                     Err(error) => {
-                        if cursor.is_none() {
-                            // The rows on screen belong to the old filters: drop them rather than mix listings.
+                        if cursor.is_none() && work.rows_filter != filter {
+                            // The rows on screen belong to other filters: drop them rather than mix listings. Under
+                            // the same filters they are the last good data and stay, beside the error.
                             work.items.clear();
                             work.selected = 0;
                         }

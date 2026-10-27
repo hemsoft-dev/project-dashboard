@@ -13,7 +13,7 @@ use std::sync::Arc;
 use dashboard_core::config::Config;
 use dashboard_core::edit::{Form, Next};
 use dashboard_core::projects::{self, FIELDS, Project};
-use dashboard_core::write::{Feature, Method, WriteRequest, write_state};
+use dashboard_core::write::{CreateCheck, Feature, Method, WriteError, WriteRequest, write_state};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -28,6 +28,28 @@ use super::{
     Content, Control, Dialog, Frame, Manage, ManageEvent, OpenItem, WORK_LIST, WorkDown, WorkUp, button,
     conflict_panel, control,
 };
+
+/// What a save's answer leaves to do once the editor shows it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum After {
+    /// A create landed: reopen the editor on the stored project.
+    Created,
+    /// `409 stale_version`: read the project and show both versions.
+    Reread,
+    /// A create timed out, but the project exists: read it back and edit it.
+    Found,
+}
+
+/// Puts a project pmd returned in the list, in order. A project the list holds at a newer version stays: a late
+/// answer never undoes a later write.
+fn upsert(projects: &mut ProjectsDialog, project: Project) {
+    match projects.rows.iter_mut().find(|row| row.slug == project.slug) {
+        Some(row) if row.version > project.version => {}
+        Some(row) => *row = project,
+        None => projects.rows.push(project),
+    }
+    projects::sort(&mut projects.rows);
+}
 
 /// The priority choices: P0 to P5, then no tier (empty).
 const PRIORITY_CHOICES: [&str; 7] = ["0", "1", "2", "3", "4", "5", ""];
@@ -480,6 +502,11 @@ impl Manage {
                 return;
             }
         };
+        // Every check passed just now, so an error left from an earlier save no longer holds (fixing the repository
+        // can settle the slug's). A pmd error that still holds comes back from this save.
+        for field in FIELDS {
+            editor.form.clear_error(field);
+        }
         let Some(precondition) = editor.form.begin_save() else {
             cx.notify();
             return;
@@ -500,55 +527,69 @@ impl Manage {
                 .spawn(async move { backend.write(&request) })
                 .await
                 .and_then(|value| Project::from_json(&value));
-            let next = this.update_in(cx, |manage, window, cx| {
+            let after = this.update_in(cx, |manage, window, cx| {
                 let writable = manage.projects_writable();
+                let found = matches!(
+                    result,
+                    Err(WriteError::Timeout {
+                        create: Some(CreateCheck::Exists)
+                    })
+                );
                 if let Ok(saved) = &result {
                     // pmd took the write: the table's Priority column and the list follow, even when the editor or
                     // the dialog closed while it was on its way.
                     cx.emit(ManageEvent::Wrote);
                     if let Some(projects) = manage.projects_of(id) {
-                        // A row the list holds at a newer version stays: a late answer never undoes a later write.
-                        match projects.rows.iter_mut().find(|row| row.slug == saved.slug) {
-                            Some(row) if row.version > saved.version => {}
-                            Some(row) => *row = saved.clone(),
-                            None => projects.rows.push(saved.clone()),
-                        }
-                        projects::sort(&mut projects.rows);
+                        upsert(projects, saved.clone());
                     }
                 }
                 let projects = manage.projects_of(id)?;
-                let editor = projects.editor.as_mut().filter(|editor| editor.key == key)?;
-                let next = match result {
+                // A create that timed out but landed is read back whether or not its editor is still open.
+                let Some(editor) = projects.editor.as_mut().filter(|editor| editor.key == key) else {
+                    return found.then_some(After::Found);
+                };
+                let after = match result {
                     Ok(saved) => {
                         let created = editor.project.is_none();
                         editor.form.saved(saved.row());
                         editor.project = Some(saved);
                         editor.sync_inputs(window, cx);
-                        created.then_some(Next::Show)
+                        created.then_some(After::Created)
+                    }
+                    // Stay busy until the stored project is read back: nothing typed meanwhile is lost, and no second
+                    // create is sent.
+                    Err(WriteError::Timeout {
+                        create: Some(CreateCheck::Exists),
+                    }) => {
+                        editor
+                            .form
+                            .checking("pmd didn't answer in time, but the project exists now. Loading it…");
+                        Some(After::Found)
                     }
                     Err(error) => match projects::error_field(&error) {
                         Some(field) => {
                             editor.form.failed_on(field, &error);
                             None
                         }
-                        None => (editor.form.failed(&error) == Next::Reread).then_some(Next::Reread),
+                        None => (editor.form.failed(&error) == Next::Reread).then_some(After::Reread),
                     },
                 };
                 editor.sync_disabled(writable, cx);
                 cx.notify();
-                next
+                after
             });
-            match next {
-                Ok(Some(Next::Show)) => {
+            let after = match after {
+                Ok(Some(After::Created)) => {
                     // Created: reopen on the stored project, so its repo and slug are fixed.
                     let _ = this.update_in(cx, |manage, window, cx| {
                         manage.reopen_created_project(id, key, window, cx)
                     });
                     return;
                 }
-                Ok(Some(Next::Reread)) => {}
+                Ok(Some(after)) => after,
                 _ => return,
-            }
+            };
+            // Changed elsewhere, or a create that timed out but landed: read the project with the read token.
             let fresh = cx
                 .background_executor()
                 .spawn(async move { reader.read(&path) })
@@ -559,25 +600,45 @@ impl Manage {
                 let Some(projects) = manage.projects_of(id) else {
                     return;
                 };
-                if let Ok(fresh) = &fresh
-                    && let Some(row) = projects.rows.iter_mut().find(|row| row.slug == fresh.slug)
-                    && row.version <= fresh.version
-                {
-                    *row = fresh.clone();
-                }
-                let Some(editor) = projects.editor.as_mut().filter(|editor| editor.key == key) else {
-                    cx.notify();
-                    return;
-                };
-                match fresh {
-                    Ok(project) => {
-                        editor.form.conflict(project.row());
-                        editor.project = Some(project);
-                        editor.reapply.focus.focus(window, cx);
+                // pmd's current project goes in the list, in order; a created one also reloads the table.
+                if let Ok(fresh) = &fresh {
+                    upsert(projects, fresh.clone());
+                    if after == After::Found {
+                        cx.emit(ManageEvent::Wrote);
                     }
-                    Err(error) => editor.form.reread_failed(&error),
                 }
-                editor.sync_disabled(writable, cx);
+                let mut created = false;
+                let mut reload = false;
+                if let Some(editor) = projects.editor.as_mut().filter(|editor| editor.key == key) {
+                    match (after, fresh) {
+                        (After::Reread, Ok(project)) => {
+                            editor.form.conflict(project.row());
+                            editor.project = Some(project);
+                            editor.reapply.focus.focus(window, cx);
+                        }
+                        (After::Reread, Err(error)) => editor.form.reread_failed(&error),
+                        (_, Ok(project)) => {
+                            editor.form.saved(project.row());
+                            editor.project = Some(project);
+                            created = true;
+                        }
+                        (_, Err(_)) => {
+                            editor.form.failed(&WriteError::Timeout {
+                                create: Some(CreateCheck::Unknown),
+                            });
+                            reload = true;
+                        }
+                    }
+                    editor.sync_disabled(writable, cx);
+                } else if after == After::Found && fresh.is_err() {
+                    reload = true;
+                }
+                if reload {
+                    manage.load_projects(id, cx);
+                }
+                if created {
+                    manage.reopen_created_project(id, key, window, cx);
+                }
                 cx.notify();
             });
         })

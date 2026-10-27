@@ -512,7 +512,9 @@ async fn link_checkout_checks_the_origin_and_appends_to_config_toml(cx: &mut Tes
     assert!(text_of(cx, handle, "project-link-result").starts_with("Linked "));
     let after = config_text(&folder);
     assert!(after.starts_with("# Franz's dashboard\n"), "comments stay: {after}");
-    assert!(after.contains(&format!("{:?}", right.to_string_lossy())), "{after}");
+    // However the platform quotes the path (Windows paths get a literal string), it reads back as the folder.
+    let config = dashboard_core::config::Config::parse(&after, std::path::Path::new("config.toml")).unwrap();
+    assert_eq!(config.repositories.last(), Some(&right), "{after}");
     click(cx, handle, "projects-back");
     let ix = visible(cx, &manage).iter().position(|s| s == "hs-buddy").unwrap();
     assert!(text_of(cx, handle, &format!("project-row-{ix}")).ends_with("checkout Linked"));
@@ -585,5 +587,80 @@ async fn untrack_waits_until_edits_are_saved_or_discarded(cx: &mut TestAppContex
     assert!(
         backend.writes.lock().unwrap().is_empty(),
         "nothing written with the edits"
+    );
+}
+
+#[gpui_kit::test]
+async fn a_create_that_timed_out_but_landed_becomes_an_edit_without_a_second_create(cx: &mut TestAppContext) {
+    let folder = Folder::new();
+    let backend = FakeProjects::new(&["read", "write:projects"]);
+    let (handle, view, manage) = open_with(cx, backend.clone(), &folder);
+    open_dialog(cx, handle, &view).await;
+    click(cx, handle, "projects-add");
+    set_input(cx, handle, &manage, "repo", "hemsoft-dev/yahtzee");
+    click(cx, handle, "project-priority-3");
+    backend.fail_next(
+        WriteError::Timeout {
+            create: Some(dashboard_core::write::CreateCheck::Exists),
+        },
+        |rows| rows.push(project("yahtzee", Some(3), true, "")),
+    );
+    click(cx, handle, "project-save");
+    settle(cx, handle, &view).await;
+    assert_eq!(
+        text_of(cx, handle, "project-editor-title"),
+        "yahtzee (hemsoft-dev/yahtzee)"
+    );
+    assert!(
+        !exists(cx, handle, "project-field-repo"),
+        "the stored project is edited now"
+    );
+    press(cx, handle, "ctrl-enter");
+    assert_eq!(backend.writes.lock().unwrap().len(), 1, "never a second create");
+    click(cx, handle, "projects-back");
+    assert!(visible(cx, &manage).contains(&"yahtzee".to_owned()));
+}
+
+#[gpui_kit::test]
+async fn fixing_the_repository_settles_a_slug_mismatch(cx: &mut TestAppContext) {
+    let folder = Folder::new();
+    let backend = FakeProjects::new(&["read", "write:projects"]);
+    let (handle, view, manage) = open_with(cx, backend.clone(), &folder);
+    open_dialog(cx, handle, &view).await;
+    click(cx, handle, "projects-add");
+    set_input(cx, handle, &manage, "slug", "foo");
+    set_input(cx, handle, &manage, "repo", "hemsoft-dev/bar");
+    click(cx, handle, "project-save");
+    assert!(text_of(cx, handle, "field-slug-error").starts_with("The slug is the repository's name"));
+    set_input(cx, handle, &manage, "repo", "hemsoft-dev/foo");
+    click(cx, handle, "project-save");
+    settle(cx, handle, &view).await;
+    let writes = backend.writes.lock().unwrap().clone();
+    assert_eq!(writes.len(), 1, "the save goes through once the slug matches");
+    assert_eq!(writes[0].path, "v1/projects/foo");
+}
+
+#[gpui_kit::test]
+async fn a_priority_changed_elsewhere_moves_the_row_after_the_conflict(cx: &mut TestAppContext) {
+    let folder = Folder::new();
+    let backend = FakeProjects::new(&["read", "write:projects"]);
+    let (handle, view, manage) = open_with(cx, backend.clone(), &folder);
+    open_dialog(cx, handle, &view).await;
+    edit(cx, handle, &manage, "chief");
+    set_input(cx, handle, &manage, "notes", "mine");
+    backend.fail_next(WriteError::StaleVersion, |rows| {
+        let row = rows.iter_mut().find(|row| row["slug"] == "chief").unwrap();
+        row["priority"] = json!(0);
+        row["version"] = json!(7);
+    });
+    click(cx, handle, "project-save");
+    settle(cx, handle, &view).await;
+    click(cx, handle, "conflict-discard");
+    click(cx, handle, "projects-back");
+    let order = visible(cx, &manage);
+    assert_eq!(
+        &order[..2],
+        ["chief", "project-dashboard"],
+        "P0 chief sorts first now: {order:?}"
     );
 }

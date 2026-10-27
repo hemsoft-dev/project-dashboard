@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 dashboard-core.workspace = true
 chrono.workspace = true
+serde_json.workspace = true
 gpui-kit.workspace = true
 
 # Compiles the executable's icon and version resources (build.rs) with rc.exe from the Windows SDK.
@@ -24,6 +25,11 @@ embed-resource = "3"
 gpui-kit = { workspace = true, features = ["test-support"] }
 # Saves the headless captures (src/captures.rs) and the icon example's PNGs.
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+# macOS captures (src/captures.rs): GPUI's Mac platform must be created on the main thread, which a test never runs on,
+# so the captures build its text system directly. The version GPUI itself uses, already in the lock.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+gpui-pre-apple = { version = "0.3.9", features = ["font-kit"] }
 
 [lints]
 workspace = true

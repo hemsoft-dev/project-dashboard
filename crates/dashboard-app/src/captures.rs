@@ -1,5 +1,5 @@
-//! Screenshots for pull requests, rendered offscreen by GPUI's Linux headless renderer (wgpu), so no window ever appears
-//! on a desktop. Windows has no headless renderer in GPUI.
+//! Screenshots for pull requests, rendered offscreen by GPUI's headless renderer (wgpu on Linux, Metal on macOS), so no
+//! window ever appears on a desktop. Windows has no headless renderer in GPUI.
 //!
 //! `CAPTURE_DIR=<absolute folder> cargo test -p dashboard-app captures -- --ignored` writes one PNG per state. Cargo
 //! runs the test from this crate's folder, so a relative folder lands under `crates/dashboard-app`.
@@ -41,6 +41,8 @@ fn options() -> Options {
         threads: Arc::new(demo::DemoThreads),
         priorities: Arc::new(demo::DemoPriorities),
         pmd: None,
+        write: Arc::new(dashboard_core::write::Off),
+        sample: None,
     }
 }
 
@@ -54,6 +56,16 @@ fn open_sized(
     width: f32,
     height: f32,
 ) -> (AnyWindowHandle, Entity<BoardView>) {
+    open_with(cx, checkouts, width, height, options())
+}
+
+fn open_with(
+    cx: &mut HeadlessAppContext,
+    checkouts: Vec<PathBuf>,
+    width: f32,
+    height: f32,
+    options: Options,
+) -> (AnyWindowHandle, Entity<BoardView>) {
     let mut view = None;
     let handle = cx
         .open_window(size(px(width), px(height)), |window, cx| {
@@ -62,7 +74,7 @@ fn open_sized(
                     &checkouts,
                     StatusCache::default(),
                     Arc::new(demo::DemoSource),
-                    options(),
+                    options,
                     window,
                     cx,
                 )
@@ -89,6 +101,144 @@ fn fill(cx: &mut HeadlessAppContext, view: &Entity<BoardView>, source: &dyn Stat
     cx.run_until_parked();
 }
 
+/// Lets background work (a whoami, a save, a re-read) finish: it runs on real threads.
+fn settle(cx: &mut HeadlessAppContext) {
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        cx.run_until_parked();
+    }
+}
+
+fn key(cx: &mut HeadlessAppContext, handle: AnyWindowHandle, keys: &[&str]) {
+    for key in keys {
+        cx.update_window(handle, |_, window, cx| window.press(key, cx)).unwrap();
+        settle(cx);
+    }
+}
+
+fn manage(cx: &mut HeadlessAppContext, out: &Path, suffix: &str) {
+    use crate::manage::Manage;
+    use crate::manage_tests::FakeAccess;
+    fn manage_of(cx: &mut HeadlessAppContext, view: &Entity<BoardView>) -> Entity<Manage> {
+        cx.update(|cx| view.read(cx).manage().clone())
+    }
+    let name = |state: &str| format!("manage-{state}{suffix}");
+
+    // Writes off: the menu opened by keyboard, its entries disabled with reasons, then Write access… explaining setup.
+    let (off, off_view) = open_with(
+        cx,
+        demo::checkouts(),
+        1100.,
+        760.,
+        Options {
+            sample: Some(Arc::new(demo::DemoSample::default())),
+            ..options()
+        },
+    );
+    fill(cx, &off_view, &demo::DemoSource);
+    let off_manage = manage_of(cx, &off_view);
+    let button = cx.update(|cx| off_manage.read(cx).button_focus().clone());
+    cx.update_window(off, |_, window, cx| button.focus(window, cx)).unwrap();
+    key(cx, off, &["enter", "down"]);
+    save(cx, off, out, &name("menu"));
+    key(cx, off, &["down", "down", "enter"]);
+    save(cx, off, out, &name("write-access-off"));
+    key(cx, off, &["escape"]);
+
+    // The sample dialog: open, an inline validation error, the unsaved-edit question, then "Changed elsewhere".
+    key(cx, off, &["enter", "up", "enter"]);
+    settle(cx);
+    save(cx, off, out, &name("dialog"));
+    let input = |cx: &mut HeadlessAppContext, field: &str| cx.update(|cx| off_manage.read(cx).input(field).unwrap());
+    let priority = input(cx, "priority");
+    cx.update_window(off, |_, window, cx| {
+        priority.update(cx, |i, cx| i.set_value("9", window, cx))
+    })
+    .unwrap();
+    key(cx, off, &["enter"]);
+    save(cx, off, out, &name("validation-error"));
+    key(cx, off, &["escape"]);
+    save(cx, off, out, &name("unsaved-confirm"));
+    key(cx, off, &["escape"]);
+    let title = input(cx, "title");
+    cx.update_window(off, |_, window, cx| {
+        priority.update(cx, |i, cx| i.set_value("2", window, cx));
+        title.update(cx, |i, cx| i.set_value("Ship the Manage menu first", window, cx));
+    })
+    .unwrap();
+    settle(cx);
+    key(cx, off, &["enter"]);
+    save(cx, off, out, &name("conflict"));
+
+    // A token with scopes: Work items allowed, Fleet and Projects missing.
+    let (on, on_view) = open_with(
+        cx,
+        demo::checkouts(),
+        1100.,
+        760.,
+        Options {
+            write: FakeAccess::new(&["read", "write:work"]),
+            ..options()
+        },
+    );
+    fill(cx, &on_view, &demo::DemoSource);
+    let on_manage = manage_of(cx, &on_view);
+    let button = cx.update(|cx| on_manage.read(cx).button_focus().clone());
+    cx.update_window(on, |_, window, cx| button.focus(window, cx)).unwrap();
+    key(cx, on, &["enter"]);
+    save(cx, on, out, &name("menu-scoped"));
+    key(cx, on, &["up", "enter"]);
+    cx.update_window(on, |_, window, cx| window.input("pasted-token-is-masked", cx))
+        .unwrap();
+    settle(cx);
+    save(cx, on, out, &name("write-access-scopes"));
+
+    // Frames for the keyboard recording, at 100% only: focus the button, open the menu, walk to Write access…, open
+    // it, Tab around the dialog (focus stays inside), Shift+Tab back, then Esc returns focus to the button.
+    if !suffix.is_empty() {
+        return;
+    }
+    let (keys, keys_view) = open_with(
+        cx,
+        demo::checkouts(),
+        1100.,
+        760.,
+        Options {
+            write: FakeAccess::new(&["read", "write:work"]),
+            ..options()
+        },
+    );
+    fill(cx, &keys_view, &demo::DemoSource);
+    let keys_manage = manage_of(cx, &keys_view);
+    let button = cx.update(|cx| keys_manage.read(cx).button_focus().clone());
+    cx.update_window(keys, |_, window, cx| button.focus(window, cx))
+        .unwrap();
+    settle(cx);
+    let mut frame = 0;
+    let mut shot = |cx: &mut HeadlessAppContext| {
+        frame += 1;
+        save(cx, keys, out, &format!("keys-{frame:02}"));
+    };
+    shot(cx);
+    for step in [
+        "enter",
+        "down",
+        "down",
+        "down",
+        "enter",
+        "tab",
+        "tab",
+        "tab",
+        "tab",
+        "tab",
+        "shift-tab",
+        "escape",
+    ] {
+        key(cx, keys, &[step]);
+        shot(cx);
+    }
+}
+
 #[test]
 #[ignore = "writes screenshots; run with CAPTURE_DIR set"]
 fn captures() {
@@ -96,6 +246,10 @@ fn captures() {
         return;
     };
     std::fs::create_dir_all(&out).unwrap();
+    // The Mac platform can only be created on the main thread; a test runs on another, so take its text system only.
+    #[cfg(target_os = "macos")]
+    let text_system: Arc<dyn gpui_kit::PlatformTextSystem> = Arc::new(gpui_apple::AppleTextSystem::new());
+    #[cfg(not(target_os = "macos"))]
     let text_system = gpui_kit::platform::current_platform(true).text_system();
     let mut cx = HeadlessAppContext::with_platform(text_system, Arc::new(gpui_kit::assets::Assets), || {
         gpui_kit::platform::current_headless_renderer()
@@ -103,8 +257,19 @@ fn captures() {
     cx.update(|cx| {
         gpui_kit::init(cx);
         theme::init(cx);
+        crate::board_view::bind_keys(cx);
         crate::zoom::init(cx, None);
     });
+
+    // The Manage menu and its dialogs (#33), at the app's default size and at 150%.
+    for (level, suffix) in [(1.0, ""), (1.5, "-150")] {
+        cx.update(|cx| {
+            crate::zoom::set_level(level, cx);
+            crate::zoom::hide_toast(cx);
+        });
+        manage(&mut cx, &out, suffix);
+    }
+    cx.update(|cx| crate::zoom::set_level(1.0, cx));
 
     // Regression #23: gh-x loaded six PRs but could not enrich their supplemental connections.
     let (partial_rows, partial_rows_view) = open(&mut cx, vec![PathBuf::from("/demo/project-manager")], 980.);

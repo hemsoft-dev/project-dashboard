@@ -158,8 +158,44 @@ preserves item IDs and GitHub links, and reports incomplete pagination explicitl
 proxies are disabled. Board/work errors keep hosted status available and retain prior Board/work data when possible,
 with the old Board generation timestamp and an error. Status refresh errors preserve the last good status and age.
 
+### Manage menu and writes
+
+The title bar's **Manage** button opens a menu with **Projects…**, **Work items…**, **Fleet…** and **Write access…**.
+It works by keyboard: Tab to the button, then Enter, Space or Down opens the menu, Up and Down move between entries,
+Enter opens one, and Esc or Tab closes the menu. An entry that can't open yet stays in the menu, disabled, with the
+reason under it: the dialog isn't built yet (#34, #35, #36), writes are off, or the token lacks the scope it needs.
+
+Each entry opens one dialog at a time. Focus moves into it, Tab and Shift+Tab stay inside it, Enter runs its default
+action, and Esc or the close button closes it and returns focus to the Manage button. A dialog with unsaved edits
+asks before discarding them. The table behind a dialog ignores the mouse, and **F5** still refreshes it. After a
+write lands, the dashboard reloads pmd data at once.
+
+Writes use their own token, separate from the read token and off until you set it up:
+
+1. On mini, mint a token with `read` and the write scopes you want. No write scope implies `read`, and the dashboard
+   needs `read` to show what the token allows and to re-read a row after a conflict:
+   `pmd token add project-dashboard@home --scopes read,write:work,write:fleet` (add `write:projects` for
+   **Projects…**).
+2. Add `pmd_write_token_path = "pmd-write-token"` to `config.toml`. Relative paths resolve beside `config.toml`.
+3. Open **Manage › Write access…** and paste the token into the masked field. **Write access…** shows the token file,
+   the token's name and scopes from `GET /v1/whoami`, and which dialogs those scopes allow: `write:work` for
+   **Work items**, `write:fleet` for **Fleet**, `write:projects` for **Projects**.
+
+The dashboard stores the pasted token at `pmd_write_token_path`, owner-only: mode 600 on Linux and macOS; on Windows a
+protected ACL that grants only the file's owner, with no entries inherited from the folder. It writes a new
+owner-only file and renames it over the old one, so the token is never readable by others, even briefly. The token
+never goes in `config.toml`, `ui-state.json` or the status cache, and never appears in logs, errors or the UI.
+
+Writes send `PUT` or `PATCH` with `If-Match: <version>` (or `If-None-Match: *` to create), with no redirects or proxy,
+a 64 KB body limit, a 1 MB response limit and a 40-second timeout (a project create can wait 30 seconds on GitHub).
+A write is never retried automatically. After a create times out, the dashboard reads the row to say whether it
+landed before you try again. pmd's errors show in the dialog: a `400` that names a field sits next to that field,
+and anything else goes on the dialog. **Changed elsewhere** (`409 stale_version`) re-reads the row with the read
+token, shows your values next to the new ones, and lets you reapply yours to the new version or discard them.
+
 `cargo run -p dashboard-app -- --demo` shows sample data from the checked-in fixtures, without the config file,
-the cache or pmd.
+the cache or pmd. Its Manage menu has writes off and adds **Sample dialog (demo)…**, which edits an in-memory row:
+a priority above 5 shows a field error, and the first save meets a change made "elsewhere".
 
 ### Config file
 
@@ -180,6 +216,8 @@ parallelism = 4
 pmd_url = "http://100.97.164.73:8790"
 # Read-scoped bearer token; relative paths resolve beside config.toml.
 pmd_token_path = "pmd-token"
+# Optional: the write token's file, for the Manage menu. Unset, writes are off.
+pmd_write_token_path = "pmd-write-token"
 # The folder scanned on first run.
 root = "C:/Users/franz/github"
 ```
@@ -191,7 +229,7 @@ cached next to it in `status-cache.json`, and the zoom level in `ui-state.json`;
 
 Existing configs use the pmd defaults when these keys are absent. Store the read token as plain text in the configured
 file, with access restricted to your user. On Windows the default is `%APPDATA%\ProjectDashboard\pmd-token`.
-Only the file path belongs in config.toml. The app never writes the token to its logs, config, or cache.
+Only the file path belongs in config.toml. The app never writes either token to its logs, config, or cache.
 See [project-manager's token documentation](https://github.com/hemsoft-dev/project-manager#tokens).
 
 ## License

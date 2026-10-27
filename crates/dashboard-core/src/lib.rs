@@ -7,6 +7,7 @@ pub mod activity;
 pub mod cache;
 pub mod columns;
 pub mod config;
+pub mod edit;
 pub mod pmd;
 pub mod priority;
 pub mod scheduler;
@@ -14,6 +15,7 @@ pub mod source;
 pub mod status;
 pub mod t3;
 pub mod ui_state;
+pub mod write;
 pub mod zoom;
 
 use std::path::{Path, PathBuf};

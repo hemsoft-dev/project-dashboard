@@ -19,11 +19,11 @@ use crate::board_view::{self, BoardView, Options, section_count};
 use crate::{demo, theme, zoom};
 
 /// The demo's first four repositories: clean, attention, partly unavailable and failing.
-fn four() -> Vec<PathBuf> {
+pub(crate) fn four() -> Vec<PathBuf> {
     demo::checkouts().into_iter().take(4).collect()
 }
 
-fn options() -> Options {
+pub(crate) fn options() -> Options {
     Options {
         cache_dir: None,
         parallelism: 4,
@@ -37,10 +37,12 @@ fn options() -> Options {
         threads: Arc::new(demo::DemoThreads),
         priorities: Arc::new(demo::DemoPriorities),
         pmd: None,
+        write: Arc::new(dashboard_core::write::Off),
+        sample: None,
     }
 }
 
-fn open_board(
+pub(crate) fn open_board(
     cx: &mut TestAppContext,
     checkouts: Vec<PathBuf>,
     cache: StatusCache,
@@ -78,7 +80,7 @@ fn open_board_sized(
 }
 
 /// Runs the GPUI clock until every card has its result; the scheduler's real threads need real time too.
-async fn settle(cx: &mut TestAppContext, handle: AnyWindowHandle, view: &Entity<BoardView>) {
+pub(crate) async fn settle(cx: &mut TestAppContext, handle: AnyWindowHandle, view: &Entity<BoardView>) {
     for _ in 0..200 {
         std::thread::sleep(Duration::from_millis(2));
         cx.executor().advance_clock(Duration::from_millis(100));
@@ -2258,4 +2260,27 @@ fn token_only_successful_untiered_priority_response_clears_previous_priority(cx:
         let board = live.view.read(cx).board();
         assert_eq!(board.priority(&board.cards()[0]), None);
     });
+}
+
+#[gpui_kit::test]
+fn editing_pmd_write_token_path_turns_writes_on_and_off(cx: &mut TestAppContext) {
+    use dashboard_core::write::Access;
+    let server = pmd_http::Server::with_auth(pmd_response);
+    let mut live = LivePmd::new(cx, &server, "pmd-write-path");
+    let manage = cx.update(|cx| live.view.read(cx).manage().clone());
+    assert_eq!(cx.update(|cx| manage.read(cx).access().clone()), Access::Off);
+    live.config.pmd_write_token_path = Some("pmd-write-token".into());
+    live.reload(cx);
+    live.wait(cx);
+    assert_eq!(cx.update(|cx| manage.read(cx).access().clone()), Access::Unchecked);
+    // The token never goes in config.toml; only its path does.
+    assert!(
+        live.config
+            .to_toml()
+            .contains("pmd_write_token_path = \"pmd-write-token\"")
+    );
+    live.config.pmd_write_token_path = None;
+    live.reload(cx);
+    live.wait(cx);
+    assert_eq!(cx.update(|cx| manage.read(cx).access().clone()), Access::Off);
 }

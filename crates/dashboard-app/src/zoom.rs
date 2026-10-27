@@ -93,6 +93,13 @@ pub fn toast(cx: &App) -> Option<String> {
 }
 
 /// A size designed at 100%, at the current zoom, for the few sizes gpui-kit takes in pixels.
+/// Hides the toast at once, so a screenshot taken right after a zoom change shows only the window.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub fn hide_toast(cx: &mut App) {
+    cx.global_mut::<ZoomState>().toast = false;
+    cx.refresh_windows();
+}
+
 pub fn scaled(px_at_100: f32, cx: &App) -> Pixels {
     px(px_at_100 * level(cx) as f32)
 }

@@ -209,3 +209,67 @@ impl StatusSource for HostedSource {
         Ok(document)
     }
 }
+
+/// The demo's sample row for the Manage menu's sample dialog (#33): kept in memory, never sent anywhere. Its first save
+/// meets a change made "elsewhere", so the conflict flow can be tried; a priority above 5 is refused with pmd's kind of
+/// field error.
+pub struct DemoSample {
+    row: std::sync::Mutex<(u64, String, Option<u64>)>,
+    changed_elsewhere: std::sync::atomic::AtomicBool,
+}
+
+impl Default for DemoSample {
+    fn default() -> Self {
+        Self {
+            row: std::sync::Mutex::new((3, "Ship the Manage menu".to_owned(), Some(1))),
+            changed_elsewhere: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+impl DemoSample {
+    fn json(row: &(u64, String, Option<u64>)) -> serde_json::Value {
+        serde_json::json!({"id": "demo", "version": row.0, "title": row.1, "priority": row.2})
+    }
+}
+
+impl dashboard_core::write::WriteBackend for DemoSample {
+    fn token_path(&self) -> Option<PathBuf> {
+        None
+    }
+    fn whoami(&self) -> Result<dashboard_core::write::Whoami, dashboard_core::write::WriteError> {
+        Err(dashboard_core::write::WriteError::WritesOff)
+    }
+    fn store_token(&self, _: &str) -> Result<(), dashboard_core::write::WriteError> {
+        Err(dashboard_core::write::WriteError::WritesOff)
+    }
+    fn read(&self, _: &str) -> Result<serde_json::Value, dashboard_core::write::WriteError> {
+        Ok(Self::json(&self.row.lock().unwrap()))
+    }
+    fn write(
+        &self,
+        request: &dashboard_core::write::WriteRequest,
+    ) -> Result<serde_json::Value, dashboard_core::write::WriteError> {
+        use dashboard_core::write::{Precondition, WriteError};
+        let mut row = self.row.lock().unwrap();
+        if request.precondition != Precondition::IfMatch(row.0) {
+            return Err(WriteError::StaleVersion);
+        }
+        let priority = request.body["priority"].as_u64();
+        if priority.is_some_and(|p| p > 5) {
+            return Err(WriteError::BadRequest {
+                code: "bad_request".into(),
+                message: "priority must be 0-5, or null to inherit".into(),
+            });
+        }
+        if !self.changed_elsewhere.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            row.0 += 1;
+            row.1 = "Ship the Manage menu and dialogs".to_owned();
+            return Err(WriteError::StaleVersion);
+        }
+        row.0 += 1;
+        row.1 = request.body["title"].as_str().unwrap_or_default().to_owned();
+        row.2 = priority;
+        Ok(Self::json(&row))
+    }
+}

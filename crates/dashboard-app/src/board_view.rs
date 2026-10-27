@@ -28,6 +28,7 @@ use dashboard_core::source::StatusSource;
 use dashboard_core::status::{HealthRow, Issue, PullRequest, RunOutcome, Section, StatusDocument, WorkflowRun};
 use dashboard_core::t3::{self, Lookup, ThreadFinder};
 use dashboard_core::ui_state::UiState;
+use dashboard_core::write::{PmdWriter, WriteBackend};
 use dashboard_core::{APP_NAME, Board, Card, Overall, SortOrder};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::tag::Tag;
@@ -36,16 +37,20 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, Context, FocusHandle, Hsla, InteractiveElement as _, IntoElement, KeyBinding, MouseButton,
-    MouseDownEvent, MouseMoveEvent, ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, TestSupportExt as _, Window, actions, canvas, div, px, rems,
+    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
+    KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement as _, Pixels, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _, Window, actions, canvas, div, px,
+    rems,
 };
+
+use crate::manage::{Manage, ManageEvent};
 
 actions!(project_dashboard, [Refresh]);
 
 /// F5 refreshes every card, as in a browser.
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("f5", Refresh, None)]);
+    crate::manage::bind_keys(cx);
 }
 
 /// How often a running refresh is checked for results.
@@ -89,6 +94,10 @@ pub struct Options {
     pub priorities: Arc<dyn PrioritySource>,
     /// Live pmd settings, for config reload; `None` uses the supplied fixture source.
     pub pmd: Option<Pmd>,
+    /// Where the Manage dialogs write. Live, it follows config.toml's `pmd_write_token_path`.
+    pub write: Arc<dyn WriteBackend>,
+    /// The demo's fake row for the Manage menu's sample dialog; `None` hides it.
+    pub sample: Option<Arc<dyn WriteBackend>>,
 }
 
 /// A column border being dragged: which column, and where the drag started.
@@ -129,6 +138,11 @@ pub struct BoardView {
     #[cfg(test)]
     pending_refreshes: usize,
     focus: FocusHandle,
+    /// The Manage menu and its dialogs (#33).
+    manage: Entity<Manage>,
+    /// The live write settings last applied, to notice an edited `pmd_write_token_path` or `pmd_url`.
+    writer: Option<PmdWriter>,
+    _manage_events: Subscription,
 }
 
 impl BoardView {
@@ -147,6 +161,20 @@ impl BoardView {
         let limiter = Arc::new(scheduler::Limited::new(source, options.parallelism));
         let columns = options.columns;
         let config_file = options.config_dir.as_deref().map(ConfigFile::new);
+        let write = Arc::clone(&options.write);
+        let sample = options.sample.clone();
+        let config_path = options.config_path.clone();
+        let manage = cx.new(|cx| Manage::new(write, sample, config_path, cx));
+        // A write that landed shows in the table now, not at the next automatic refresh.
+        let manage_events = cx.subscribe(&manage, |view, _, event, cx| match event {
+            ManageEvent::Wrote => view.refresh_all(cx),
+        });
+        let writer = match (&options.pmd, &options.config_dir) {
+            (Some(_), Some(dir)) => Config::load(dir)
+                .ok()
+                .map(|config| PmdWriter::from_config(&config, dir)),
+            _ => None,
+        };
         let mut view = Self {
             board: Board::new(checkouts, &cache),
             cache,
@@ -170,6 +198,9 @@ impl BoardView {
             #[cfg(test)]
             pending_refreshes: 0,
             focus,
+            manage,
+            writer,
+            _manage_events: manage_events,
         };
         view.find_threads(cx);
         view.refresh_priorities(cx);
@@ -213,6 +244,11 @@ impl BoardView {
     }
 
     #[cfg(test)]
+    pub fn manage(&self) -> &Entity<Manage> {
+        &self.manage
+    }
+
+    #[cfg(test)]
     pub fn pending_refreshes(&self) -> usize {
         self.pending_refreshes
     }
@@ -227,7 +263,7 @@ impl BoardView {
         self.finding_priorities
     }
 
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
     pub fn apply_priorities(&mut self, priorities: dashboard_core::priority::Priorities, cx: &mut Context<Self>) {
         self.board.set_priorities(priorities);
         cx.notify();
@@ -513,8 +549,9 @@ impl BoardView {
             let dir = self
                 .options
                 .config_dir
-                .as_deref()
+                .clone()
                 .expect("live pmd has a config directory");
+            let dir = dir.as_path();
             let pmd = Pmd::from_config(&config, dir);
             if self.options.pmd.as_ref() != Some(&pmd) {
                 self.priority_generation += 1;
@@ -525,6 +562,14 @@ impl BoardView {
                 self.sync_wanted();
                 self.start(self.board.checkouts(), false, cx);
                 self.refresh_priorities(cx);
+            }
+            let writer = PmdWriter::from_config(&config, dir);
+            if self.writer.as_ref() != Some(&writer) {
+                let config_path = self.options.config_path.clone();
+                let backend: Arc<dyn WriteBackend> = Arc::new(writer.clone());
+                self.manage
+                    .update(cx, |manage, cx| manage.set_backend(backend, config_path, cx));
+                self.writer = Some(writer);
             }
         }
         let before = self.board.cards().len();
@@ -648,7 +693,7 @@ impl BoardView {
     }
 
     /// Shows one refresh result on its card, for the screenshot captures (which only run on Linux).
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
     pub fn apply(&mut self, outcome: Outcome, cx: &mut Context<Self>) {
         if self.board.apply(outcome, &mut self.cache) {
             cx.notify();
@@ -751,6 +796,11 @@ impl BoardView {
                             .child(APP_NAME),
                     )
                     .child(div().flex_1())
+                    .child(
+                        div()
+                            .flex_none()
+                            .child(self.manage.update(cx, |manage, cx| manage.render_button(cx))),
+                    )
                     .child(
                         div()
                             .id("refresh-status")
@@ -1428,6 +1478,9 @@ impl Render for BoardView {
                     .size_0(),
             )
             .when_some(crate::zoom::toast(cx), |this, label| this.child(zoom_toast(label, cx)))
+            // The Manage menu or dialog, over everything else. It sits inside this element, so F5 still reaches the
+            // refresh action above while it is open.
+            .child(self.manage.clone())
     }
 }
 

@@ -1240,7 +1240,9 @@ dependencies = [
  "dashboard-core",
  "embed-resource",
  "gpui-kit",
+ "gpui-pre-apple",
  "image",
+ "serde_json",
 ]
 
 [[package]]
@@ -1254,6 +1256,7 @@ dependencies = [
  "serde",
  "serde_json",
  "toml 1.1.6+spec-1.1.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

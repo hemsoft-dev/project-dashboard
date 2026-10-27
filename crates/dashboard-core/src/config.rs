@@ -10,6 +10,8 @@
 //! t3_home = "D:/t3"
 //! pmd_url = "http://100.97.164.73:8790"
 //! pmd_token_path = "pmd-token" # relative to config.toml
+//! # Optional: turns on the Manage menu's writes. The file holds a write-scoped token, owner-only.
+//! pmd_write_token_path = "pmd-write-token"
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -40,6 +42,10 @@ pub struct Config {
     pub pmd_url: String,
     /// Bearer-token file. Relative paths resolve beside config.toml.
     pub pmd_token_path: PathBuf,
+    /// The write token's file, separate from the read token. Unset, writes are off. Relative paths resolve beside
+    /// config.toml. The token itself never goes in this file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pmd_write_token_path: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -52,6 +58,7 @@ impl Default for Config {
             t3_home: None,
             pmd_url: crate::priority::DEFAULT_URL.to_owned(),
             pmd_token_path: PathBuf::from("pmd-token"),
+            pmd_write_token_path: None,
         }
     }
 }

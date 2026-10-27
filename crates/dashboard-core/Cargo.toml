@@ -15,5 +15,9 @@ chrono.workspace = true
 rusqlite.workspace = true
 reqwest.workspace = true
 
+# Gives the stored write token an owner-only ACL (src/write.rs). Already in the lock through GPUI.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization"] }
+
 [lints]
 workspace = true

@@ -536,3 +536,36 @@ async fn changed_elsewhere_can_discard_my_edits(cx: &mut TestAppContext) {
     press(cx, handle, "escape");
     assert_eq!(cx.update(|cx| manage.read(cx).dialog()), None);
 }
+
+#[gpui_kit::test]
+async fn a_token_save_that_lands_after_its_dialog_closed_leaves_a_newer_dialog_alone(cx: &mut TestAppContext) {
+    let access = FakeAccess::new(&["read", "write:work"]);
+    let (handle, view) = open(cx, access.clone(), None);
+    let manage = manage(cx, &view);
+    click(cx, handle, "manage-button");
+    click(cx, handle, "manage-write-access");
+    type_text(cx, handle, "first-token");
+    // Save, then discard the dialog and open a new one before the save lands.
+    cx.update_window(handle, |_, window, cx| {
+        manage.update(cx, |manage, cx| {
+            manage.store_token(window, cx);
+            manage.close_dialog(window, cx);
+            manage.activate(Entry::WriteAccess, window, cx);
+        });
+        let input = manage.read(cx).input("token").unwrap();
+        input.update(cx, |input, cx| input.set_value("second-token", window, cx));
+    })
+    .unwrap();
+    settle(cx, handle, &view).await;
+    frame(cx, handle);
+    assert_eq!(*access.stored.lock().unwrap(), ["first-token"]);
+    let input = cx.update(|cx| manage.read(cx).input("token").unwrap().read(cx).value().to_string());
+    assert_eq!(
+        input, "second-token",
+        "a late save must not clear the newer dialog's field"
+    );
+    // The new dialog isn't stuck "saving": its own save goes through.
+    press(cx, handle, "enter");
+    settle(cx, handle, &view).await;
+    assert_eq!(*access.stored.lock().unwrap(), ["first-token", "second-token"]);
+}

@@ -130,6 +130,8 @@ enum Content {
 }
 
 struct Dialog {
+    /// Unique per opening, so work started by a dialog that has since closed can't touch a newer one.
+    id: u64,
     entry: Entry,
     focus: FocusHandle,
     close: Control,
@@ -152,6 +154,7 @@ pub struct Manage {
     menu_focus: FocusHandle,
     entries: Vec<(Entry, Control)>,
     dialog: Option<Dialog>,
+    dialogs_opened: u64,
 }
 
 impl EventEmitter<ManageEvent> for Manage {}
@@ -181,6 +184,7 @@ impl Manage {
             menu_focus: cx.focus_handle(),
             entries: entries.into_iter().map(|entry| (entry, control(cx))).collect(),
             dialog: None,
+            dialogs_opened: 0,
         }
     }
 
@@ -330,6 +334,8 @@ impl Manage {
     }
 
     fn open_dialog(&mut self, entry: Entry, window: &mut Window, cx: &mut Context<Self>) {
+        self.dialogs_opened += 1;
+        let id = self.dialogs_opened;
         let content = match entry {
             Entry::WriteAccess => {
                 let input = cx.new(|cx| {
@@ -337,8 +343,8 @@ impl Manage {
                         .masked(true)
                         .placeholder("Paste the token pmd printed")
                 });
-                cx.observe(&input, |manage, input, cx| {
-                    if let Some(Content::WriteAccess(dialog)) = manage.dialog.as_mut().map(|d| &mut d.content)
+                cx.observe(&input, move |manage, input, cx| {
+                    if let Some(Content::WriteAccess(dialog)) = manage.content_of(id)
                         && !input.read(cx).value().is_empty()
                     {
                         dialog.error = None;
@@ -364,7 +370,7 @@ impl Manage {
                 for (field, input) in &inputs {
                     let field = *field;
                     cx.observe(input, move |manage, input, cx| {
-                        if let Some(Content::Sample(sample)) = manage.dialog.as_mut().map(|d| &mut d.content)
+                        if let Some(Content::Sample(sample)) = manage.content_of(id)
                             && let Some(form) = sample.form.as_mut()
                         {
                             let text = input.read(cx).value().to_string();
@@ -376,7 +382,7 @@ impl Manage {
                     })
                     .detach();
                 }
-                self.load_sample(window, cx);
+                self.load_sample(id, window, cx);
                 Content::Sample(Box::new(SampleDialog {
                     form: None,
                     load_error: None,
@@ -389,6 +395,7 @@ impl Manage {
             Entry::Feature(_) => return,
         };
         let dialog = Dialog {
+            id,
             entry,
             focus: cx.focus_handle(),
             close: control(cx),
@@ -472,7 +479,10 @@ impl Manage {
     pub fn store_token(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let backend = Arc::clone(&self.backend);
         let generation = self.generation;
-        let Some(Content::WriteAccess(dialog)) = self.dialog.as_mut().map(|d| &mut d.content) else {
+        let Some(id) = self.dialog.as_ref().map(|dialog| dialog.id) else {
+            return;
+        };
+        let Some(Content::WriteAccess(dialog)) = self.content_of(id) else {
             return;
         };
         if dialog.storing {
@@ -495,7 +505,7 @@ impl Manage {
                 })
                 .await;
             let _ = this.update_in(cx, |manage, window, cx| {
-                if let Some(Content::WriteAccess(dialog)) = manage.dialog.as_mut().map(|d| &mut d.content) {
+                if let Some(Content::WriteAccess(dialog)) = manage.content_of(id) {
                     dialog.storing = false;
                     match &result {
                         Ok(_) => dialog.input.update(cx, |input, cx| input.set_value("", window, cx)),
@@ -517,7 +527,15 @@ impl Manage {
         cx.notify();
     }
 
-    fn load_sample(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The open dialog's content, only while it is still dialog `id`, the one that started the work now landing.
+    fn content_of(&mut self, id: u64) -> Option<&mut Content> {
+        self.dialog
+            .as_mut()
+            .filter(|dialog| dialog.id == id)
+            .map(|dialog| &mut dialog.content)
+    }
+
+    fn load_sample(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(backend) = self.sample.clone() else {
             return;
         };
@@ -528,7 +546,7 @@ impl Manage {
                 .await
                 .and_then(|value| Row::from_json(&value, &sample_fields()));
             let _ = this.update_in(cx, |manage, window, cx| {
-                let Some(Content::Sample(sample)) = manage.dialog.as_mut().map(|d| &mut d.content) else {
+                let Some(Content::Sample(sample)) = manage.content_of(id) else {
                     return;
                 };
                 match result {
@@ -550,7 +568,10 @@ impl Manage {
         let Some(backend) = self.sample.clone() else {
             return;
         };
-        let Some(Content::Sample(sample)) = self.dialog.as_mut().map(|d| &mut d.content) else {
+        let Some(id) = self.dialog.as_ref().map(|dialog| dialog.id) else {
+            return;
+        };
+        let Some(Content::Sample(sample)) = self.content_of(id) else {
             return;
         };
         let Some(form) = sample.form.as_mut() else {
@@ -589,7 +610,7 @@ impl Manage {
                 .spawn(async move { backend.write(&request) })
                 .await;
             let next = this.update_in(cx, |manage, window, cx| {
-                let Some(Content::Sample(sample)) = manage.dialog.as_mut().map(|d| &mut d.content) else {
+                let Some(Content::Sample(sample)) = manage.content_of(id) else {
                     return Next::Show;
                 };
                 let Some(form) = sample.form.as_mut() else {
@@ -618,7 +639,7 @@ impl Manage {
                 .await
                 .and_then(|value| Row::from_json(&value, &sample_fields()));
             let _ = this.update_in(cx, |manage, window, cx| {
-                let Some(Content::Sample(sample)) = manage.dialog.as_mut().map(|d| &mut d.content) else {
+                let Some(Content::Sample(sample)) = manage.content_of(id) else {
                     return;
                 };
                 if let Some(form) = sample.form.as_mut() {

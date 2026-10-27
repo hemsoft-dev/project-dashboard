@@ -227,10 +227,7 @@ impl Manage {
                             fleet.load_error[ix] = None;
                             fleet.selected[ix] = fleet.selected[ix].min(rows.len().saturating_sub(1));
                             fleet.rows[ix] = rows;
-                            if kind == Kind::Agent {
-                                let count = fleet.rows[ix].len();
-                                fleet.toggles = (0..count).map(|_| control(cx)).collect();
-                            }
+                            sync_controls(fleet, cx);
                         }
                         Err(error) => fleet.load_error[ix] = Some(error.to_string()),
                     }
@@ -240,6 +237,13 @@ impl Manage {
             .detach();
         }
         cx.notify();
+    }
+
+    /// Reloads lists of the open Fleet dialog.
+    pub fn reload_fleet(&mut self, kinds: &[Kind], cx: &mut Context<Self>) {
+        if let Some((id, _)) = self.open_fleet() {
+            self.load_fleet(id, kinds, cx);
+        }
     }
 
     pub fn show_fleet_tab(&mut self, kind: Kind, cx: &mut Context<Self>) {
@@ -456,11 +460,7 @@ impl Manage {
                 let result = result.and_then(|value| FleetRow::from_json(kind, &value));
                 // pmd took the write: the list shows it even when the editor closed while it was on its way.
                 if let Ok(saved) = &result {
-                    let rows = &mut fleet.rows[slot(kind)];
-                    match rows.iter_mut().find(|row| row.key == saved.key) {
-                        Some(row) => *row = saved.clone(),
-                        None => rows.push(saved.clone()),
-                    }
+                    upsert(fleet, saved.clone(), cx);
                 }
                 let editor = fleet.editor.as_mut().filter(|editor| editor.key == editor_key)?;
                 let next = match result {
@@ -502,11 +502,7 @@ impl Manage {
                     return;
                 }
             };
-            if next == Next::Show {
-                // A create that timed out but landed: reload the list instead of offering a retry.
-                let _ = this.update(cx, |manage, cx| manage.load_fleet(id, &[kind], cx));
-                return;
-            }
+            // Changed elsewhere, or a create that timed out but landed: read the row with the read token.
             let fresh = cx
                 .background_executor()
                 .spawn(async move { reader.read(&path) })
@@ -517,25 +513,42 @@ impl Manage {
                 let Some(fleet) = manage.fleet_of(id) else {
                     return;
                 };
-                // pmd's current row replaces the list's, so the list never shows a version that is gone.
-                if let Ok(fresh) = &fresh
-                    && let Some(row) = fleet.rows[slot(kind)].iter_mut().find(|row| row.key == fresh.key)
-                {
-                    *row = fresh.clone();
+                // pmd's current row goes in the list, so it never shows a version that is gone or misses a row that
+                // was created.
+                if let Ok(fresh) = &fresh {
+                    upsert(fleet, fresh.clone(), cx);
                 }
                 let Some(editor) = fleet.editor.as_mut().filter(|editor| editor.key == editor_key) else {
                     cx.notify();
                     return;
                 };
-                match fresh {
-                    Ok(row) => {
+                let mut created = false;
+                match (next, fresh) {
+                    (Next::Reread, Ok(row)) => {
                         editor.form.conflict(row.row());
                         editor.row = Some(row);
                         editor.reapply.focus.focus(window, cx);
                     }
-                    Err(error) => editor.form.reread_failed(&error),
+                    (Next::Reread, Err(error)) => editor.form.reread_failed(&error),
+                    // The create landed: what pmd stored is saved, and the editor edits it from here.
+                    (_, Ok(row)) => {
+                        editor.form.saved(row.row());
+                        editor.row = Some(row);
+                        created = true;
+                    }
+                    // Whether it landed is unknown: the list reloads, and the timeout's message says to check.
+                    (_, Err(_)) => manage.load_fleet(id, &[kind], cx),
                 }
-                editor.sync_disabled(writable, cx);
+                if let Some(editor) = manage
+                    .fleet_of(id)
+                    .and_then(|fleet| fleet.editor.as_mut())
+                    .filter(|editor| editor.key == editor_key)
+                {
+                    editor.sync_disabled(writable, cx);
+                }
+                if created {
+                    manage.reopen_created(id, editor_key, window, cx);
+                }
                 cx.notify();
             });
         })
@@ -1138,6 +1151,39 @@ impl Manage {
             window,
             cx,
         )
+    }
+}
+
+/// Puts a row pmd returned in its list, replacing the old one or adding a new one, and keeps the controls in step.
+fn upsert(fleet: &mut FleetDialog, row: FleetRow, cx: &mut Context<Manage>) {
+    let rows = &mut fleet.rows[slot(row.kind)];
+    match rows.iter_mut().find(|known| known.key == row.key) {
+        Some(known) => *known = row,
+        None => rows.push(row),
+    }
+    sync_controls(fleet, cx);
+}
+
+/// One quick toggle per agent, and an agent editor's pickers one control per machine and subscription, as the lists
+/// grow or shrink. Existing controls stay, so focus does too.
+fn sync_controls(fleet: &mut FleetDialog, cx: &mut Context<Manage>) {
+    let resize = |controls: &mut Vec<Control>, count: usize, cx: &mut Context<Manage>| {
+        controls.truncate(count);
+        while controls.len() < count {
+            controls.push(control(cx));
+        }
+    };
+    let agents = fleet.rows[2].len();
+    resize(&mut fleet.toggles, agents, cx);
+    let (machines, subscriptions) = (fleet.rows[0].len(), fleet.rows[1].len());
+    if let Some(editor) = fleet.editor.as_mut().filter(|editor| editor.kind == Kind::Agent) {
+        for (field, controls) in &mut editor.choices {
+            match *field {
+                "machine" => resize(controls, machines, cx),
+                "subscription" => resize(controls, subscriptions, cx),
+                _ => {}
+            }
+        }
     }
 }
 

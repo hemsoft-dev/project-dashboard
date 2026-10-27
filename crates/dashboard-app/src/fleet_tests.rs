@@ -485,11 +485,15 @@ async fn a_create_that_timed_out_but_landed_reloads_instead_of_retrying(cx: &mut
     );
     click(cx, handle, "fleet-save");
     settle(cx, handle, &view).await;
-    assert!(text_of(cx, handle, "dialog-message").contains("the row exists now"));
     assert_eq!(
         cx.update(|cx| manage.read(cx).fleet().unwrap().rows(Kind::Subscription).len()),
         4
     );
+    // The stored row is read back: the editor edits it now, so there is no second create to send.
+    assert_eq!(text_of(cx, handle, "fleet-editor-title"), "Subscription grok-heavy");
+    assert!(!exists(cx, handle, "fleet-field-id"));
+    assert_eq!(text_of(cx, handle, "fleet-save"), "Save (Ctrl+Enter)");
+    press(cx, handle, "ctrl-enter");
     assert_eq!(backend.writes.lock().unwrap().len(), 1, "not resent");
 }
 
@@ -647,4 +651,54 @@ async fn discarding_mine_after_a_conflict_leaves_the_list_on_pmds_row(cx: &mut T
         backend.writes.lock().unwrap().last().unwrap().precondition,
         Precondition::IfMatch(7)
     );
+}
+
+#[gpui_kit::test]
+async fn an_agent_editor_opened_early_gets_pickers_as_the_lists_arrive(cx: &mut TestAppContext) {
+    let backend = FakeFleet::new(&["read", "write:fleet"]);
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    click(cx, handle, "fleet-tab-agent");
+    click(cx, handle, "fleet-add");
+    assert!(!exists(cx, handle, "fleet-subscription-grok-heavy"));
+    // Another subscription arrives with a later load: its picker shows and works.
+    backend.rows.lock().unwrap()[1].push(
+        json!({"id": "grok-heavy", "provider": "xai", "plan": "", "metered": false,
+        "usageSource": null, "source": "api", "version": 1}),
+    );
+    cx.update(|cx| manage.update(cx, |m, cx| m.reload_fleet(&[Kind::Subscription], cx)));
+    settle(cx, handle, &view).await;
+    click(cx, handle, "fleet-subscription-grok-heavy");
+    assert_eq!(
+        cx.update(|cx| manage
+            .read(cx)
+            .fleet()
+            .unwrap()
+            .editor_form()
+            .unwrap()
+            .value("subscription")
+            .to_owned()),
+        "grok-heavy"
+    );
+}
+
+#[gpui_kit::test]
+async fn a_new_agent_gets_its_quick_toggle_at_once(cx: &mut TestAppContext) {
+    let backend = FakeFleet::new(&["read", "write:fleet"]);
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    click(cx, handle, "fleet-tab-agent");
+    click(cx, handle, "fleet-add");
+    click(cx, handle, "fleet-machine-air");
+    set_input(cx, handle, &manage, "provider", "codex");
+    set_input(cx, handle, &manage, "alias", "mini-model");
+    set_input(cx, handle, &manage, "model", "gpt-6.1-mini");
+    click(cx, handle, "fleet-subscription-chatgpt-pro");
+    click(cx, handle, "fleet-save");
+    settle(cx, handle, &view).await;
+    click(cx, handle, "fleet-back");
+    assert_eq!(text_of(cx, handle, "fleet-toggle-4"), "Disable");
+    click(cx, handle, "fleet-toggle-4");
+    settle(cx, handle, &view).await;
+    assert_eq!(value_of(&backend, 2, "air/codex/mini-model", "enabled"), json!(false));
 }

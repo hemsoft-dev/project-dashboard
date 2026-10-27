@@ -221,7 +221,8 @@ impl FleetRow {
 }
 
 /// What a check needs to know about the rest of the fleet: the machine names and subscription ids that exist, so an
-/// agent naming another is caught before pmd's `400 unknown_machine` or `unknown_subscription`.
+/// agent naming another is caught before pmd's `400 unknown_machine` or `unknown_subscription`. An empty list means
+/// unknown (it hasn't loaded), so nothing is checked against it and pmd's answer decides.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Known {
     pub machines: Vec<String>,
@@ -381,7 +382,7 @@ pub fn body(
             let roles = tags("roles");
             if !is_slug(get("machine")) {
                 problems.push(("machine", "Pick a machine.".to_owned()));
-            } else if !known.machines.iter().any(|m| m == get("machine")) {
+            } else if !known.machines.is_empty() && !known.machines.iter().any(|m| m == get("machine")) {
                 problems.push(("machine", format!("No machine {:?} in pmd.", get("machine"))));
             }
             if !is_provider(get("provider")) {
@@ -398,7 +399,7 @@ pub fn body(
             }
             if !is_slug(get("subscription")) {
                 problems.push(("subscription", "Pick a subscription.".to_owned()));
-            } else if !known.subscriptions.iter().any(|s| s == get("subscription")) {
+            } else if !known.subscriptions.is_empty() && !known.subscriptions.iter().any(|s| s == get("subscription")) {
                 problems.push((
                     "subscription",
                     format!("No subscription {:?} in pmd.", get("subscription")),

@@ -180,6 +180,8 @@ fn an_agent_body_is_keyed_by_machine_provider_and_alias_and_checks_both_referenc
         problems[1],
         ("subscription", "No subscription \"gemini-ultra\" in pmd.".to_owned())
     );
+    // Lists that haven't loaded check nothing: pmd's answer decides.
+    assert!(fleet::body(Kind::Agent, &unknown, &Known::default()).is_ok());
 }
 
 #[test]

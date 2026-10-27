@@ -98,15 +98,45 @@ Each checkout must have one GitHub origin URL whose full `owner/name` matches a 
 and linked worktrees are supported. Conditional/include-based Git identity configuration is explicitly unavailable;
 folder names never stand in for repository identity. No local GitHub CLI installation is required.
 
-The window shows a table with one row per repository, in config order: a colored dot for its overall state
-(**Local health unavailable**, **Failed** or **Loading**, plus any supplied hosted verdict), its `owner/name`, its **Priority**, the counts of open PRs and open issues, when it
-was last **updated**, such as `14m ago`, and its **last activity**: the most recently updated open or recently merged
-PR, open issue or workflow run in gh-x's report, such as `PR #12` with its title. The update time is that item's;
-hover it for the exact local time. Pmd currently supplies no overall/local-health verdict, so hosted status shows Local health unavailable.
+The window shows a table with one row per repository. Each row has:
 
-- **Expand** a row (click it or its chevron) to see explicitly unavailable local health, the pmd status generation age, Board columns, the complete paginated open-work list, its open pull requests, open issues, recently merged
-  pull requests and workflow runs. Several rows can be open at once, and they stay open across refreshes. Click an
-  item, or a row's last activity, to open it in your browser.
+- a colored dot for its state;
+- its `owner/name`, with pmd's ages under it, such as `checked 12m ago · changed 5h 23m ago`;
+- its **Priority**;
+- the counts of open PRs and open issues;
+- when it was last **updated**, such as `14m ago`;
+- its **last activity**: the most recently updated open or recently merged PR, open issue or workflow run in gh-x's
+  report, such as `PR #12` with its title.
+
+The update time is that item's. Hover it, or the pmd ages, for the exact local time.
+
+pmd regenerates a repository's status only when the repository changes, so **changed** can be hours old while
+**checked** stays within pmd's 30-minute sweep. Checked is the later of pmd's last successful sweep (`/healthz`) and
+the status itself.
+
+pmd supplies no overall verdict. The dot shows the most urgent signal in what pmd does supply:
+
+| Dot | Meaning |
+|---|---|
+| Red | A work item is **Blocked**, or the refresh failed |
+| Amber | A work item is **Waiting on Franz** |
+| Orange | **Checks failing**: an open PR's checks fail, or a workflow's newest run on the default branch failed |
+| Green | **OK**: none of the above |
+| Grey | **Loading**, or the **Board** didn't load and nothing else is flagged |
+
+Hover the dot for every signal behind it. A status's age never greys a dot.
+
+- **Expand** a row (click it or its chevron) to see its details, most urgent first:
+  1. **Blocked**, then **Waiting on Franz**, when there are any.
+  2. **Open PRs**, each with its work status or Draft, CI, review and AI review in words.
+  3. **Open issues**, each with its work status in plain words. pmd's "Ready" reads **Not started**.
+  4. **In progress**, and any work not started that the lists above don't show.
+  5. **Recently merged** and **CI runs**.
+  6. Last, where the data came from, in local time: when the status changed, when pmd last checked it, when its Board
+     was built, and that pmd doesn't supply local branch, worktree and stash health.
+
+  Several rows can be open at once, and they stay open across refreshes. Click an item, or a row's last activity, to
+  open it in your browser.
 - **Sort** by update time with the **Updated** column header: newest first, then oldest first, then config order
   again. Repositories with nothing to date stay at the bottom either way.
 - **Priority** shows pmd's tier, such as `P0`, immediately before PRs. Click its header for highest priority first,

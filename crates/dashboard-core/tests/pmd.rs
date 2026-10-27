@@ -91,6 +91,7 @@ fn response(path: &str) -> Reply {
         "/v1/work?project=gh-x&limit=500&cursor=page%2B2%2F%3D" => {
             Reply::json(json!({"items":[item("stable-2")],"nextCursor":null}))
         }
+        "/healthz" => Reply::json(json!({"sweepAgeSeconds":60,"webhookAgeSeconds":null,"githubLow":false})),
         _ => panic!("unexpected API request {path}"),
     }
 }
@@ -135,9 +136,57 @@ fn hosted_status_preserves_rows_and_board_truncation_and_follows_encoded_work_cu
         let mut board = Board::new(std::slice::from_ref(&checkout.0), &StatusCache::default());
         let mut cache = StatusCache::default();
         apply(&mut board, &mut cache, &checkout, Ok(doc));
-        assert_eq!(board.cards()[0].overall(), Overall::Unavailable);
+        // Nothing blocked, waiting or failing: an old, unchanged status is still OK.
+        assert_eq!(board.cards()[0].overall(), Overall::Clean);
     }
-    assert_eq!(server.requests.lock().unwrap().len(), 10);
+    assert_eq!(server.requests.lock().unwrap().len(), 12);
+}
+#[test]
+fn checked_time_is_the_later_of_pmds_last_sweep_and_the_status_and_optional() {
+    let checkout = Checkout::new();
+    let checked = |health: Reply| {
+        let health = Arc::new(Mutex::new(Some(health)));
+        let server = Server::new(move |path| match path {
+            "/healthz" => health.lock().unwrap().take().unwrap(),
+            _ => response(path),
+        });
+        let doc = checkout.source(&server).fetch(&checkout.0, false).unwrap();
+        let hosted = doc.hosted.unwrap();
+        assert_eq!(hosted.generated_at, "2026-10-25T20:00:00Z");
+        hosted.checked()
+    };
+    // Swept a minute ago, long after the status was generated: checked then.
+    let swept = checked(Reply::json(
+        json!({"sweepAgeSeconds":60,"webhookAgeSeconds":null,"githubLow":false}),
+    ));
+    let age = (chrono::Utc::now() - swept.unwrap()).num_seconds();
+    assert!((59..=70).contains(&age), "{age}");
+    // A sweep older than the status: the status itself is the last check.
+    let older = checked(Reply::json(
+        json!({"sweepAgeSeconds":999_999_999,"webhookAgeSeconds":null,"githubLow":false}),
+    ));
+    assert_eq!(older, dashboard_core::activity::parse_time("2026-10-25T20:00:00Z"));
+    // No sweep since pmd started, a failing or malformed /healthz: unknown, and the status still loads.
+    assert_eq!(
+        checked(Reply::json(
+            json!({"sweepAgeSeconds":null,"webhookAgeSeconds":null,"githubLow":false})
+        )),
+        None
+    );
+    assert_eq!(
+        checked(Reply {
+            code: 503,
+            body: TOKEN.into()
+        }),
+        None
+    );
+    assert_eq!(
+        checked(Reply {
+            code: 200,
+            body: "{bad".into()
+        }),
+        None
+    );
 }
 #[test]
 fn last_error_and_outage_keep_last_good_status_with_original_age_and_explicit_error() {

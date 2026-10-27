@@ -19,9 +19,11 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
+use dashboard_core::activity::{age_words, clock_time, moment, parse_time};
 use dashboard_core::cache::StatusCache;
 use dashboard_core::columns::{Column, ColumnWidths};
 use dashboard_core::config::{Config, ConfigError, ConfigFile};
+use dashboard_core::pmd::{Hosted, WorkItem};
 use dashboard_core::priority::{Pmd, PrioritySource};
 use dashboard_core::scheduler::{self, Outcome};
 use dashboard_core::source::StatusSource;
@@ -981,19 +983,13 @@ impl BoardView {
         let prs = count("pullRequests.open", |document| document.pull_requests.open.len());
         let issues = count("issues", |document| document.issues.len());
         let error = card.error.as_ref().filter(|error| !error.is_setup());
+        // pmd regenerates a status only when the repository changes, and confirms it on every sweep: show both, each
+        // with its local time on hover.
         let freshness = card
             .document
             .as_ref()
             .and_then(|doc| doc.hosted.as_ref())
-            .map(|hosted| {
-                let age = DateTime::parse_from_rfc3339(&hosted.generated_at)
-                    .ok()
-                    .map(|at| (now - at.with_timezone(&Utc)).num_seconds().max(0));
-                format!(
-                    "pmd status age: {}",
-                    age.map_or_else(|| "unknown".into(), |seconds| format!("{seconds}s"))
-                )
-            });
+            .map(|hosted| freshness(hosted, now));
         // Found once per row: both the Updated and Last activity columns show it.
         let last_activity = card.last_activity();
         // The age, with the exact local time on hover; a dash until there is something to date.
@@ -1116,7 +1112,12 @@ impl BoardView {
                         })),
                 ),
             )
-            .child(div().w(STATE).flex_none().child(state_dot(ix, overall, cx)))
+            .child(
+                div()
+                    .w(STATE)
+                    .flex_none()
+                    .child(state_dot(ix, overall, card.signals(), cx)),
+            )
             .child(
                 column_cell(Column::Repository, &self.columns)
                     .id(("name", ix))
@@ -1128,8 +1129,21 @@ impl BoardView {
                         v_flex()
                             .min_w_0()
                             .child(div().truncate().font_semibold().child(card.name()))
-                            .when_some(freshness, |this, freshness| {
-                                this.child(div().text_xs().truncate().child(freshness))
+                            .when_some(freshness, |this, (text, times)| {
+                                let times: SharedString = times.into();
+                                this.child(
+                                    div()
+                                        .id(("pmd-age", ix))
+                                        .test_support()
+                                        .aria_label(text.clone())
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .truncate()
+                                        .tooltip(move |window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new(times.clone()).build(window, cx)
+                                        })
+                                        .child(text),
+                                )
                             }),
                     )
                     // Stays while a refresh runs: until a fresh result lands, the row still shows the cached copy.
@@ -1261,82 +1275,29 @@ impl BoardView {
         }
         match &card.document {
             Some(document) => {
-                if let Some(hosted) = &document.hosted {
-                    let age = DateTime::parse_from_rfc3339(&hosted.generated_at)
-                        .ok()
-                        .map(|at| format!("{}s ago", (self.now() - at.with_timezone(&Utc)).num_seconds().max(0)))
-                        .unwrap_or_else(|| "unknown age".to_owned());
+                if let Some(error) = document.hosted.as_ref().and_then(|hosted| hosted.work_error.as_ref()) {
                     body = body.child(
                         div()
-                            .id(("pmd-freshness", ix))
+                            .id(("pmd-work-error", ix))
                             .test_support()
                             .text_sm()
-                            .child(format!("pmd status generated {age} · {}", hosted.generated_at)),
-                    );
-                    if let Some(error) = &hosted.work_error {
-                        body = body.child(
-                            div()
-                                .id(("pmd-work-error", ix))
-                                .test_support()
-                                .text_sm()
-                                .text_color(theme.warning)
-                                .child(if hosted.board.is_some() {
+                            .text_color(theme.warning)
+                            .child(
+                                if document.hosted.as_ref().is_some_and(|hosted| hosted.board.is_some()) {
                                     format!("Board/work refresh failed: {error} Showing last good Board/work below.")
                                 } else {
                                     format!("Board/work unavailable: {error}")
-                                }),
-                        );
-                    }
-                    if let Some(board) = &hosted.board {
-                        let mut work = v_flex()
-                            .id(("pmd-board", ix))
-                            .test_support()
-                            .gap_1()
-                            .text_sm()
-                            .child(format!("Project Manager Board · {}", board.generated_at));
-                        for column in &board.columns {
-                            work = work.child(div().font_semibold().child(format!(
-                                "{}{}",
-                                column.title,
-                                if column.truncated {
-                                    " · truncated, complete list below"
-                                } else {
-                                    ""
-                                }
-                            )));
-                            for item in &column.items {
-                                let url = item.url.clone();
-                                work = work.child(
-                                    div()
-                                        .id(SharedString::from(format!("board-{}-{}", ix, item.id)))
-                                        .test_support()
-                                        .cursor_pointer()
-                                        .hover(|s| s.underline())
-                                        .child(format!("{} #{} {}", item.kind, item.number, item.title))
-                                        .on_click(move |_, _, cx| cx.open_url(&url)),
-                                );
-                            }
-                        }
-                        work = work.child(div().font_semibold().child("Open work · all API pages"));
-                        for item in &hosted.work {
-                            let url = item.url.clone();
-                            work = work.child(
-                                div()
-                                    .id(SharedString::from(format!("work-{}-{}", ix, item.id)))
-                                    .test_support()
-                                    .cursor_pointer()
-                                    .hover(|s| s.underline())
-                                    .child(format!(
-                                        "{} · {} #{} {}",
-                                        item.status, item.kind, item.number, item.title
-                                    ))
-                                    .on_click(move |_, _, cx| cx.open_url(&url)),
-                            );
-                        }
-                        body = body.child(work);
-                    }
+                                },
+                            ),
+                    );
                 }
-                body = body.children(document.health_rows().iter().map(|row| health_row(row, cx)));
+                body = body.children(
+                    document
+                        .health_rows()
+                        .iter()
+                        .filter(|_| document.hosted.is_none())
+                        .map(|row| health_row(row, cx)),
+                );
                 body = body.children(document.unavailable_sections().map(|section| {
                     h_flex()
                         .gap_2()
@@ -1350,6 +1311,9 @@ impl BoardView {
                         ))
                 }));
                 body = body.child(tables(ix, document, cx));
+                if let Some(hosted) = &document.hosted {
+                    body = body.child(about_pmd(ix, hosted, self.now(), cx));
+                }
             }
             None if card.error.is_none() => {
                 body = body.child(
@@ -1538,25 +1502,107 @@ fn ago(elapsed: Duration) -> String {
     }
 }
 
-/// The row's overall state as a colored dot, with its name for tests and the tooltip.
-fn state_dot(ix: usize, overall: Overall, cx: &App) -> impl IntoElement {
+/// The row's pmd ages, "checked 12m ago · changed 5h 23m ago", and their local times for the tooltip.
+fn freshness(hosted: &Hosted, now: DateTime<Utc>) -> (String, String) {
+    let changed = hosted.changed();
+    let checked = hosted.checked();
+    let text = match (checked, changed) {
+        (Some(checked), Some(changed)) => format!(
+            "checked {} · changed {}",
+            age_words(checked, now),
+            age_words(changed, now)
+        ),
+        (None, Some(changed)) => format!("changed {}", age_words(changed, now)),
+        _ => "pmd status age unknown".to_owned(),
+    };
+    let times = [
+        checked.map(|at| format!("pmd last checked {}", clock_time(at, now))),
+        changed.map(|at| format!("status last changed {}", clock_time(at, now))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ");
+    let times = if times.is_empty() { text.clone() } else { times };
+    (text, times)
+}
+
+/// Where the details came from, at the bottom: when pmd last checked and changed this status, when its Board was
+/// built, and the local health pmd doesn't supply.
+fn about_pmd(ix: usize, hosted: &Hosted, now: DateTime<Utc>, cx: &App) -> impl IntoElement + use<> {
+    let when = |at: Option<DateTime<Utc>>| at.map_or_else(|| "unknown".to_owned(), |at| moment(at, now));
+    let mut lines = vec![format!("Status changed {}", when(hosted.changed()))];
+    if let Some(checked) = hosted.checked() {
+        lines.push(format!("pmd last checked {}", moment(checked, now)));
+    }
+    if let Some(board) = &hosted.board {
+        lines.push(format!("Board as of {}", when(parse_time(&board.generated_at))));
+    }
+    v_flex()
+        .id(("pmd-freshness", ix))
+        .test_support()
+        .aria_label(lines.join(" · "))
+        .pt_3()
+        .gap_0p5()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .child(lines.join(" · "))
+        .child(
+            div()
+                .id(("local-health", ix))
+                .test_support()
+                .child("Local branch, worktree and stash health: not supplied by pmd"),
+        )
+}
+
+/// pmd's work statuses in plain words. "Ready" means open and not started, so it says that.
+fn plain_status(status: &str) -> &str {
+    match status {
+        "ready" => "Not started",
+        other => dashboard_core::work::status_label(other),
+    }
+}
+
+/// The color a work status stands out in, if any: red for blocked, amber for waiting on Franz.
+fn status_color(status: &str, cx: &App) -> Option<Hsla> {
+    match status {
+        "blocked" => Some(cx.theme().danger),
+        "waiting_on_franz" => Some(cx.theme().yellow),
+        _ => None,
+    }
+}
+
+/// The row's overall state as a colored dot, with its name for tests and screen readers, and every signal behind it
+/// on hover.
+fn state_dot(ix: usize, overall: Overall, signals: Option<dashboard_core::Signals>, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     let (color, label) = match overall {
         Overall::Loading => (theme.muted_foreground, "Loading"),
-        Overall::Clean => (theme.success, "Clean"),
+        Overall::Clean => (theme.success, "OK"),
         Overall::Attention => (theme.warning, "Attention"),
-        Overall::Failed => (theme.danger, "Failed"),
-        Overall::Unavailable => (theme.muted_foreground, "Local health unavailable"),
+        Overall::Failed => (theme.danger, "Refresh failed"),
+        Overall::Unavailable => (theme.muted_foreground, "Board unavailable"),
+        Overall::Blocked => (theme.danger, "Blocked"),
+        Overall::WaitingOnFranz => (theme.yellow, "Waiting on Franz"),
+        Overall::ChecksFailing => (theme.warning, "Checks failing"),
+    };
+    let hosted = signals.is_some();
+    let details = signals.map(|signals| signals.describe()).unwrap_or_default();
+    let tooltip: SharedString = match overall {
+        Overall::Clean if hosted => "OK: nothing blocked, waiting on Franz or failing".into(),
+        _ if details.is_empty() => label.into(),
+        Overall::Failed => format!("Refresh failed · {}", details.join(" · ")).into(),
+        _ => details.join(" · ").into(),
     };
     div()
-        .id(SharedString::from(format!("state-{ix}-{label}")))
+        .id(SharedString::from(format!("state-{ix}-{overall:?}")))
         .test_support()
         // The color alone doesn't reach screen readers.
         .aria_label(format!("State: {label}"))
         .size(rems(0.625))
         .rounded_full()
         .bg(color)
-        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(label).build(window, cx))
+        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx))
 }
 
 /// Keep the count of loaded rows even when enrichment failed. An empty unavailable list is unknown ("?"),
@@ -1604,11 +1650,13 @@ fn health_row(row: &HealthRow, cx: &App) -> impl IntoElement {
 
 /// One table: a heading with its count, then clickable rows or "None". An unavailable section keeps any loaded rows
 /// alongside gh-x's diagnostic. Only an empty unavailable list is unknown ("?"). A section turned off reads "off".
+/// `tone` colors a heading that must stand out, such as Blocked.
 fn table(
     title: &'static str,
     count: usize,
     section: Option<&Section>,
     rows: Vec<AnyElement>,
+    tone: Option<Hsla>,
     cx: &App,
 ) -> impl IntoElement + use<> {
     let theme = cx.theme();
@@ -1663,10 +1711,13 @@ fn table(
                 .id(SharedString::from(format!("heading-{title}")))
                 .test_support()
                 .aria_label(heading.clone())
-                .pt_2()
-                .text_xs()
+                .pb_0p5()
+                .mb_0p5()
+                .border_b_1()
+                .border_color(theme.border)
+                .text_sm()
                 .font_semibold()
-                .text_color(theme.muted_foreground)
+                .text_color(tone.unwrap_or(theme.foreground))
                 .child(heading),
         )
         .children(body)
@@ -1720,18 +1771,85 @@ fn muted(text: impl Into<SharedString>, width: f32, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-fn pr_rows(kind: &str, ix: usize, prs: &[PullRequest], cx: &App) -> Vec<AnyElement> {
+/// gh-x's checks verdict in words, colored by meaning. Unknown values stay visible as they are.
+fn checks_cell(checks: &str, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let (text, color) = match checks {
+        "pass" => ("CI passing".to_owned(), theme.success),
+        "fail" => ("CI failing".to_owned(), theme.danger),
+        "pending" => ("CI running".to_owned(), theme.yellow),
+        "-" | "" => ("No CI".to_owned(), theme.muted_foreground),
+        other => (format!("CI {other}"), theme.muted_foreground),
+    };
+    div()
+        .w(rems(84. / 16.))
+        .flex_none()
+        .truncate()
+        .text_color(color)
+        .child(text)
+        .into_any_element()
+}
+
+/// gh-x's review verdict in words.
+fn review_words(pr: &PullRequest) -> String {
+    match pr.review.as_str() {
+        "approved" if pr.approvals > 1 => format!("Approved ×{}", pr.approvals),
+        "approved" => "Approved".to_owned(),
+        "changes" => "Changes requested".to_owned(),
+        "review" => "Needs review".to_owned(),
+        "-" | "" => "No review yet".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+/// gh-x's AI review verdict in words.
+fn ai_words(ai_review: &str) -> String {
+    match ai_review {
+        "pass" => "AI: clean".to_owned(),
+        "fail" => "AI: findings".to_owned(),
+        "pending" => "AI: running".to_owned(),
+        "-" | "" => String::new(),
+        other => format!("AI: {other}"),
+    }
+}
+
+/// A tag for an issue or PR row: Draft, or pmd's work status in plain words, colored when it must stand out.
+fn tag_cell(text: String, color: Option<Hsla>, cx: &App) -> AnyElement {
+    div()
+        .w(rems(120. / 16.))
+        .flex_none()
+        .truncate()
+        .text_color(color.unwrap_or(cx.theme().muted_foreground))
+        .child(text)
+        .into_any_element()
+}
+
+fn work_tag(hosted: Option<&Hosted>, kind: &str, number: u64, cx: &App) -> (String, Option<Hsla>) {
+    hosted
+        .and_then(|hosted| hosted.item_for(kind, number))
+        .map_or((String::new(), None), |item| {
+            (plain_status(&item.status).to_owned(), status_color(&item.status, cx))
+        })
+}
+
+fn pr_rows(kind: &str, ix: usize, prs: &[PullRequest], hosted: Option<&Hosted>, cx: &App) -> Vec<AnyElement> {
     prs.iter()
         .map(|pr| {
+            let (tag, color) = if pr.state == "draft" {
+                ("Draft".to_owned(), None)
+            } else {
+                work_tag(hosted, "pr", pr.number, cx)
+            };
             link_row(
                 format!("{kind}-{ix}-{}", pr.number).into(),
                 &pr.url,
                 vec![
                     cell(format!("#{}", pr.number), 52.),
                     grow(pr.title.clone()),
-                    muted(pr.checks.clone(), 72., cx),
-                    muted(pr.review.clone(), 120., cx),
-                    muted(pr.ai_review.clone(), 84., cx),
+                    tag_cell(tag, color, cx),
+                    checks_cell(&pr.checks, cx),
+                    muted(review_words(pr), 130., cx),
+                    muted(ai_words(&pr.ai_review), 84., cx),
                     muted(pr.updated.clone(), 40., cx),
                 ],
                 cx,
@@ -1740,20 +1858,46 @@ fn pr_rows(kind: &str, ix: usize, prs: &[PullRequest], cx: &App) -> Vec<AnyEleme
         .collect()
 }
 
-fn issue_rows(ix: usize, issues: &[Issue], cx: &App) -> Vec<AnyElement> {
+fn issue_rows(ix: usize, issues: &[Issue], hosted: Option<&Hosted>, cx: &App) -> Vec<AnyElement> {
     issues
         .iter()
         .map(|issue| {
+            let (tag, color) = work_tag(hosted, "issue", issue.number, cx);
+            let linked = match issue.pull_requests.as_str() {
+                "-" | "" => String::new(),
+                prs => format!("PR {prs}"),
+            };
             link_row(
                 format!("issue-{ix}-{}", issue.number).into(),
                 &issue.url,
                 vec![
                     cell(format!("#{}", issue.number), 52.),
                     grow(issue.title.clone()),
-                    muted(issue.pull_requests.clone(), 60., cx),
+                    tag_cell(tag, color, cx),
+                    muted(linked, 60., cx),
                     muted(issue.labels.clone(), 120., cx),
                     muted(issue.updated.clone(), 40., cx),
                 ],
+                cx,
+            )
+        })
+        .collect()
+}
+
+/// pmd work items: "Issue #31" or "PR #3", and the title.
+fn work_rows(ix: usize, items: &[&WorkItem], cx: &App) -> Vec<AnyElement> {
+    items
+        .iter()
+        .map(|item| {
+            let kind = match item.kind.as_str() {
+                "pr" => "PR",
+                "issue" => "Issue",
+                other => other,
+            };
+            link_row(
+                SharedString::from(format!("work-{ix}-{}", item.id)),
+                &item.url,
+                vec![cell(format!("{kind} #{}", item.number), 84.), grow(item.title.clone())],
                 cx,
             )
         })
@@ -1793,38 +1937,68 @@ fn run_rows(ix: usize, runs: &[WorkflowRun], cx: &App) -> Vec<AnyElement> {
         .collect()
 }
 
+/// The details' sections. With pmd data: Blocked and Waiting on Franz first, when there are any; then open PRs and
+/// issues, each tagged with its work status; then In progress, and any work not started that the lists above don't
+/// show. Recently merged and CI runs come last.
 fn tables(ix: usize, document: &StatusDocument, cx: &App) -> impl IntoElement + use<> {
     let prs = &document.pull_requests;
-    v_flex()
-        .id(("tables", ix))
-        .test_support()
-        .gap_1()
+    let hosted = document.hosted.as_ref();
+    let mut tables = v_flex().id(("tables", ix)).test_support().gap_3();
+    let work = |title: &'static str, items: Vec<&WorkItem>, tone: Option<Hsla>| {
+        table(title, items.len(), None, work_rows(ix, &items, cx), tone, cx)
+    };
+    if let Some(hosted) = hosted {
+        for (status, title) in [("blocked", "Blocked"), ("waiting_on_franz", "Waiting on Franz")] {
+            let items = hosted.items(status);
+            if !items.is_empty() {
+                tables = tables.child(work(title, items, status_color(status, cx)));
+            }
+        }
+    }
+    tables = tables
         .child(table(
-            "Open pull requests",
+            "Open PRs",
             prs.open.len(),
             document.section("pullRequests.open"),
-            pr_rows("pr", ix, &prs.open, cx),
+            pr_rows("pr", ix, &prs.open, hosted, cx),
+            None,
             cx,
         ))
         .child(table(
             "Open issues",
             document.issues.len(),
             document.section("issues"),
-            issue_rows(ix, &document.issues, cx),
+            issue_rows(ix, &document.issues, hosted, cx),
+            None,
             cx,
-        ))
+        ));
+    if let Some(hosted) = hosted.filter(|hosted| hosted.board.is_some()) {
+        tables = tables.child(work("In progress", hosted.items("in_progress"), None));
+        let listed = |item: &&WorkItem| match item.kind.as_str() {
+            "pr" => prs.open.iter().any(|pr| pr.number == item.number),
+            "issue" => document.issues.iter().any(|issue| issue.number == item.number),
+            _ => false,
+        };
+        let other: Vec<_> = hosted.items("ready").into_iter().filter(|item| !listed(item)).collect();
+        if !other.is_empty() {
+            tables = tables.child(work("Other work not started", other, None));
+        }
+    }
+    tables
         .child(table(
             "Recently merged",
             prs.merged.len(),
             document.section("pullRequests.merged"),
-            pr_rows("merged", ix, &prs.merged, cx),
+            pr_rows("merged", ix, &prs.merged, hosted, cx),
+            None,
             cx,
         ))
         .child(table(
-            "Workflow runs",
+            "CI runs",
             document.workflow_runs.len(),
             document.section("workflowRuns"),
             run_rows(ix, &document.workflow_runs, cx),
+            None,
             cx,
         ))
 }

@@ -401,6 +401,37 @@ impl StatusDocument {
     /// gh-x's overall verdict when the document carries one (a top-level `verdict`); otherwise clean when every
     /// health row is clean by gh-x's own verdict and every GitHub section loaded. The terminal view has no overall
     /// verdict of its own, so the fallback only combines gh-x's row and section verdicts and never re-derives them.
+    /// The checks that fail, as gh-x reports them: "PR #12" for each open PR whose checks verdict is `fail`, then
+    /// "CI on main" for each workflow whose newest run on the default branch failed.
+    pub fn failing_checks(&self) -> Vec<String> {
+        let mut failing: Vec<String> = self
+            .pull_requests
+            .open
+            .iter()
+            .filter(|pr| pr.checks == "fail")
+            .map(|pr| format!("PR #{}", pr.number))
+            .collect();
+        let branch = &self.repository.default_branch;
+        let mut runs: Vec<_> = self
+            .workflow_runs
+            .iter()
+            .filter(|run| !branch.is_empty() && &run.branch == branch)
+            .collect();
+        // Newest first; RFC 3339 times in UTC sort as text.
+        runs.sort_by(|a, b| {
+            let at = |run: &WorkflowRun| run.started_at.clone().or_else(|| run.created_at.clone());
+            at(b).cmp(&at(a))
+        });
+        let mut seen = std::collections::HashSet::new();
+        for run in runs {
+            if seen.insert(run.workflow.as_str()) && run.outcome() == RunOutcome::Failure {
+                let workflow = if run.workflow.is_empty() { "CI" } else { &run.workflow };
+                failing.push(format!("{workflow} on {branch}"));
+            }
+        }
+        failing
+    }
+
     pub fn is_clean(&self) -> bool {
         if let Some(verdict) = &self.verdict {
             return verdict.clean;

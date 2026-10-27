@@ -163,7 +163,9 @@ impl dashboard_core::priority::PrioritySource for DemoPriorities {
     }
 }
 
-/// Illustrative API state for headless regression tests and captures, with no network access.
+/// Illustrative API state for headless regression tests and captures, with no network access: the demo's documents
+/// as pmd serves them, with Board and work items. codexbar has one item of each status, hs-buddy waits on Franz, and
+/// minibot's Board didn't load.
 #[cfg(test)]
 pub struct HostedSource;
 #[cfg(test)]
@@ -173,38 +175,76 @@ impl StatusSource for HostedSource {
         let mut document = DemoSource.fetch(checkout, false)?;
         document.health = None;
         document.verdict = None;
-        let item = WorkItem {
-            id: "fixture-stable-id".into(),
-            project: "codexbar".into(),
-            kind: "issue".into(),
-            number: 31,
-            title: "Read shared API data".into(),
-            url: "https://github.com/hemsoft-dev/codexbar/issues/31".into(),
-            status: "ready".into(),
+        let name = checkout.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+        let repo = &document.repository.name_with_owner;
+        let item = |id: &str, kind: &str, number: u64, title: &str, status: &str| WorkItem {
+            id: id.into(),
+            project: name.into(),
+            kind: kind.into(),
+            number,
+            title: title.into(),
+            url: format!(
+                "https://github.com/{repo}/{}/{number}",
+                if kind == "pr" { "pull" } else { "issues" }
+            ),
+            status: status.into(),
         };
-        document.hosted = Some(Hosted {
-            service_url: "http://fixture.invalid".into(),
-            generated_at: "2026-10-21T06:20:00Z".into(),
-            last_error: None,
-            board: Some(WorkBoard {
-                generated_at: "2026-10-21T06:20:00Z".into(),
-                columns: [
-                    ("ready", "Ready"),
-                    ("in_progress", "In progress"),
-                    ("waiting_on_franz", "Waiting on Franz"),
-                    ("blocked", "Blocked"),
-                ]
-                .into_iter()
-                .map(|(status, title)| WorkColumn {
-                    status: status.into(),
-                    title: title.into(),
-                    items: if status == "ready" { vec![item.clone()] } else { vec![] },
-                    truncated: status == "ready",
+        let work = match name {
+            "codexbar" => vec![
+                item("fixture-blocked", "issue", 240, "Sign the macOS build", "blocked"),
+                item(
+                    "fixture-waiting",
+                    "pr",
+                    232,
+                    "feat: show the tray icon on Linux",
+                    "waiting_on_franz",
+                ),
+                item(
+                    "fixture-in-progress",
+                    "issue",
+                    219,
+                    "Remember the window placement per display",
+                    "in_progress",
+                ),
+                item("fixture-stable-id", "issue", 31, "Read shared API data", "ready"),
+                item(
+                    "fixture-ready-listed",
+                    "issue",
+                    231,
+                    "Show the tray icon on Linux",
+                    "ready",
+                ),
+            ],
+            "hs-buddy" => vec![item(
+                "fixture-hs-buddy",
+                "pr",
+                232,
+                "feat: show the tray icon on Linux",
+                "waiting_on_franz",
+            )],
+            _ => Vec::new(),
+        };
+        let at = |minutes: i64| (fixture_now() - Duration::minutes(minutes)).to_rfc3339();
+        let board = (name != "minibot").then(|| WorkBoard {
+            generated_at: at(4),
+            columns: dashboard_core::work::STATUSES
+                .iter()
+                .map(|status| WorkColumn {
+                    status: (*status).into(),
+                    title: dashboard_core::work::status_label(status).into(),
+                    items: work.iter().filter(|item| item.status == *status).cloned().collect(),
+                    truncated: false,
                 })
                 .collect(),
-            }),
-            work: vec![item],
-            work_error: None,
+        });
+        document.hosted = Some(Hosted {
+            service_url: "http://fixture.invalid".into(),
+            generated_at: at(323),
+            checked_at: Some(at(12)),
+            last_error: None,
+            work_error: board.is_none().then(|| "pmd returned HTTP 503.".to_owned()),
+            board,
+            work,
         });
         Ok(document)
     }

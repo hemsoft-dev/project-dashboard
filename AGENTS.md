@@ -21,7 +21,9 @@ never depends on the PATH it inherits (#38, `dashboard-core/tests/no_child_proce
 status.
 
 Render API rows and verdicts as supplied. Pmd does not supply local branch, worktree, stash or working-tree health;
-show it as unavailable. Keep the last good API data on refresh failure, with its original age and the error.
+show it as unavailable. Pmd supplies no overall verdict either: a hosted row's dot reads the work statuses and gh-x
+checks pmd does supply (`Signals` in `lib.rs`), blocked first, never the status's age. Times show in local time and
+ages in words (`activity::age_words`), never UTC or seconds. Keep the last good API data on refresh failure, with its original age and the error.
 A user refresh reloads pmd's cache; the read API has no force-sync endpoint. Never log or commit a bearer token.
 Unknown priorities render as `—`; priority requests remain independent of status workers.
 

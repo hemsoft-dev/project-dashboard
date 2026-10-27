@@ -1,6 +1,9 @@
 //! The Manage menu and its modal dialogs (#33).
 //!
 //! The title bar's **Manage** button opens a menu with **Projects…**, **Work items…**, **Fleet…** and **Write access…**.
+//! A left click anywhere on the button, Enter, Space, Down or Alt+M opens it; a second click or Esc closes it. A right
+//! click does nothing. The button blocks the title bar's drag area beneath it: on Windows a press there is otherwise
+//! the window caption's, and the OS starts moving the window instead of clicking the button (#40).
 //! An entry that can't open yet stays visible, disabled, with a one-line reason under it. Each entry opens one modal
 //! dialog in a shared frame: focus moves into it and stays there (Tab and Shift+Tab cycle inside), Esc or the close
 //! button asks before discarding unsaved edits, Enter runs the default action, and closing returns focus to the
@@ -25,9 +28,10 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Bounds, Context, Entity, EventEmitter, FocusHandle, InteractiveElement as _,
-    IntoElement, KeyBinding, MouseButton, ParentElement as _, Pixels, Render, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, actions, canvas, div, px, rems,
+    AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
+    InteractiveElement as _, IntoElement, KeyBinding, MouseButton, ParentElement as _, Pixels, Render, Role,
+    SharedString, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, actions, canvas, div, px,
+    rems,
 };
 
 actions!(manage, [OpenMenu, Close, NextEntry, Previous, Activate, DefaultAction]);
@@ -50,6 +54,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", OpenMenu, Some(BUTTON)),
         KeyBinding::new("space", OpenMenu, Some(BUTTON)),
         KeyBinding::new("down", OpenMenu, Some(BUTTON)),
+        // From anywhere in the window; the dashboard's root handles it when the button isn't focused.
+        KeyBinding::new("alt-m", OpenMenu, None),
         KeyBinding::new("escape", Close, Some(MENU)),
         KeyBinding::new("tab", Close, Some(MENU)),
         KeyBinding::new("shift-tab", Close, Some(MENU)),
@@ -697,7 +703,7 @@ impl Manage {
         cx.notify();
     }
 
-    /// The Manage button for the title bar. Enter, Space or Down opens the menu.
+    /// The Manage button for the title bar. A left click toggles the menu; Enter, Space or Down opens it.
     pub fn render_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let focused_ring = theme.ring;
@@ -722,13 +728,21 @@ impl Manage {
             .border_color(gpui_kit::transparent_black())
             .text_sm()
             .cursor_pointer()
+            // Takes the pointer from the title bar's drag area beneath, so Windows hit-tests the button as client
+            // area rather than caption. Without it a left press starts a window move and the click never lands.
+            .occlude()
             .hover(|style| style.bg(theme.secondary_hover))
             .when(self.menu_open, |this| this.bg(theme.secondary))
             .focus(move |style| style.border_color(focused_ring))
             .child("Manage")
             .child(Icon::new(IconName::ChevronDown).xsmall())
             .on_action(cx.listener(|manage, _: &OpenMenu, window, cx| manage.open_menu(window, cx)))
-            .on_click(cx.listener(|manage, _, window, cx| manage.toggle_menu(window, cx)))
+            // Left clicks and keyboard clicks only: a right click is not a second way to open the menu.
+            .on_click(cx.listener(|manage, event: &ClickEvent, window, cx| {
+                if event.standard_click() {
+                    manage.toggle_menu(window, cx);
+                }
+            }))
             .child(
                 canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {})
                     .absolute()

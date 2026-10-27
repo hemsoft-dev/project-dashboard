@@ -813,7 +813,9 @@ impl BoardView {
                             .child(status),
                     )
                     .child(
-                        div().flex_none().child(
+                        // Blocks the drag area beneath, like the Manage button: on Windows a left press on the
+                        // caption moves the window instead of clicking.
+                        div().flex_none().occlude().child(
                             Button::new("refresh-all")
                                 .ghost()
                                 .small()
@@ -1462,6 +1464,10 @@ impl Render for BoardView {
             .key_context("Dashboard")
             .track_focus(&self.focus)
             .on_action(cx.listener(|view, _: &Refresh, _, cx| view.refresh_all(cx)))
+            // Alt+M opens the Manage menu from anywhere; the button handles it first when it has focus.
+            .on_action(cx.listener(|view, _: &crate::manage::OpenMenu, window, cx| {
+                view.manage.update(cx, |manage, cx| manage.open_menu(window, cx))
+            }))
             // A column border drag follows the pointer anywhere in the window.
             .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, window, cx| view.drag_resize(event, window, cx)))
             .on_mouse_up(MouseButton::Left, cx.listener(|view, _, _, cx| view.end_resize(cx)))

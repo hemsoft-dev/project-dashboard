@@ -9,8 +9,11 @@ use dashboard_core::cache::StatusCache;
 use dashboard_core::source::{FetchError, StatusSource};
 use dashboard_core::status::StatusDocument;
 use dashboard_core::write::{Access, Feature, Whoami, WriteBackend, WriteError, WriteRequest};
-use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext};
+use gpui_kit::test::{ClickOptions, TestWindowExt as _};
+use gpui_kit::{
+    AnyWindowHandle, AppContext as _, Entity, Modifiers, MouseButton, MouseDownEvent, PlatformInput, TestAppContext,
+    point, px,
+};
 use serde_json::Value;
 
 use crate::board_view::{BoardView, Options};
@@ -624,4 +627,105 @@ async fn a_failed_token_store_says_why_and_rechecks_the_token_still_in_place(cx:
     assert!(cx.update(|cx| matches!(manage.read(cx).access(), Access::Known(_))));
     let input = cx.update(|cx| manage.read(cx).input("token").unwrap().read(cx).value().to_string());
     assert_eq!(input, "replacement-token", "the pasted token stays for another try");
+}
+
+fn menu_open(cx: &mut TestAppContext, manage: &Entity<Manage>) -> bool {
+    cx.update(|cx| manage.read(cx).is_menu_open())
+}
+
+/// Clicks the Manage button `inset` pixels in from its left edge (the label) or its right edge (the arrow).
+fn click_button_at(cx: &mut TestAppContext, handle: AnyWindowHandle, from_right: bool, button: MouseButton) {
+    cx.update_window(handle, |_, window, cx| {
+        let size = window.find("manage-button").bounds().size;
+        let x = if from_right { size.width - px(4.) } else { px(4.) };
+        let options = ClickOptions::new()
+            .with_offset(point(x, size.height / 2.))
+            .with_button(button);
+        window.click_with_options("manage-button", options, cx)
+    })
+    .unwrap();
+    frame(cx, handle);
+}
+
+#[gpui_kit::test]
+fn a_left_click_on_the_manage_label_or_arrow_opens_the_menu_and_a_second_click_closes_it(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx, Arc::new(dashboard_core::write::Off), None);
+    let manage = manage(cx, &view);
+    for from_right in [false, true] {
+        click_button_at(cx, handle, from_right, MouseButton::Left);
+        assert!(
+            menu_open(cx, &manage),
+            "a left click opens the menu (arrow: {from_right})"
+        );
+        assert!(focused(cx, handle, "manage-projects"));
+        click_button_at(cx, handle, from_right, MouseButton::Left);
+        assert!(
+            !menu_open(cx, &manage),
+            "a second left click closes it (arrow: {from_right})"
+        );
+        assert!(focused(cx, handle, "manage-button"));
+    }
+}
+
+/// Presses the left button on the Manage button with no release, as on Windows when the OS swallowed the release.
+fn left_press_without_release(cx: &mut TestAppContext, handle: AnyWindowHandle) {
+    cx.update_window(handle, |_, window, cx| {
+        let position = window.find("manage-button").bounds().center();
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    frame(cx, handle);
+}
+
+#[gpui_kit::test]
+fn a_right_click_on_the_manage_button_opens_nothing(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx, Arc::new(dashboard_core::write::Off), None);
+    let manage = manage(cx, &view);
+    for from_right in [false, true] {
+        click_button_at(cx, handle, from_right, MouseButton::Right);
+        assert!(
+            !menu_open(cx, &manage),
+            "a right click leaves the menu closed (arrow: {from_right})"
+        );
+    }
+    // v0.5.0 on Windows: the OS took the left release to move the window, and a later right release completed the
+    // pending left press as a click. Only a left press and release, or the keyboard, may open the menu.
+    left_press_without_release(cx, handle);
+    click_button_at(cx, handle, true, MouseButton::Right);
+    assert!(
+        !menu_open(cx, &manage),
+        "a right release never completes a left press into a click"
+    );
+    assert!(!exists(cx, handle, "manage-menu"));
+}
+
+#[gpui_kit::test]
+fn alt_m_opens_the_manage_menu_from_anywhere_and_escape_closes_it(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx, Arc::new(dashboard_core::write::Off), None);
+    let manage = manage(cx, &view);
+    assert!(!focused(cx, handle, "manage-button"));
+    press(cx, handle, "alt-m");
+    assert!(menu_open(cx, &manage));
+    assert!(focused(cx, handle, "manage-projects"), "focus moves into the menu");
+    press(cx, handle, "escape");
+    assert!(!menu_open(cx, &manage));
+    assert!(focused(cx, handle, "manage-button"));
+    // From the focused button too, and never over an open dialog.
+    press(cx, handle, "alt-m");
+    assert!(menu_open(cx, &manage));
+    press(cx, handle, "up");
+    press(cx, handle, "enter");
+    assert_eq!(cx.update(|cx| manage.read(cx).dialog()), Some(Entry::WriteAccess));
+    press(cx, handle, "alt-m");
+    assert!(!menu_open(cx, &manage));
+    assert_eq!(cx.update(|cx| manage.read(cx).dialog()), Some(Entry::WriteAccess));
 }

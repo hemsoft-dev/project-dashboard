@@ -723,3 +723,55 @@ async fn a_status_change_under_a_status_filter_reloads_the_list(cx: &mut TestApp
     settle(cx, handle, &view).await;
     assert_eq!(backend.lists.lock().unwrap().len(), lists);
 }
+
+#[gpui_kit::test]
+async fn discarding_mine_after_a_conflict_leaves_the_list_on_pmds_row(cx: &mut TestAppContext) {
+    let backend = FakeWork::new(&["read", "write:work"], sample_items());
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    click(cx, handle, "work-row-0");
+    click(cx, handle, "work-priority-1");
+    backend.fail_next(WriteError::StaleVersion, |items| {
+        items[0]["rank"] = json!(-50);
+        items[0]["version"] = json!(9);
+    });
+    click(cx, handle, "work-save");
+    settle(cx, handle, &view).await;
+    click(cx, handle, "conflict-discard");
+    click(cx, handle, "work-back");
+    settle(cx, handle, &view).await;
+    let row = items(cx, &manage).into_iter().find(|item| item.number == 200).unwrap();
+    assert_eq!(
+        (row.rank, row.version),
+        (-50, 9),
+        "the list shows pmd's row, not the old one"
+    );
+    // Reopening it edits the current version: no second, avoidable conflict.
+    let ix = items(cx, &manage).iter().position(|item| item.number == 200).unwrap();
+    click(cx, handle, &format!("work-row-{ix}"));
+    click(cx, handle, "work-priority-1");
+    click(cx, handle, "work-save");
+    settle(cx, handle, &view).await;
+    assert_eq!(
+        backend.writes.lock().unwrap().last().unwrap().precondition,
+        Precondition::IfMatch(9)
+    );
+    assert!(!exists(cx, handle, "conflict"));
+}
+
+#[gpui_kit::test]
+async fn a_new_write_token_path_rechecks_access_for_the_open_dialog(cx: &mut TestAppContext) {
+    let backend = FakeWork::new(&["read", "write:work"], sample_items());
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    click(cx, handle, "work-row-0");
+    click(cx, handle, "work-priority-1");
+    // config.toml changed: a new backend, and access starts over.
+    let replacement = FakeWork::new(&["read", "write:work"], sample_items());
+    cx.update(|cx| manage.update(cx, |m, cx| m.set_backend(replacement.clone(), None, cx)));
+    settle(cx, handle, &view).await;
+    assert!(!exists(cx, handle, "work-read-only"), "access is known again");
+    click(cx, handle, "work-save");
+    settle(cx, handle, &view).await;
+    assert_eq!(replacement.writes.lock().unwrap().len(), 1, "the unsaved edit saves");
+}

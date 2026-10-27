@@ -538,40 +538,61 @@ impl Manage {
                 let Some(work) = manage.work_of(id) else {
                     return;
                 };
-                let Some(editor) = work.editor.as_mut().filter(|editor| editor.key == key) else {
-                    return;
-                };
-                match (next, fresh) {
-                    (Next::Reread, Ok(item)) => {
-                        editor.form.conflict(item.row());
-                        editor.item = item;
-                        editor.reapply.focus.focus(window, cx);
-                    }
-                    (Next::Reread, Err(error)) => editor.form.reread_failed(&error),
-                    (_, Ok(item)) => {
-                        // Closed: show it as pmd has it now, with nothing left to edit.
-                        editor.form = Form::edit(item.row(), &FIELDS);
-                        editor.closed = true;
-                        editor.item = item.clone();
-                        editor.sync_inputs(window, cx);
-                        if let Some(row) = work.items.iter_mut().find(|row| row.id == item.id) {
-                            *row = item;
-                        }
-                        editor.back.focus.focus(window, cx);
-                    }
-                    (_, Err(_)) => {
-                        editor.closed = true;
-                        editor.back.focus.focus(window, cx);
-                    }
+                // pmd's current row replaces the list's; the list then reloads from its first page, since the
+                // change made elsewhere may move the item or take it out of the filters.
+                let reconcile = fresh.is_ok();
+                if let Ok(item) = &fresh
+                    && let Some(row) = work.items.iter_mut().find(|row| row.id == item.id)
+                {
+                    *row = item.clone();
                 }
-                editor.sync_disabled(writable, cx);
+                if let Some(editor) = work.editor.as_mut().filter(|editor| editor.key == key) {
+                    show_reread(editor, next, fresh, writable, window, cx);
+                }
+                if reconcile {
+                    manage.load_work(id, true, cx);
+                }
                 cx.notify();
             });
         })
         .detach();
         cx.notify();
     }
+}
 
+/// Shows a re-read in the editor: beside the user's values after `409 stale_version`, or as a closed item.
+fn show_reread(
+    editor: &mut Editor,
+    next: Next,
+    fresh: Result<WorkItem, WriteError>,
+    writable: bool,
+    window: &mut Window,
+    cx: &mut Context<Manage>,
+) {
+    match (next, fresh) {
+        (Next::Reread, Ok(item)) => {
+            editor.form.conflict(item.row());
+            editor.item = item;
+            editor.reapply.focus.focus(window, cx);
+        }
+        (Next::Reread, Err(error)) => editor.form.reread_failed(&error),
+        (_, Ok(item)) => {
+            // Closed: show it as pmd has it now, with nothing left to edit.
+            editor.form = Form::edit(item.row(), &FIELDS);
+            editor.closed = true;
+            editor.item = item;
+            editor.sync_inputs(window, cx);
+            editor.back.focus.focus(window, cx);
+        }
+        (_, Err(_)) => {
+            editor.closed = true;
+            editor.back.focus.focus(window, cx);
+        }
+    }
+    editor.sync_disabled(writable, cx);
+}
+
+impl Manage {
     pub fn reapply_work_item(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = self.open_work().and_then(|(_, work)| work.editor.as_mut()) {
             editor.form.reapply();

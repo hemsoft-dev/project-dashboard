@@ -233,7 +233,8 @@ impl Manage {
         self.config_path = config_path;
         self.generation += 1;
         self.access = initial_access(self.backend.as_ref());
-        if self.dialog.as_ref().is_some_and(|d| d.entry == Entry::WriteAccess) {
+        // Any open dialog depends on access: Write access shows it, and the others are read-only until it is known.
+        if self.dialog.as_ref().is_some_and(|dialog| dialog.entry != Entry::Sample) {
             self.check_access(cx);
         }
         cx.notify();

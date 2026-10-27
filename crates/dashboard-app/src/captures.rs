@@ -349,30 +349,32 @@ fn work_items(cx: &mut HeadlessAppContext, out: &Path, suffix: &str) {
     if !suffix.is_empty() {
         return;
     }
-    let (keys, keys_manage, _) = open_dialog(cx, &["read", "write:work"]);
+    let (keys, _, _) = open_dialog(cx, &["read", "write:work"]);
     let mut frame = 0;
     let mut shot = |cx: &mut HeadlessAppContext| {
         frame += 1;
         save(cx, keys, out, &format!("work-keys-{frame:02}"));
     };
     shot(cx);
-    for step in ["down", "down", "enter", "tab", "tab", "tab", "enter"] {
+    // Down to the codexbar PR, open it (focus on its automatic status), Shift+Tab to Blocked and pick it, then Tab
+    // past the automatic choice into the reason, now enabled.
+    for step in ["down", "down", "enter", "shift-tab", "enter", "tab", "tab"] {
         key(cx, keys, &[step]);
         shot(cx);
     }
-    let reason = cx.update(|cx| keys_manage.read(cx).input("statusReason").unwrap());
-    cx.update_window(keys, |_, window, cx| reason.update(cx, |i, cx| i.focus(window, cx)))
-        .unwrap();
     for typed in ["waiting", " on", " the", " vendor"] {
         cx.update_window(keys, |_, window, cx| window.input(typed, cx)).unwrap();
         settle(cx);
         shot(cx);
     }
-    for step in ["ctrl-enter", "shift-tab", "shift-tab", "shift-tab"] {
-        key(cx, keys, &[step]);
-        shot(cx);
+    // Save, then Tab through priority and rank to Back to list, which shows the row as pmd answered.
+    key(cx, keys, &["ctrl-enter"]);
+    shot(cx);
+    for _ in 0..9 {
+        key(cx, keys, &["tab"]);
     }
-    click(cx, keys, "work-back");
+    shot(cx);
+    key(cx, keys, &["enter"]);
     shot(cx);
 }
 

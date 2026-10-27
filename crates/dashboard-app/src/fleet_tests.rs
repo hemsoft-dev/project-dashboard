@@ -91,6 +91,8 @@ pub(crate) struct FakeFleet {
     pub fail_next: Mutex<Option<(WriteError, Option<Change>)>>,
     /// Lists fail while this is set.
     pub fail_lists: Mutex<Option<WriteError>>,
+    /// The next list of this kind (0, 1, 2) answers with these rows, an older snapshot.
+    pub stale_list: Mutex<Option<(usize, Vec<Value>)>>,
 }
 
 fn kind_of(path: &str) -> Option<(usize, &str, &str)> {
@@ -117,6 +119,7 @@ impl FakeFleet {
             writes: Mutex::default(),
             fail_next: Mutex::default(),
             fail_lists: Mutex::default(),
+            stale_list: Mutex::default(),
         })
     }
 
@@ -144,6 +147,12 @@ impl WriteBackend for FakeFleet {
         if key.is_empty() {
             if let Some(error) = self.fail_lists.lock().unwrap().clone() {
                 return Err(error);
+            }
+            let mut stale = self.stale_list.lock().unwrap();
+            if stale.as_ref().is_some_and(|(kind, _)| *kind == ix) {
+                let (_, old) = stale.take().unwrap();
+                let list = ["machines", "subscriptions", "agents"][ix];
+                return Ok(json!({ list: old }));
             }
             let list = ["machines", "subscriptions", "agents"][ix];
             return Ok(json!({ list: rows[ix] }));
@@ -701,4 +710,40 @@ async fn a_new_agent_gets_its_quick_toggle_at_once(cx: &mut TestAppContext) {
     click(cx, handle, "fleet-toggle-4");
     settle(cx, handle, &view).await;
     assert_eq!(value_of(&backend, 2, "air/codex/mini-model", "enabled"), json!(false));
+}
+
+#[gpui_kit::test]
+async fn an_older_list_never_undoes_a_newer_write_or_drops_a_created_row(cx: &mut TestAppContext) {
+    let backend = FakeFleet::new(&["read", "write:fleet"]);
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    click(cx, handle, "fleet-tab-agent");
+    // The snapshot a slow reload would bring: from before the toggle and the create below.
+    let before = backend.rows.lock().unwrap()[2].clone();
+    click(cx, handle, "fleet-toggle-1");
+    settle(cx, handle, &view).await;
+    click(cx, handle, "fleet-add");
+    click(cx, handle, "fleet-machine-air");
+    set_input(cx, handle, &manage, "provider", "codex");
+    set_input(cx, handle, &manage, "alias", "model..preview");
+    set_input(cx, handle, &manage, "model", "gpt-6.2-preview");
+    click(cx, handle, "fleet-subscription-chatgpt-pro");
+    click(cx, handle, "fleet-save");
+    settle(cx, handle, &view).await;
+    assert_eq!(backend.writes.lock().unwrap().len(), 2, "a dotted alias is sent");
+    click(cx, handle, "fleet-back");
+    *backend.stale_list.lock().unwrap() = Some((2, before));
+    cx.update(|cx| manage.update(cx, |m, cx| m.reload_fleet(&[Kind::Agent], cx)));
+    settle(cx, handle, &view).await;
+    frame(cx, handle);
+    assert_eq!(
+        text_of(cx, handle, "fleet-toggle-1"),
+        "Enable",
+        "the toggle's newer version stays"
+    );
+    let rows = cx.update(|cx| manage.read(cx).fleet().unwrap().rows(Kind::Agent).to_vec());
+    assert!(
+        rows.iter().any(|row| row.key == "air/codex/model..preview"),
+        "the created row stays"
+    );
 }

@@ -225,8 +225,8 @@ impl Manage {
                     match result {
                         Ok(rows) => {
                             fleet.load_error[ix] = None;
-                            fleet.selected[ix] = fleet.selected[ix].min(rows.len().saturating_sub(1));
-                            fleet.rows[ix] = rows;
+                            fleet.rows[ix] = merge(rows, &fleet.rows[ix]);
+                            fleet.selected[ix] = fleet.selected[ix].min(fleet.rows[ix].len().saturating_sub(1));
                             sync_controls(fleet, cx);
                         }
                         Err(error) => fleet.load_error[ix] = Some(error.to_string()),
@@ -471,6 +471,16 @@ impl Manage {
                         editor.row = Some(saved);
                         None
                     }
+                    // The create probably landed: stay busy until the stored row is read back, so nothing typed
+                    // meanwhile is overwritten and no second create is sent.
+                    Err(WriteError::Timeout {
+                        create: Some(CreateCheck::Exists),
+                    }) => {
+                        editor
+                            .form
+                            .checking("pmd didn't answer in time, but the row exists now. Loading it…");
+                        Some(Next::Show)
+                    }
                     Err(error) => {
                         let next = match fleet::error_field(kind, &error) {
                             Some(field) => {
@@ -479,13 +489,7 @@ impl Manage {
                             }
                             None => editor.form.failed(&error),
                         };
-                        match error {
-                            WriteError::Timeout {
-                                create: Some(CreateCheck::Exists),
-                            } => Some(Next::Show),
-                            _ if next == Next::Reread => Some(Next::Reread),
-                            _ => None,
-                        }
+                        (next == Next::Reread).then_some(Next::Reread)
                     }
                 };
                 editor.sync_disabled(writable, cx);
@@ -537,7 +541,12 @@ impl Manage {
                         created = true;
                     }
                     // Whether it landed is unknown: the list reloads, and the timeout's message says to check.
-                    (_, Err(_)) => manage.load_fleet(id, &[kind], cx),
+                    (_, Err(_)) => {
+                        editor.form.failed(&WriteError::Timeout {
+                            create: Some(CreateCheck::Unknown),
+                        });
+                        manage.load_fleet(id, &[kind], cx);
+                    }
                 }
                 if let Some(editor) = manage
                     .fleet_of(id)
@@ -1148,6 +1157,25 @@ impl Manage {
             cx,
         )
     }
+}
+
+/// A list pmd returned, reconciled with what writes have shown since it was asked for: a row the dialog holds at a
+/// newer version stays, and a row the list doesn't have yet (created meanwhile) is kept. pmd has no delete, so a row
+/// missing from a list is one it hadn't stored when it answered.
+fn merge(loaded: Vec<FleetRow>, current: &[FleetRow]) -> Vec<FleetRow> {
+    let mut rows: Vec<FleetRow> = loaded
+        .into_iter()
+        .map(|row| match current.iter().find(|known| known.key == row.key) {
+            Some(known) if known.version > row.version => known.clone(),
+            _ => row,
+        })
+        .collect();
+    for known in current {
+        if !rows.iter().any(|row| row.key == known.key) {
+            rows.push(known.clone());
+        }
+    }
+    rows
 }
 
 /// Puts a row pmd returned in its list, replacing the old one or adding a new one, and keeps the controls in step.

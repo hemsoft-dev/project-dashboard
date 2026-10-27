@@ -891,11 +891,7 @@ impl Manage {
                 false,
                 false,
                 false,
-                move |manage, _, cx| {
-                    if let Some((id, _)) = manage.open_fleet() {
-                        manage.load_fleet(id, &[kind], cx);
-                    }
-                },
+                move |manage, _, cx| manage.reload_fleet(&[kind], cx),
                 cx,
             ));
         }

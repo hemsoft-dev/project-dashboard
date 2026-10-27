@@ -462,7 +462,17 @@ impl Manage {
                 if let Ok(saved) = &result {
                     upsert(fleet, saved.clone(), cx);
                 }
-                let editor = fleet.editor.as_mut().filter(|editor| editor.key == editor_key)?;
+                // A create that timed out but landed is read back whether or not its editor is still open, so the
+                // list gets the row; only the form updates below need that editor.
+                let found = matches!(
+                    result,
+                    Err(WriteError::Timeout {
+                        create: Some(CreateCheck::Exists)
+                    })
+                );
+                let Some(editor) = fleet.editor.as_mut().filter(|editor| editor.key == editor_key) else {
+                    return found.then_some(Next::Show);
+                };
                 let next = match result {
                     Ok(saved) => {
                         editor.form.saved(saved.row());

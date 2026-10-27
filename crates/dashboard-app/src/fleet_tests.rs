@@ -747,3 +747,37 @@ async fn an_older_list_never_undoes_a_newer_write_or_drops_a_created_row(cx: &mu
         "the created row stays"
     );
 }
+
+#[gpui_kit::test]
+async fn a_create_found_after_a_timeout_reaches_the_list_even_with_its_editor_closed(cx: &mut TestAppContext) {
+    let backend = FakeFleet::new(&["read", "write:fleet"]);
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    click(cx, handle, "fleet-tab-subscription");
+    click(cx, handle, "fleet-add");
+    set_input(cx, handle, &manage, "id", "grok-heavy");
+    set_input(cx, handle, &manage, "provider", "xai");
+    backend.fail_next(
+        WriteError::Timeout {
+            create: Some(CreateCheck::Exists),
+        },
+        |rows| {
+            rows[1].push(
+                json!({"id": "grok-heavy", "provider": "xai", "plan": "", "metered": false,
+                "usageSource": null, "source": "api", "version": 1}),
+            );
+        },
+    );
+    // Save, then go back to the list before pmd answers.
+    cx.update_window(handle, |_, window, cx| {
+        manage.update(cx, |m, cx| {
+            m.save_fleet_row(window, cx);
+            m.leave_fleet_editor(window, cx);
+        })
+    })
+    .unwrap();
+    settle(cx, handle, &view).await;
+    let rows = cx.update(|cx| manage.read(cx).fleet().unwrap().rows(Kind::Subscription).to_vec());
+    assert!(rows.iter().any(|row| row.key == "grok-heavy"));
+    assert_eq!(backend.writes.lock().unwrap().len(), 1);
+}

@@ -133,6 +133,11 @@ impl Form {
         &self.values
     }
 
+    /// The row as last read; `None` while creating.
+    pub fn base(&self) -> Option<&Row> {
+        self.base.as_ref()
+    }
+
     /// The row's version as last read; `None` while creating.
     pub fn version(&self) -> Option<u64> {
         self.base.as_ref().map(|row| row.version)

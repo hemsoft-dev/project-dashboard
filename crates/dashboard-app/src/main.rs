@@ -2,10 +2,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod board_view;
-// Only Linux can render GPUI headlessly from a test.
-#[cfg(all(test, target_os = "linux"))]
+// GPUI renders headlessly from a test on Linux (wgpu) and macOS (Metal).
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod captures;
 mod demo;
+mod manage;
+#[cfg(test)]
+mod manage_tests;
 mod mark;
 mod theme;
 #[cfg(test)]
@@ -96,6 +99,8 @@ fn live_view(window: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<BoardView
             ui_state_dir: Some(dir.clone()),
             priorities: Arc::new(dashboard_core::priority::Pmd::from_config(&config, &dir)),
             pmd: Some(dashboard_core::priority::Pmd::from_config(&config, &dir)),
+            write: Arc::new(dashboard_core::write::PmdWriter::from_config(&config, &dir)),
+            sample: None,
             threads: Arc::new(t3::LocalT3 {
                 home: config.t3_home.clone(),
             }),
@@ -126,6 +131,9 @@ fn demo_view(window: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<BoardView
             threads: Arc::new(demo::DemoThreads),
             priorities: Arc::new(demo::DemoPriorities),
             pmd: None,
+            // The demo never writes to pmd; its sample dialog edits a row in memory.
+            write: Arc::new(dashboard_core::write::Off),
+            sample: Some(Arc::new(demo::DemoSample::default())),
         },
         window,
         cx,

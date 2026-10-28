@@ -8,6 +8,7 @@ use std::time::Duration;
 use dashboard_core::cache::StatusCache;
 use dashboard_core::columns::{Column, ColumnWidths};
 use dashboard_core::fixtures::{self, ATTENTION, CLEAN, UNAVAILABLE};
+use dashboard_core::scheduler::Outcome;
 use dashboard_core::source::{FetchError, StatusSource};
 use dashboard_core::status::StatusDocument;
 use dashboard_core::{EmptyState, Overall, SortOrder};
@@ -2652,4 +2653,64 @@ fn editing_pmd_write_token_path_turns_writes_on_and_off(cx: &mut TestAppContext)
     live.reload(cx);
     live.wait(cx);
     assert_eq!(cx.update(|cx| manage.read(cx).access().clone()), Access::Off);
+}
+
+#[gpui_kit::test]
+async fn network_retry_recovers_with_periodic_refresh_disabled(cx: &mut TestAppContext) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Reconnect(AtomicUsize);
+    impl StatusSource for Reconnect {
+        fn fetch(&self, path: &Path, _: bool) -> Result<StatusDocument, FetchError> {
+            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(FetchError::Timeout)
+            } else {
+                demo::HostedSource.fetch(path, false)
+            }
+        }
+    }
+    let source = Arc::new(Reconnect(AtomicUsize::new(0)));
+    let path = PathBuf::from("/demo/codexbar");
+    let (handle, view) = open_board(cx, vec![path], StatusCache::default(), source.clone(), options());
+    cx.update(|cx| view.update(cx, |v, cx| v.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("row-error", 0usize)).is_none());
+        assert_eq!(window.find("refresh-status").label().unwrap(), "Connecting to pmd…");
+    })
+    .unwrap();
+    // Retry deadlines use real monotonic time; GPUI's timer is advanced separately.
+    let start = std::time::Instant::now();
+    while source.0.load(Ordering::SeqCst) < 2 && start.elapsed() < Duration::from_secs(8) {
+        std::thread::sleep(Duration::from_millis(20));
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+    }
+    settle(cx, handle, &view).await;
+    assert_eq!(source.0.load(Ordering::SeqCst), 2);
+    assert!(cx.update(|cx| view.read(cx).board().cards()[0].error.is_none()));
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.apply(
+                Outcome {
+                    checkout: PathBuf::from("/demo/codexbar"),
+                    result: Err(FetchError::Connect),
+                },
+                cx,
+            )
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .find("refresh-status")
+                .label()
+                .unwrap()
+                .contains("pmd offline · last success")
+        );
+        assert!(window.try_find(("row-error", 0usize)).is_none());
+        assert!(window.try_find(("cached", 0usize)).is_none());
+    })
+    .unwrap();
 }

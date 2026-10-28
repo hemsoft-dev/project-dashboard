@@ -12,6 +12,7 @@ pub mod fleet;
 pub mod pmd;
 pub mod priority;
 pub mod projects;
+pub mod recovery;
 pub mod scheduler;
 pub mod source;
 pub mod status;
@@ -35,6 +36,7 @@ pub const APP_NAME: &str = "Project Dashboard";
 /// One configured checkout and what is known about it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Card {
+    pub recovery: recovery::Recovery,
     pub checkout: PathBuf,
     /// The latest status, fresh or from the cache.
     pub document: Option<StatusDocument>,
@@ -122,6 +124,7 @@ impl Card {
     pub fn new(checkout: PathBuf) -> Self {
         Self {
             checkout,
+            recovery: Default::default(),
             document: None,
             from_cache: false,
             refreshing: false,
@@ -162,7 +165,7 @@ impl Card {
     }
 
     pub fn overall(&self) -> Overall {
-        if self.error.is_some() {
+        if self.error.as_ref().is_some_and(|error| !error.is_transient()) {
             return Overall::Failed;
         }
         match &self.document {
@@ -242,6 +245,7 @@ impl Board {
         if let Some(card) = self.cards.iter_mut().find(|card| card.checkout == checkout) {
             card.generation = self.next_generation;
             self.next_generation += 1;
+            card.recovery = Default::default();
             card.document = None;
             card.error = None;
             card.refreshing = false;
@@ -342,6 +346,8 @@ impl Board {
             return false;
         };
         card.refreshing = false;
+        card.recovery
+            .record(&outcome.result, std::time::Instant::now(), chrono::Local::now());
         match outcome.result {
             Ok(mut document) => {
                 if let Some(hosted) = &mut document.hosted

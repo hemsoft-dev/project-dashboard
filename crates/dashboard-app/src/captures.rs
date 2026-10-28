@@ -916,3 +916,32 @@ fn captures() {
         save(&mut cx, zoomed, &out, name);
     }
 }
+
+#[test]
+#[ignore = "writes current-head recovery screenshots offscreen"]
+fn captures_recovery() {
+    let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").expect("CAPTURE_DIR"));
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cx = headless();
+    let (handle, view) = open(&mut cx, vec![PathBuf::from("/demo/gh-x")], 520.);
+    let fail = |cx: &mut HeadlessAppContext| {
+        cx.update(|cx| {
+            view.update(cx, |view, cx| {
+                view.apply(
+                    Outcome {
+                        checkout: PathBuf::from("/demo/gh-x"),
+                        result: Err(FetchError::Timeout),
+                    },
+                    cx,
+                );
+            })
+        });
+        cx.run_until_parked();
+    };
+    fail(&mut cx);
+    save(&mut cx, handle, &out, "recovery-connecting");
+    fill(&mut cx, &view, &demo::HostedSource);
+    save(&mut cx, handle, &out, "recovery-normal");
+    fail(&mut cx);
+    save(&mut cx, handle, &out, "recovery-stale");
+}

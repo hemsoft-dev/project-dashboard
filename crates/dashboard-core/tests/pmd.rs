@@ -630,3 +630,25 @@ fn origin_comments_and_quoted_comment_characters_preserve_hosted_identity_and_ca
         );
     }
 }
+
+#[test]
+fn refused_connection_is_retryable_but_http_errors_are_not() {
+    let checkout = Checkout::new();
+    let server = Server::new(response);
+    let mut source = checkout.source(&server);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    source.url = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let error = source
+        .fetch_with_timeout(&checkout.0, Duration::from_secs(1))
+        .unwrap_err();
+    assert!(error.is_transient());
+    for code in [401, 403, 404, 500, 503] {
+        let server = Server::new(move |_| Reply {
+            code,
+            body: "{}".into(),
+        });
+        let error = checkout.source(&server).fetch(&checkout.0, false).unwrap_err();
+        assert!(!error.is_transient(), "{code}");
+    }
+}

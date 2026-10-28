@@ -296,6 +296,8 @@ impl ReadApi {
             .map_err(|err| {
                 if err.is_timeout() {
                     FetchError::Timeout
+                } else if err.is_connect() {
+                    FetchError::Connect
                 } else {
                     FetchError::Unavailable
                 }
@@ -304,8 +306,17 @@ impl ReadApi {
         if status.as_u16() == 401 {
             return Err(FetchError::Unauthorized);
         }
+        if status.is_client_error() || status.is_server_error() {
+            // 404 may carry the API no_status code; other HTTP errors need no body.
+            if status.as_u16() != 404 {
+                return Err(FetchError::Http(status.as_u16()));
+            }
+        }
         let mut bytes = Vec::new();
         response.take(MAX_RESPONSE + 1).read_to_end(&mut bytes).map_err(|err| {
+            if !status.is_success() {
+                return FetchError::Http(status.as_u16());
+            }
             if matches!(
                 err.kind(),
                 std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock

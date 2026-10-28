@@ -12,6 +12,7 @@ pub mod fleet;
 pub mod pmd;
 pub mod priority;
 pub mod projects;
+pub mod recovery;
 pub mod scheduler;
 pub mod source;
 pub mod status;
@@ -35,6 +36,7 @@ pub const APP_NAME: &str = "Project Dashboard";
 /// One configured checkout and what is known about it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Card {
+    pub recovery: recovery::Recovery,
     pub checkout: PathBuf,
     /// The latest status, fresh or from the cache.
     pub document: Option<StatusDocument>,
@@ -122,6 +124,7 @@ impl Card {
     pub fn new(checkout: PathBuf) -> Self {
         Self {
             checkout,
+            recovery: Default::default(),
             document: None,
             from_cache: false,
             refreshing: false,
@@ -161,8 +164,23 @@ impl Card {
         })
     }
 
+    /// The visible failure: transport errors are shown once on the board, but cannot hide a retained upstream error.
+    pub fn display_error(&self) -> Option<FetchError> {
+        self.error
+            .as_ref()
+            .filter(|error| !error.is_transient())
+            .cloned()
+            .or_else(|| {
+                let error = self.document.as_ref()?.hosted.as_ref()?.last_error.as_ref()?;
+                Some(FetchError::Failed(format!(
+                    "pmd last refresh failed at {}: {}",
+                    error.at, error.message
+                )))
+            })
+    }
+
     pub fn overall(&self) -> Overall {
-        if self.error.is_some() {
+        if self.display_error().is_some() {
             return Overall::Failed;
         }
         match &self.document {
@@ -242,6 +260,7 @@ impl Board {
         if let Some(card) = self.cards.iter_mut().find(|card| card.checkout == checkout) {
             card.generation = self.next_generation;
             self.next_generation += 1;
+            card.recovery = Default::default();
             card.document = None;
             card.error = None;
             card.refreshing = false;
@@ -342,6 +361,8 @@ impl Board {
             return false;
         };
         card.refreshing = false;
+        card.recovery
+            .record(&outcome.result, std::time::Instant::now(), chrono::Local::now());
         match outcome.result {
             Ok(mut document) => {
                 if let Some(hosted) = &mut document.hosted

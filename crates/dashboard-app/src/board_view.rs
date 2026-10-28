@@ -225,6 +225,32 @@ impl BoardView {
         }
         view.sync_wanted();
         view.schedule_auto_refresh(cx);
+        // A separate short timer also works with refresh_minutes = 0. Only due, idle cards run.
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                if this
+                    .update(cx, |view, cx| {
+                        let due = view
+                            .board
+                            .cards()
+                            .iter()
+                            .filter(|card| !card.refreshing && card.recovery.due(Instant::now()))
+                            .map(|card| card.checkout.clone())
+                            .collect::<Vec<_>>();
+                        if !due.is_empty() {
+                            view.refresh_priorities(cx);
+                            view.start(due, false, cx);
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+
         // Edits to config.toml show up within a couple of seconds, without a refresh.
         if view.config_file.is_some() {
             cx.spawn(async move |this, cx| {
@@ -265,6 +291,7 @@ impl BoardView {
         self.finding_priorities
     }
 
+    // Only the offscreen screenshot fixtures inject priorities directly.
     #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
     pub fn apply_priorities(&mut self, priorities: dashboard_core::priority::Priorities, cx: &mut Context<Self>) {
         self.board.set_priorities(priorities);
@@ -695,7 +722,7 @@ impl BoardView {
     }
 
     /// Shows one refresh result on its card, for the screenshot captures (which only run on Linux).
-    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    #[cfg(test)]
     pub fn apply(&mut self, outcome: Outcome, cx: &mut Context<Self>) {
         if self.board.apply(outcome, &mut self.cache) {
             cx.notify();
@@ -759,11 +786,34 @@ impl BoardView {
 
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let refreshing = self.board.is_refreshing();
-        let status = match (refreshing, self.last_refresh) {
-            (true, _) => "Refreshing…".to_owned(),
-            (false, Some(at)) => format!("Updated {}", ago(at.elapsed())),
-            (false, None) if self.board.cards().iter().any(|card| card.from_cache) => "Cached".to_owned(),
-            (false, None) => String::new(),
+        let transient = self.board.cards().iter().any(|card| card.recovery.retry_at.is_some());
+        let last_success = self
+            .board
+            .cards()
+            .iter()
+            .filter_map(|card| card.recovery.last_success)
+            .max();
+        let connecting = !self.board.is_empty()
+            && last_success.is_none()
+            && self
+                .board
+                .cards()
+                .iter()
+                .all(|card| card.error.as_ref().is_none_or(|e| e.is_transient()));
+        let status = if connecting {
+            "Connecting to pmd…".to_owned()
+        } else if transient {
+            last_success.map_or_else(
+                || "Connecting to pmd…".to_owned(),
+                |at| format!("pmd offline · last success {}", at.format("%X")),
+            )
+        } else {
+            match (refreshing, self.last_refresh) {
+                (true, _) => "Refreshing…".to_owned(),
+                (false, Some(at)) => format!("Updated {}", ago(at.elapsed())),
+                (false, None) if self.board.cards().iter().any(|card| card.from_cache) => "Cached".to_owned(),
+                (false, None) => String::new(),
+            }
         };
         TitleBar::new()
             // The title bar is a fixed 34px; it grows with the zoom so its text isn't clipped.
@@ -806,6 +856,7 @@ impl BoardView {
                     .child(
                         div()
                             .id("refresh-status")
+                            .aria_label(status.clone())
                             .test_support()
                             .min_w_0()
                             .flex_shrink(10.)
@@ -982,7 +1033,7 @@ impl BoardView {
         };
         let prs = count("pullRequests.open", |document| document.pull_requests.open.len());
         let issues = count("issues", |document| document.issues.len());
-        let error = card.error.as_ref().filter(|error| !error.is_setup());
+        let error = card.display_error().filter(|error| !error.is_setup());
         // pmd regenerates a status only when the repository changes, and confirms it on every sweep: show both, each
         // with its local time on hover.
         let freshness = card
@@ -1153,15 +1204,20 @@ impl BoardView {
                             }),
                     )
                     // Stays while a refresh runs: until a fresh result lands, the row still shows the cached copy.
-                    .when(card.from_cache, |this| {
-                        this.child(
-                            div()
-                                .id(("cached", ix))
-                                .test_support()
-                                .flex_none()
-                                .child(Tag::secondary().xsmall().outline().child("Cached")),
-                        )
-                    }),
+                    .when(
+                        card.from_cache
+                            && (card.display_error().is_some()
+                                || !card.error.as_ref().is_some_and(|e| e.is_transient())),
+                        |this| {
+                            this.child(
+                                div()
+                                    .id(("cached", ix))
+                                    .test_support()
+                                    .flex_none()
+                                    .child(Tag::secondary().xsmall().outline().child("Cached")),
+                            )
+                        },
+                    ),
             )
             .child(
                 div()
@@ -1275,7 +1331,7 @@ impl BoardView {
             .pt_1()
             .pb_3()
             .gap_1();
-        if let Some(error) = card.error.as_ref().filter(|error| !error.is_setup()) {
+        if let Some(error) = card.display_error().filter(|error| !error.is_setup()) {
             body = body.child(
                 h_flex()
                     .gap_2()

@@ -566,6 +566,8 @@ fn board_refresh_failure_retains_last_good_board_and_work_with_original_board_ti
     assert_eq!(current.board, old.board);
     assert_eq!(current.work, old.work);
     assert!(current.work_error.as_ref().unwrap().contains("503"));
+    assert!(current.work_transport_error.is_none());
+    assert!(board.cards()[0].recovery.retry_at.is_none());
 }
 
 #[test]
@@ -627,6 +629,90 @@ fn origin_comments_and_quoted_comment_characters_preserve_hosted_identity_and_ca
         assert_eq!(
             source.fetch(&checkout.0, false).unwrap().repository.name_with_owner,
             REPO
+        );
+    }
+}
+
+#[test]
+fn refused_connection_is_retryable_but_http_errors_are_not() {
+    let checkout = Checkout::new();
+    let server = Server::new(response);
+    let mut source = checkout.source(&server);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    source.url = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let error = source
+        .fetch_with_timeout(&checkout.0, Duration::from_secs(1))
+        .unwrap_err();
+    assert!(error.is_transient());
+    for code in [401, 403, 404, 500, 503] {
+        let server = Server::new(move |_| Reply {
+            code,
+            body: "{}".into(),
+        });
+        let error = checkout.source(&server).fetch(&checkout.0, false).unwrap_err();
+        assert!(!error.is_transient(), "{code}");
+    }
+}
+
+#[test]
+fn board_and_later_work_page_timeouts_keep_status_and_schedule_recovery() {
+    use dashboard_core::source::TransportError;
+    for failing_path in [
+        "/v1/board?project=gh-x",
+        "/v1/work?project=gh-x&limit=500&cursor=page%2B2%2F%3D",
+    ] {
+        let checkout = Checkout::new();
+        let failing = Arc::new(AtomicBool::new(false));
+        let flag = failing.clone();
+        let (release, wait) = std::sync::mpsc::channel();
+        let wait = Mutex::new(wait);
+        let server = Server::new(move |path| {
+            if path == failing_path && flag.load(Ordering::SeqCst) {
+                let _ = wait.lock().unwrap().recv_timeout(Duration::from_secs(5));
+            }
+            response(path)
+        });
+        let source = checkout.source(&server);
+        let good = source.fetch(&checkout.0, false).unwrap();
+        failing.store(true, Ordering::SeqCst);
+        let partial = source
+            .fetch_with_timeout(&checkout.0, Duration::from_millis(500))
+            .unwrap();
+        release.send(()).unwrap();
+        assert_eq!(partial.pull_requests, good.pull_requests);
+        assert_eq!(
+            partial.hosted.as_ref().unwrap().work_transport_error,
+            Some(TransportError::Timeout)
+        );
+        let mut cache = StatusCache::default();
+        let mut board = Board::new(std::slice::from_ref(&checkout.0), &cache);
+        // Initial partial data is shown even without any cached Board/work.
+        apply(&mut board, &mut cache, &checkout, Ok(partial.clone()));
+        assert!(board.cards()[0].document.is_some());
+        assert!(board.cards()[0].recovery.retry_at.is_some());
+        assert!(board.cards()[0].recovery.last_success.is_none());
+        apply(&mut board, &mut cache, &checkout, Ok(good.clone()));
+        let last_success = board.cards()[0].recovery.last_success;
+        apply(&mut board, &mut cache, &checkout, Ok(partial));
+        let current = board.cards()[0].document.as_ref().unwrap().hosted.as_ref().unwrap();
+        assert_eq!(current.board, good.hosted.as_ref().unwrap().board);
+        assert_eq!(current.work, good.hosted.as_ref().unwrap().work);
+        assert!(board.cards()[0].recovery.retry_at.is_some());
+        assert_eq!(board.cards()[0].recovery.last_success, last_success);
+        failing.store(false, Ordering::SeqCst);
+        apply(&mut board, &mut cache, &checkout, source.fetch(&checkout.0, false));
+        assert!(board.cards()[0].recovery.retry_at.is_none());
+        assert!(
+            board.cards()[0]
+                .document
+                .as_ref()
+                .unwrap()
+                .hosted
+                .as_ref()
+                .unwrap()
+                .work_error
+                .is_none()
         );
     }
 }

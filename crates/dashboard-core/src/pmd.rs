@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::priority::{Pmd, TIMEOUT};
-use crate::source::{FetchError, StatusSource};
+use crate::source::{FetchError, StatusSource, TransportError};
 use crate::status::{ParseError, StatusDocument};
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +27,9 @@ pub struct Hosted {
     pub board: Option<WorkBoard>,
     pub work: Vec<WorkItem>,
     pub work_error: Option<String>,
+    /// Preserve the transport classification through partial reads and cache serialization.
+    #[serde(default)]
+    pub work_transport_error: Option<TransportError>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LastError {
@@ -296,6 +299,8 @@ impl ReadApi {
             .map_err(|err| {
                 if err.is_timeout() {
                     FetchError::Timeout
+                } else if err.is_connect() {
+                    FetchError::Connect
                 } else {
                     FetchError::Unavailable
                 }
@@ -304,8 +309,17 @@ impl ReadApi {
         if status.as_u16() == 401 {
             return Err(FetchError::Unauthorized);
         }
+        if status.is_client_error() || status.is_server_error() {
+            // 404 may carry the API no_status code; other HTTP errors need no body.
+            if status.as_u16() != 404 {
+                return Err(FetchError::Http(status.as_u16()));
+            }
+        }
         let mut bytes = Vec::new();
         response.take(MAX_RESPONSE + 1).read_to_end(&mut bytes).map_err(|err| {
+            if !status.is_success() {
+                return FetchError::Http(status.as_u16());
+            }
             if matches!(
                 err.kind(),
                 std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
@@ -450,9 +464,9 @@ impl Pmd {
         // Local fields from another machine are never meaningful for this checkout.
         doc.health = None;
         let checked_at = checked_at(&api, &envelope.generated_at);
-        let (board, work, work_error) = match api.work(&project.slug) {
-            Ok((board, work)) => (Some(board), work, None),
-            Err(error) => (None, Vec::new(), Some(error.to_string())),
+        let (board, work, work_error, work_transport_error) = match api.work(&project.slug) {
+            Ok((board, work)) => (Some(board), work, None, None),
+            Err(error) => (None, Vec::new(), Some(error.to_string()), error.transport()),
         };
         doc.hosted = Some(Hosted {
             service_url: self.url.clone(),
@@ -462,6 +476,7 @@ impl Pmd {
             board,
             work,
             work_error,
+            work_transport_error,
         });
         // Scrub echoed credentials in every persisted/rendered API field, including Board data.
         let mut value = serde_json::to_value(doc).map_err(|_| FetchError::Malformed)?;

@@ -159,7 +159,7 @@ Hover the dot for every signal behind it. A status's age never greys a dot.
   disabled and its tooltip says why: T3 isn't installed or running, has no project for the checkout, or has no open
   thread. The T3 desktop app has no way to open a thread from outside, so the browser it is.
 - **Refresh one** repository with its row's button. It reloads the same pmd read endpoints.
-- **Automatic refresh** runs every `refresh_minutes` (default 5).
+- **Automatic refresh** runs every `refresh_minutes` (default 5). Connection and timeout failures retry after 5, 10, 20, then 60 seconds until recovery, even when automatic refresh is off. At startup the title reads "Connecting to pmd…". Later network failures keep the last good data and show one offline indicator with the last successful read time. HTTP and authentication errors remain visible.
 - **Config changes apply while it runs.** Save `config.toml` and, within a couple of seconds, added repositories
   appear and load, removed ones disappear, and the rest keep their status. A new `parallelism` applies to the next
   refresh and a new `refresh_minutes` from the next scheduled one. **Refresh all** reads the file first too. If an

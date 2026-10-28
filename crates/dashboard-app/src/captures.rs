@@ -944,4 +944,22 @@ fn captures_recovery() {
     save(&mut cx, handle, &out, "recovery-normal");
     fail(&mut cx);
     save(&mut cx, handle, &out, "recovery-stale");
+    cx.update(|cx| {
+        view.update(cx, |view, cx| {
+            let mut doc = demo::HostedSource.fetch(Path::new("/demo/gh-x"), false).unwrap();
+            doc.hosted.as_mut().unwrap().last_error = Some(dashboard_core::pmd::LastError {
+                message: "Upstream refresh failed".into(),
+                at: "2026-10-25T20:00:00Z".into(),
+            });
+            view.apply(
+                Outcome {
+                    checkout: PathBuf::from("/demo/gh-x"),
+                    result: Ok(doc),
+                },
+                cx,
+            );
+        })
+    });
+    fail(&mut cx);
+    save(&mut cx, handle, &out, "recovery-offline-upstream-error");
 }

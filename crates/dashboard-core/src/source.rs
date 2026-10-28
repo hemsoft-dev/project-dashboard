@@ -2,6 +2,13 @@
 use crate::status::StatusDocument;
 use std::path::Path;
 
+/// The retryable part of a read failure, also carried by partial Board/work results.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TransportError {
+    Timeout,
+    Connect,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FetchError {
     MissingToken,
@@ -22,7 +29,15 @@ pub enum FetchError {
 impl FetchError {
     /// Only transport failures are retried; HTTP and configuration errors stay visible.
     pub fn is_transient(&self) -> bool {
-        matches!(self, Self::Timeout | Self::Connect)
+        self.transport().is_some()
+    }
+
+    pub fn transport(&self) -> Option<TransportError> {
+        match self {
+            Self::Timeout => Some(TransportError::Timeout),
+            Self::Connect => Some(TransportError::Connect),
+            _ => None,
+        }
     }
 
     pub fn is_setup(&self) -> bool {

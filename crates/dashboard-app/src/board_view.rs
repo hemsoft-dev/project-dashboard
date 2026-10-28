@@ -786,11 +786,7 @@ impl BoardView {
 
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let refreshing = self.board.is_refreshing();
-        let transient = self
-            .board
-            .cards()
-            .iter()
-            .any(|card| card.error.as_ref().is_some_and(|e| e.is_transient()));
+        let transient = self.board.cards().iter().any(|card| card.recovery.retry_at.is_some());
         let last_success = self
             .board
             .cards()
@@ -1037,10 +1033,7 @@ impl BoardView {
         };
         let prs = count("pullRequests.open", |document| document.pull_requests.open.len());
         let issues = count("issues", |document| document.issues.len());
-        let error = card
-            .error
-            .as_ref()
-            .filter(|error| !error.is_setup() && !error.is_transient());
+        let error = card.display_error().filter(|error| !error.is_setup());
         // pmd regenerates a status only when the repository changes, and confirms it on every sweep: show both, each
         // with its local time on hover.
         let freshness = card
@@ -1212,7 +1205,9 @@ impl BoardView {
                     )
                     // Stays while a refresh runs: until a fresh result lands, the row still shows the cached copy.
                     .when(
-                        card.from_cache && !card.error.as_ref().is_some_and(|e| e.is_transient()),
+                        card.from_cache
+                            && (card.display_error().is_some()
+                                || !card.error.as_ref().is_some_and(|e| e.is_transient())),
                         |this| {
                             this.child(
                                 div()
@@ -1336,11 +1331,7 @@ impl BoardView {
             .pt_1()
             .pb_3()
             .gap_1();
-        if let Some(error) = card
-            .error
-            .as_ref()
-            .filter(|error| !error.is_setup() && !error.is_transient())
-        {
+        if let Some(error) = card.display_error().filter(|error| !error.is_setup()) {
             body = body.child(
                 h_flex()
                     .gap_2()

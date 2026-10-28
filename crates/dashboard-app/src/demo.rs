@@ -242,6 +242,7 @@ impl StatusSource for HostedSource {
             generated_at: at(323),
             checked_at: Some(at(12)),
             last_error: None,
+            work_transport_error: None,
             work_error: board.is_none().then(|| "pmd returned HTTP 503.".to_owned()),
             board,
             work,

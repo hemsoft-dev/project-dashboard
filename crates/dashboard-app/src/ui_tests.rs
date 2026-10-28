@@ -2655,20 +2655,29 @@ fn editing_pmd_write_token_path_turns_writes_on_and_off(cx: &mut TestAppContext)
     assert_eq!(cx.update(|cx| manage.read(cx).access().clone()), Access::Off);
 }
 
-#[gpui_kit::test]
-async fn network_retry_recovers_with_periodic_refresh_disabled(cx: &mut TestAppContext) {
+async fn network_retry_case(cx: &mut TestAppContext, partial: bool) {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    struct Reconnect(AtomicUsize);
+    struct Reconnect(AtomicUsize, bool);
     impl StatusSource for Reconnect {
         fn fetch(&self, path: &Path, _: bool) -> Result<StatusDocument, FetchError> {
             if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
-                Err(FetchError::Timeout)
+                if self.1 {
+                    let mut doc = demo::HostedSource.fetch(path, false)?;
+                    let hosted = doc.hosted.as_mut().unwrap();
+                    hosted.board = None;
+                    hosted.work.clear();
+                    hosted.work_error = Some(FetchError::Timeout.to_string());
+                    hosted.work_transport_error = Some(dashboard_core::source::TransportError::Timeout);
+                    Ok(doc)
+                } else {
+                    Err(FetchError::Timeout)
+                }
             } else {
                 demo::HostedSource.fetch(path, false)
             }
         }
     }
-    let source = Arc::new(Reconnect(AtomicUsize::new(0)));
+    let source = Arc::new(Reconnect(AtomicUsize::new(0), partial));
     let path = PathBuf::from("/demo/codexbar");
     let (handle, view) = open_board(cx, vec![path], StatusCache::default(), source.clone(), options());
     cx.update(|cx| view.update(cx, |v, cx| v.refresh_all(cx)));
@@ -2713,4 +2722,75 @@ async fn network_retry_recovers_with_periodic_refresh_disabled(cx: &mut TestAppC
         assert!(window.try_find(("cached", 0usize)).is_none());
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+async fn network_retry_recovers_with_periodic_refresh_disabled(cx: &mut TestAppContext) {
+    network_retry_case(cx, false).await;
+}
+
+#[gpui_kit::test]
+async fn partial_network_retry_recovers_with_periodic_refresh_disabled(cx: &mut TestAppContext) {
+    network_retry_case(cx, true).await;
+}
+
+#[gpui_kit::test]
+fn offline_row_still_shows_retained_upstream_error(cx: &mut TestAppContext) {
+    let path = PathBuf::from("/demo/gh-x");
+    let (handle, view) = open_board(
+        cx,
+        vec![path.clone()],
+        StatusCache::default(),
+        Arc::new(demo::HostedSource),
+        options(),
+    );
+    let mut doc = demo::HostedSource.fetch(&path, false).unwrap();
+    doc.hosted.as_mut().unwrap().last_error = Some(dashboard_core::pmd::LastError {
+        message: "Upstream refresh failed".into(),
+        at: "2026-10-25T20:00:00Z".into(),
+    });
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.apply(
+                Outcome {
+                    checkout: path.clone(),
+                    result: Ok(doc),
+                },
+                cx,
+            )
+        })
+    });
+    for error in [FetchError::Timeout, FetchError::Connect] {
+        cx.update(|cx| {
+            view.update(cx, |v, cx| {
+                v.apply(
+                    Outcome {
+                        checkout: path.clone(),
+                        result: Err(error),
+                    },
+                    cx,
+                )
+            })
+        });
+        assert_eq!(overall(cx, &view), [Overall::Failed]);
+        assert!(text_of(cx, handle, ("row-error", 0)).contains("Upstream refresh failed"));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find(("cached", 0usize)).is_some());
+            assert!(window.find("refresh-status").label().unwrap().contains("pmd offline"));
+        })
+        .unwrap();
+    }
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.apply(
+                Outcome {
+                    checkout: path.clone(),
+                    result: demo::HostedSource.fetch(&path, false),
+                },
+                cx,
+            )
+        })
+    });
+    assert_eq!(overall(cx, &view), [Overall::Clean]);
 }

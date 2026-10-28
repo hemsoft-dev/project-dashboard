@@ -84,3 +84,73 @@ fn startup_then_success_then_offline_retains_data_and_original_success_time() {
     assert_eq!(board.cards()[0].recovery, Recovery::default());
     assert_eq!(Card::new(path).overall(), Overall::Loading);
 }
+
+fn hosted_good() -> StatusDocument {
+    let mut doc = good();
+    doc.verdict = None;
+    doc.hosted = Some(
+        serde_json::from_value(serde_json::json!({
+            "serviceUrl":"http://pmd.test", "generatedAt":"2026-10-25T20:00:00Z",
+            "lastError":null, "board":{"generatedAt":"2026-10-25T20:00:00Z","columns":[]},
+            "work":[], "workError":null
+        }))
+        .unwrap(),
+    );
+    doc
+}
+
+#[test]
+fn retained_upstream_failure_stays_failed_when_transport_is_offline() {
+    let path = PathBuf::from("/fixture");
+    let mut doc = hosted_good();
+    doc.hosted.as_mut().unwrap().last_error = Some(dashboard_core::pmd::LastError {
+        message: "upstream GitHub refresh failed".into(),
+        at: "2026-10-25T20:00:00Z".into(),
+    });
+    let mut cache = StatusCache::default();
+    cache.insert(path.clone(), doc.clone());
+    let mut board = Board::new(std::slice::from_ref(&path), &cache);
+    for error in [FetchError::Timeout, FetchError::Connect] {
+        board.apply(
+            Outcome {
+                checkout: path.clone(),
+                result: Err(error),
+            },
+            &mut cache,
+        );
+        assert_eq!(board.cards()[0].overall(), Overall::Failed);
+        assert_eq!(board.cards()[0].document, Some(doc.clone()));
+        assert!(board.cards()[0].recovery.retry_at.is_some());
+    }
+}
+
+#[test]
+fn partial_transport_failures_back_off_until_the_whole_read_succeeds() {
+    use dashboard_core::source::TransportError;
+    let mut recovery = Recovery::default();
+    let mut now = Instant::now();
+    recovery.record(&Ok(hosted_good()), now, chrono::Local::now());
+    let last_success = recovery.last_success;
+    for (transport, seconds) in [
+        (TransportError::Timeout, 5),
+        (TransportError::Connect, 10),
+        (TransportError::Timeout, 20),
+        (TransportError::Connect, 60),
+    ] {
+        let mut partial = hosted_good();
+        let hosted = partial.hosted.as_mut().unwrap();
+        hosted.work_transport_error = Some(transport);
+        hosted.work_error = Some("transport failed".into());
+        recovery.record(&Ok(partial), now, chrono::Local::now());
+        assert_eq!(recovery.last_success, last_success);
+        assert_eq!(recovery.retry_at, Some(now + Duration::from_secs(seconds)));
+        now += Duration::from_secs(seconds);
+        assert!(recovery.due(now));
+    }
+    recovery.record(&Ok(hosted_good()), now, chrono::Local::now());
+    assert_eq!(recovery.retry_at, None);
+    let mut http = hosted_good();
+    http.hosted.as_mut().unwrap().work_error = Some(FetchError::Http(503).to_string());
+    recovery.record(&Ok(http), now, chrono::Local::now());
+    assert_eq!(recovery.retry_at, None);
+}

@@ -164,8 +164,23 @@ impl Card {
         })
     }
 
+    /// The visible failure: transport errors are shown once on the board, but cannot hide a retained upstream error.
+    pub fn display_error(&self) -> Option<FetchError> {
+        self.error
+            .as_ref()
+            .filter(|error| !error.is_transient())
+            .cloned()
+            .or_else(|| {
+                let error = self.document.as_ref()?.hosted.as_ref()?.last_error.as_ref()?;
+                Some(FetchError::Failed(format!(
+                    "pmd last refresh failed at {}: {}",
+                    error.at, error.message
+                )))
+            })
+    }
+
     pub fn overall(&self) -> Overall {
-        if self.error.as_ref().is_some_and(|error| !error.is_transient()) {
+        if self.display_error().is_some() {
             return Overall::Failed;
         }
         match &self.document {

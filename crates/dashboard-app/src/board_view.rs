@@ -291,7 +291,8 @@ impl BoardView {
         self.finding_priorities
     }
 
-    #[cfg(test)]
+    // Only the offscreen screenshot fixtures inject priorities directly.
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
     pub fn apply_priorities(&mut self, priorities: dashboard_core::priority::Priorities, cx: &mut Context<Self>) {
         self.board.set_priorities(priorities);
         cx.notify();

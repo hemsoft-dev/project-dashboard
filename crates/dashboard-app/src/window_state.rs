@@ -58,28 +58,61 @@ fn snapshot(window: &Window, cx: &App) -> Option<Placement> {
         maximized: window.is_maximized(),
     })
 }
-fn save(placement: Option<Placement>) {
+fn save(placement: Option<Placement>, native: Option<dashboard_core::placement::NativePlacement>) {
     if let Some(placement) = placement.filter(Placement::valid)
-        && let Err(err) = UiState::update(&config::default_dir(), |s| s.placement = Some(placement))
+        && let Err(err) = UiState::update(&config::default_dir(), |s| {
+            s.placement = Some(placement);
+            s.native_placement = native;
+        })
     {
         eprintln!("project-dashboard: can't save window placement: {err}");
     }
 }
 
-pub fn observe(window: &mut Window, cx: &mut Context<BoardView>) {
+fn observe_ready(window: &mut Window, cx: &mut Context<BoardView>) {
     let pending: Rc<RefCell<Option<Task<()>>>> = Rc::default();
     let debounce = pending.clone();
     cx.observe_window_bounds(window, move |_, window, cx| {
         let placement = snapshot(window, cx);
+        let native = native_snapshot(window);
         *debounce.borrow_mut() = Some(cx.spawn(async move |_, cx| {
             cx.background_executor().timer(Duration::from_millis(350)).await;
-            save(placement);
+            save(placement, native);
         }));
     })
     .detach();
     window.on_window_should_close(cx, move |window, cx| {
         pending.borrow_mut().take();
-        save(snapshot(window, cx));
+        save(snapshot(window, cx), native_snapshot(window));
         true
+    });
+}
+
+#[cfg(windows)]
+#[path = "window_state_native.rs"]
+mod native;
+
+#[cfg(windows)]
+fn native_snapshot(window: &Window) -> Option<dashboard_core::placement::NativePlacement> {
+    native::snapshot(window)
+}
+
+#[cfg(not(windows))]
+fn native_snapshot(_: &Window) -> Option<dashboard_core::placement::NativePlacement> {
+    None
+}
+
+pub fn observe(window: &mut Window, cx: &mut Context<BoardView>) {
+    // GPUI applies its initial placement at first presentation. Wait for that
+    // before restoring native workspace pixels, and only then attach save observers.
+    let entity = cx.entity();
+    #[cfg(windows)]
+    let saved = UiState::load(&config::default_dir()).native_placement;
+    window.on_next_frame(move |window, cx| {
+        #[cfg(windows)]
+        if let Some(saved) = saved {
+            native::restore(window, &saved);
+        }
+        entity.update(cx, |_, cx| observe_ready(window, cx));
     });
 }

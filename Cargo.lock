@@ -1234,7 +1234,7 @@ dependencies = [
 
 [[package]]
 name = "dashboard-app"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "chrono",
  "dashboard-core",
@@ -1242,12 +1242,13 @@ dependencies = [
  "gpui-kit",
  "gpui-pre-apple",
  "image",
+ "raw-window-handle",
  "serde_json",
 ]
 
 [[package]]
 name = "dashboard-core"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "chrono",
  "dirs 6.0.0",

@@ -2,6 +2,7 @@
 param([Parameter(Mandatory)][string]$Exe, [string]$OutDir="$env:TEMP\dashboard-53-test", [switch]$MigrateLegacy)
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
+if (!(Test-Path -LiteralPath $Exe -PathType Leaf)) { throw 'Dashboard executable is missing' }
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 $statePath="$env:APPDATA\ProjectDashboard\ui-state.json"
 $original=Get-Content $statePath -Raw | ConvertFrom-Json
@@ -28,7 +29,7 @@ if ($MigrateLegacy) {
  # Upgrade from the live native placement, which is more accurate than the
  # legacy logical client bounds. Other preferences are preserved verbatim.
  $r=$before.placement.Rect
- $native=@{rect=@($r.L,$r.T,$r.Ri,$r.B);monitor=$before.monitor;dpi=$before.dpi;maximized=($before.placement.Show -eq 3)}
+ $native=@{rect=@($r.L,$r.T,$r.Ri,$r.B);monitor=$before.monitor;dpi=$before.dpi;maximized=($before.placement.Show -eq 3 -or ($before.placement.Show -eq 2 -and ($before.placement.Flags -band 2)))}
  $original | Add-Member -NotePropertyName nativePlacement -NotePropertyValue $native -Force
  $original | ConvertTo-Json -Depth 10 | Set-Content $statePath
 }

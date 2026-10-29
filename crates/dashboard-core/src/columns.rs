@@ -16,15 +16,19 @@ pub enum Column {
     Priority,
     PullRequests,
     Issues,
+    Merged24h,
+    Merged7d,
     Updated,
 }
 
 impl Column {
-    pub const ALL: [Column; 5] = [
+    pub const ALL: [Column; 7] = [
         Self::Repository,
         Self::Priority,
         Self::PullRequests,
         Self::Issues,
+        Self::Merged24h,
+        Self::Merged7d,
         Self::Updated,
     ];
 
@@ -34,6 +38,7 @@ impl Column {
             Self::Repository => 18.0,
             Self::Priority => 4.5,
             Self::PullRequests | Self::Issues => 3.25,
+            Self::Merged24h | Self::Merged7d => 6.5,
             Self::Updated => 4.5,
         }
     }
@@ -45,6 +50,7 @@ impl Column {
             Self::Priority => 4.5,
             Self::PullRequests => 2.5,
             Self::Issues => 3.0,
+            Self::Merged24h | Self::Merged7d => 6.5,
             Self::Updated => 4.25,
         }
     }
@@ -56,6 +62,8 @@ impl Column {
             Self::Priority => "priority",
             Self::PullRequests => "pullRequests",
             Self::Issues => "issues",
+            Self::Merged24h => "merged24h",
+            Self::Merged7d => "merged7d",
             Self::Updated => "updated",
         }
     }
@@ -78,6 +86,10 @@ pub struct ColumnWidths {
     priority: f32,
     pull_requests: f32,
     issues: f32,
+    #[serde(default = "merge_width")]
+    merged_24h: f32,
+    #[serde(default = "merge_width")]
+    merged_7d: f32,
     updated: f32,
 }
 
@@ -88,6 +100,8 @@ impl Default for ColumnWidths {
             priority: Column::Priority.default_width(),
             pull_requests: Column::PullRequests.default_width(),
             issues: Column::Issues.default_width(),
+            merged_24h: merge_width(),
+            merged_7d: merge_width(),
             updated: Column::Updated.default_width(),
         }
     }
@@ -100,6 +114,8 @@ impl ColumnWidths {
             Column::Priority => self.priority,
             Column::PullRequests => self.pull_requests,
             Column::Issues => self.issues,
+            Column::Merged24h => self.merged_24h,
+            Column::Merged7d => self.merged_7d,
             Column::Updated => self.updated,
         }
     }
@@ -112,6 +128,8 @@ impl ColumnWidths {
             Column::Priority => self.priority = width,
             Column::PullRequests => self.pull_requests = width,
             Column::Issues => self.issues = width,
+            Column::Merged24h => self.merged_24h = width,
+            Column::Merged7d => self.merged_7d = width,
             Column::Updated => self.updated = width,
         }
     }
@@ -138,4 +156,8 @@ impl ColumnWidths {
     pub fn total(&self) -> f32 {
         Column::ALL.iter().map(|&column| self.get(column)).sum()
     }
+}
+
+fn merge_width() -> f32 {
+    6.5
 }

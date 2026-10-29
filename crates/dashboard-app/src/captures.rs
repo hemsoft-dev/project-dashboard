@@ -1032,3 +1032,15 @@ fn captures_fixture_backlog() {
     cx.run_until_parked();
     save(&mut cx, handle, &out, "fixture-backlog");
 }
+
+#[test]
+#[ignore = "writes screenshots; run with CAPTURE_DIR set"]
+fn captures_merge_counts() {
+    let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").unwrap());
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cx = headless();
+    let (window, view) = open_sized(&mut cx, vec![PathBuf::from("/demo/project-manager")], 1500., 700.);
+    fill(&mut cx, &view, &demo::HostedSource);
+    settle(&mut cx);
+    save(&mut cx, window, &out, "project-merge-counts");
+}

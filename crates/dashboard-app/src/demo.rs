@@ -239,6 +239,10 @@ impl StatusSource for HostedSource {
                 .collect(),
         });
         document.hosted = Some(Hosted {
+            merge_counts: dashboard_core::pmd::MergeCounts {
+                merged_24h: Some(3),
+                merged_7d: Some(17),
+            },
             backlog: Default::default(),
             service_url: "http://fixture.invalid".into(),
             generated_at: at(323),

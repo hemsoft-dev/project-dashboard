@@ -1044,3 +1044,23 @@ fn captures_merge_counts() {
     settle(&mut cx);
     save(&mut cx, window, &out, "project-merge-counts");
 }
+
+#[test]
+#[ignore = "writes compact layout screenshots offscreen"]
+fn captures_compact_columns() {
+    use dashboard_core::columns::Column;
+    let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").unwrap());
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cx = headless();
+    let mut options = options();
+    for column in Column::ALL {
+        options.columns.set(column, column.min_width());
+    }
+    options.columns.set(Column::Repository, 10.);
+    let (window, view) = open_with(&mut cx, demo::checkouts(), 1000., 640., options);
+    fill(&mut cx, &view, &demo::HostedSource);
+    save(&mut cx, window, &out, "compact-100");
+    cx.update(|cx| crate::zoom::set_level(1.3, cx));
+    cx.run_until_parked();
+    save(&mut cx, window, &out, "compact-130");
+}

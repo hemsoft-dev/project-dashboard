@@ -331,3 +331,12 @@ The header switches between the existing Project board and Backlog. The last cho
 Both views share refresh and automatic transport retries. A failed work read keeps the last good work snapshot; assignment/dispatch failures show a separate Backlog error and retain enrichment without replacing fresh Project board/work data. Rows open their PR, or their issue when no PR is linked. Backlog reads `/v1/work`, `/v1/assignments` and `/v1/dispatch/plan`; it does not infer closing references from titles.
 
 Live Backlog captures are opt-in with `PMD_CAPTURE_TOKEN` pointing to a local read-token file. They skip before any network or render setup when the variable is absent. CI uses the deterministic `captures_fixture_backlog` capture and headless Backlog tests; no live token or tailnet connection is needed.
+
+Window placement is saved beside the zoom and column widths in `ui-state.json`. Moves and resizes save after
+350 ms; closing flushes immediately. Placement uses the monitor's stable ID and logical pixels relative to its
+usable area, independently of UI zoom. A missing monitor or off-screen rectangle falls back to the primary monitor
+and is clamped to its usable area. Column dividers can shrink to the header minimum; double-click resets the width.
+
+For an unattended Windows update over SSH, run `scripts/Install-WindowsRelease.ps1 -Package <zip>`.
+It preserves the AppData configuration and launches the executable directly through a temporary interactive scheduled
+task, then unregisters that task. The installer runs in session 0 without opening a console on the desktop.

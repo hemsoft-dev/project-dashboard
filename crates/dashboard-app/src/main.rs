@@ -18,6 +18,7 @@ mod projects_tests;
 mod theme;
 #[cfg(test)]
 mod ui_tests;
+mod window_state;
 #[cfg(test)]
 mod work_items_tests;
 mod zoom;
@@ -49,7 +50,7 @@ fn main() {
         board_view::bind_keys(cx);
         // The demo remembers its zoom too, so a restart keeps it.
         zoom::init(cx, Some(config::default_dir()));
-        let options = WindowOptions {
+        let mut options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
                 size(px(1100.), px(760.)),
@@ -59,6 +60,7 @@ fn main() {
             app_id: (!cfg!(windows)).then(|| APP_ID.to_owned()),
             ..TitleBar::window_options()
         };
+        window_state::restore(&mut options, cx);
         gpui_kit::open_window(options, cx, |window, cx| {
             window.set_window_title(APP_NAME);
             cx.new(|cx| {
@@ -67,6 +69,7 @@ fn main() {
                 } else {
                     live_view(window, cx)
                 };
+                window_state::observe(window, cx);
                 view.refresh_all(cx);
                 view
             })

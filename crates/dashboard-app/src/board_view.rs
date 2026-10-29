@@ -1004,8 +1004,8 @@ impl BoardView {
                 div().truncate().text_right().child(column_title(Column::Issues)),
                 cx,
             ))
-            .child(self.header_cell(Column::Merged24h, div().text_right().child("Merged 24h"), cx))
-            .child(self.header_cell(Column::Merged7d, div().text_right().child("Merged 7d"), cx))
+            .child(self.header_cell(Column::Merged24h, div().truncate().text_right().child("Merged 24h"), cx))
+            .child(self.header_cell(Column::Merged7d, div().truncate().text_right().child("Merged 7d"), cx))
             .child(
                 self.header_cell(
                     Column::Updated,
@@ -1104,6 +1104,10 @@ impl BoardView {
                     .id(("activity", ix))
                     .test_support()
                     .aria_label(format!("Last activity: {}, {}", activity.label, activity.title))
+                    .tooltip({
+                        let text = format!("{}: {}", activity.label, activity.title);
+                        move |window, cx| gpui_kit::component::tooltip::Tooltip::new(text.clone()).build(window, cx)
+                    })
                     .min_w_0()
                     .cursor_pointer()
                     .hover(|style| style.underline())
@@ -1206,7 +1210,19 @@ impl BoardView {
                     .child(
                         v_flex()
                             .min_w_0()
-                            .child(div().truncate().font_semibold().child(card.name()))
+                            .child(
+                                div()
+                                    .id(("repo-full", ix))
+                                    .truncate()
+                                    .font_semibold()
+                                    .tooltip({
+                                        let name = card.name().to_owned();
+                                        move |window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new(name.clone()).build(window, cx)
+                                        }
+                                    })
+                                    .child(card.name()),
+                            )
                             .when_some(freshness, |this, (text, times)| {
                                 let times: SharedString = times.into();
                                 this.child(
@@ -1304,7 +1320,7 @@ impl BoardView {
                     .text_right()
                     .child(text)
             }))
-            .child(column_cell(Column::Updated, &self.columns).child(updated))
+            .child(column_cell(Column::Updated, &self.columns).truncate().child(updated))
             // Takes the width the other columns leave, and shrinks first on a narrow window, so the refresh button
             // stays in view.
             .child(

@@ -18,6 +18,7 @@ function Run-Once($Action) {
 }
 function Read-Placement([string]$Name,[string]$Mode='Read') {
  $output=Join-Path $OutDir ($Name+'.json')
+ Remove-Item -LiteralPath $output,($output+'.png') -Force -ErrorAction SilentlyContinue
  $reader=Join-Path $PSScriptRoot 'Read-Placement.ps1'
  Run-Once (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -File "'+$reader+'" -Output "'+$output+'" -Mode '+$Mode))
  if (!(Test-Path $output)) { throw "Native read failed: $Name" }

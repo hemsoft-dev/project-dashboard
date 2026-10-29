@@ -27,8 +27,8 @@ $h=$p.MainWindowHandle
 if (!$h) { throw 'No Dashboard window in interactive session' }
 if ($Mode -ne 'Read') { $command=if($Mode -eq 'Normal'){9}else{3}; [void][W53]::ShowWindow($h,$command); Start-Sleep -Seconds 1 }
 $w=New-Object W53+WP; $w.Length=44
-[void][W53]::GetWindowPlacement($h,[ref]$w)
-$r=New-Object W53+R; [void][W53]::GetWindowRect($h,[ref]$r)
+if (![W53]::GetWindowPlacement($h,[ref]$w)) {throw 'GetWindowPlacement failed'}
+$r=New-Object W53+R; if (![W53]::GetWindowRect($h,[ref]$r)) {throw 'GetWindowRect failed'}
 $m=New-Object W53+MI; $m.Size=[Runtime.InteropServices.Marshal]::SizeOf($m)
 if (![W53]::GetMonitorInfoW([W53]::MonitorFromWindow($h,2),[ref]$m)) { throw 'GetMonitorInfoW failed' }
 @{systemDpi=[W53]::GetDpiForSystem();placement=$w;visible=$r;dpi=[W53]::GetDpiForWindow($h);monitor=$m.Device} | ConvertTo-Json -Depth 5 | Set-Content $Output

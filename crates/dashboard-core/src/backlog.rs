@@ -226,7 +226,6 @@ pub fn rows<'a>(documents: impl IntoIterator<Item = &'a StatusDocument>) -> Vec<
             items.sort_by_key(|i| (i.kind != "issue", i.number));
             let mut workers = Vec::new();
             let mut author_models = Vec::new();
-            let mut reasons = Vec::new();
             let mut waiting_reasons = Vec::new();
             let mut reviews = Vec::new();
             let mut active = false;
@@ -266,8 +265,6 @@ pub fn rows<'a>(documents: impl IntoIterator<Item = &'a StatusDocument>) -> Vec<
                             })
                             .map(|l| l.replace('_', " ")),
                     );
-                } else if let Some(reason) = &d.status_reason {
-                    reasons.push(reason.clone());
                 }
                 // Prefer the richer current assignment list over the work item's summary.
                 // Also consider another live holder when the newest summary is idle.
@@ -329,17 +326,18 @@ pub fn rows<'a>(documents: impl IntoIterator<Item = &'a StatusDocument>) -> Vec<
                 {
                     dispatch = dispatch.min(n);
                 }
-                if let Some(d) = hosted.backlog.plan.skipped.iter().find(|d| d.work_item.id == item.id) {
-                    reasons.push(d.reason.clone());
-                }
             }
             author_models.sort();
             author_models.dedup();
             workers.sort();
             workers.dedup();
-            if waiting {
-                reasons = waiting_reasons;
-            }
+            // Runtime/dispatch reasons may carry opaque thread ids. Keep the visible
+            // explanation limited to the waiting work members, in human language.
+            let mut reasons: Vec<_> = waiting_reasons
+                .iter()
+                .flat_map(|r| r.split('·'))
+                .filter_map(waiting_reason)
+                .collect();
             reasons.sort();
             reasons.dedup();
             let priority = items.iter().filter_map(|i| i.detail.priority).min().unwrap_or(9);
@@ -384,6 +382,25 @@ pub fn rows<'a>(documents: impl IntoIterator<Item = &'a StatusDocument>) -> Vec<
     });
     result
 }
+fn waiting_reason(reason: &str) -> Option<String> {
+    let reason = reason.trim();
+    let lower = reason.to_ascii_lowercase();
+    if reason.is_empty() || lower.contains("thread:") || lower.contains("thread%3a") || lower.contains("delegated-task")
+    {
+        return None;
+    }
+    let words = lower
+        .replace(['_', '-'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(match words.as_str() {
+        "waiting on franz" => "waiting on Franz".into(),
+        "blocked" | "watching" | "parked" => words,
+        _ => reason.to_owned(),
+    })
+}
+
 fn linked(a: &WorkItem, b: &WorkItem) -> bool {
     a.project == b.project
         && a.detail
@@ -623,5 +640,26 @@ mod tests {
         let row = &rows([&doc])[0];
         assert_eq!(row.group, Group::Waiting);
         assert_eq!(row.reason, "Needs access · blocked");
+    }
+
+    #[test]
+    fn up_next_omits_dispatch_reasons_and_opaque_thread_ids() {
+        let mut i = item("next", "issue", "ready", 1, 0);
+        i.detail.status_reason = Some("one writer per repo: thread thread:delegated-task:command%3Amcp%3Aid".into());
+        let mut doc = document(vec![i]);
+        doc.hosted.as_mut().unwrap().backlog.plan.skipped.push(Decision {
+            work_item: Ref { id: "next".into() },
+            reason: "one writer per repo: thread thread:delegated-task:command%3Amcp%3Aid".into(),
+        });
+        let row = &rows([&doc])[0];
+        assert_eq!(row.group, Group::UpNext);
+        assert!(row.reason.is_empty());
+    }
+    #[test]
+    fn waiting_labels_have_one_human_spelling_and_no_thread_ids() {
+        let mut i = item("waiting", "issue", "waiting_on_franz", 1, 0);
+        i.detail.labels = vec!["waiting-on-franz".into(), "waiting_on_franz".into()];
+        i.detail.status_reason = Some("waiting on franz · waiting-on-franz · thread:delegated-task:opaque".into());
+        assert_eq!(rows([&document(vec![i])])[0].reason, "waiting on Franz");
     }
 }

@@ -1,5 +1,6 @@
 use crate::board_view::BoardView;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _, h_flex, tag::Tag, tooltip::Tooltip, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Context, InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _, Styled as _,
     TestSupportExt as _, div, rems,
@@ -57,17 +58,18 @@ impl BoardView {
             }
             let url = row.url().to_owned();
             let title = format!("{} · {} · {}", row.project, row.priority_label(), row.work_label());
-            let holder = if row.workers.is_empty() {
-                "unassigned".to_owned()
-            } else {
-                row.workers.join(" / ")
-            };
+            let holder = row.workers.join(" / ");
             let detail = if row.reason.is_empty() {
                 title
             } else {
                 format!("{title} · {}", row.reason)
             };
-            let full_label = format!("{detail} · holder ({holder}) · {}", row.author_models.join(" · "));
+            let full_label = std::iter::once(detail.as_str())
+                .chain(std::iter::once(holder.as_str()))
+                .chain(row.author_models.iter().map(String::as_str))
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ");
             let tooltip = full_label.clone();
             let line = h_flex()
                 .id(("backlog-row", ix))
@@ -94,17 +96,19 @@ impl BoardView {
                         .truncate()
                         .child(detail),
                 )
-                .child(
-                    div()
-                        .id(("backlog-holder", ix))
-                        .test_support()
-                        .max_w(rems(20.))
-                        .min_w_0()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .truncate()
-                        .child(format!("· holder ({holder})")),
-                )
+                .when(!holder.is_empty(), |line| {
+                    line.child(
+                        div()
+                            .id(("backlog-holder", ix))
+                            .test_support()
+                            .max_w(rems(20.))
+                            .min_w_0()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .truncate()
+                            .child(holder),
+                    )
+                })
                 .children(
                     row.author_models
                         .into_iter()

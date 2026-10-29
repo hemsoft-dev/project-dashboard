@@ -2905,3 +2905,47 @@ fn backlog_long_linked_work_stays_on_one_compact_line(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn backlog_only_renders_worker_text_for_a_live_holder(cx: &mut TestAppContext) {
+    let checkout = PathBuf::from("/demo/codexbar");
+    let mut doc = demo::HostedSource.fetch(&checkout, false).unwrap();
+    let hosted = doc.hosted.as_mut().unwrap();
+    hosted.work.truncate(1);
+    hosted.work[0].status = "ready".into();
+    let (handle, view) = open_board(
+        cx,
+        vec![checkout.clone()],
+        StatusCache::default(),
+        Arc::new(demo::HostedSource),
+        options(),
+    );
+    for assigned in [false, true] {
+        let mut doc = doc.clone();
+        doc.hosted.as_mut().unwrap().work[0].detail.assignment =
+            assigned.then(|| dashboard_core::backlog::Assignment {
+                state: "running".into(),
+                machine: "mini".into(),
+                model: "gpt-6.1-sol".into(),
+                ..Default::default()
+            });
+        cx.update(|cx| {
+            view.update(cx, |v, cx| {
+                v.apply(
+                    Outcome {
+                        checkout: checkout.clone(),
+                        result: Ok(doc),
+                    },
+                    cx,
+                );
+                v.selected_view = dashboard_core::config::View::Backlog;
+                cx.notify();
+            })
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.try_find(("backlog-holder", 0usize)).is_some(), assigned);
+        })
+        .unwrap();
+    }
+}

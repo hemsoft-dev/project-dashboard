@@ -92,14 +92,14 @@ fn observe_ready(window: &mut Window, cx: &mut Context<BoardView>) {
 #[path = "window_state_native.rs"]
 mod native;
 
+#[cfg(windows)]
 fn native_snapshot(window: &Window) -> Option<dashboard_core::placement::NativePlacement> {
-    #[cfg(windows)]
-    return native::snapshot(window);
-    #[cfg(not(windows))]
-    {
-        let _ = window;
-        None
-    }
+    native::snapshot(window)
+}
+
+#[cfg(not(windows))]
+fn native_snapshot(_: &Window) -> Option<dashboard_core::placement::NativePlacement> {
+    None
 }
 
 pub fn observe(window: &mut Window, cx: &mut Context<BoardView>) {

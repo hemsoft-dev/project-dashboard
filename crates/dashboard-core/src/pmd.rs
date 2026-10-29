@@ -26,6 +26,8 @@ pub struct Hosted {
     pub last_error: Option<LastError>,
     pub board: Option<WorkBoard>,
     pub work: Vec<WorkItem>,
+    #[serde(default)]
+    pub backlog: crate::backlog::Context,
     pub work_error: Option<String>,
     /// Preserve the transport classification through partial reads and cache serialization.
     #[serde(default)]
@@ -51,6 +53,8 @@ pub struct WorkColumn {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkItem {
+    #[serde(flatten)]
+    pub detail: crate::backlog::Detail,
     pub id: String,
     pub project: String,
     pub kind: String,
@@ -347,7 +351,7 @@ impl ReadApi {
         // Never include raw bodies, URLs, reqwest diagnostics or serde input in errors.
         serde_json::from_slice(&bytes).map_err(|_| FetchError::Malformed)
     }
-    fn scrub(&self, value: &mut serde_json::Value) {
+    pub(crate) fn scrub(&self, value: &mut serde_json::Value) {
         match value {
             serde_json::Value::String(s) => *s = s.replace(&self.token, "[redacted]"),
             serde_json::Value::Array(xs) => xs.iter_mut().for_each(|x| self.scrub(x)),
@@ -468,7 +472,17 @@ impl Pmd {
             Ok((board, work)) => (Some(board), work, None, None),
             Err(error) => (None, Vec::new(), Some(error.to_string()), error.transport()),
         };
+        let backlog = if work_error.is_none() {
+            crate::backlog::read(&api, &project.slug).unwrap_or_else(|error| crate::backlog::Context {
+                error: Some(error.to_string()),
+                transport_error: error.transport(),
+                ..Default::default()
+            })
+        } else {
+            Default::default()
+        };
         doc.hosted = Some(Hosted {
+            backlog,
             service_url: self.url.clone(),
             generated_at: envelope.generated_at,
             checked_at,

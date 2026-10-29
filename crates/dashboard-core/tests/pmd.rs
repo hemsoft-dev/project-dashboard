@@ -91,6 +91,8 @@ fn response(path: &str) -> Reply {
         "/v1/work?project=gh-x&limit=500&cursor=page%2B2%2F%3D" => {
             Reply::json(json!({"items":[item("stable-2")],"nextCursor":null}))
         }
+        "/v1/assignments?project=gh-x&limit=500" => Reply::json(json!({"assignments":[],"truncated":false})),
+        "/v1/dispatch/plan" => Reply::json(json!({"recommendations":[],"skipped":[]})),
         "/healthz" => Reply::json(json!({"sweepAgeSeconds":60,"webhookAgeSeconds":null,"githubLow":false})),
         _ => panic!("unexpected API request {path}"),
     }
@@ -139,7 +141,7 @@ fn hosted_status_preserves_rows_and_board_truncation_and_follows_encoded_work_cu
         // Nothing blocked, waiting or failing: an old, unchanged status is still OK.
         assert_eq!(board.cards()[0].overall(), Overall::Clean);
     }
-    assert_eq!(server.requests.lock().unwrap().len(), 12);
+    assert_eq!(server.requests.lock().unwrap().len(), 16);
 }
 #[test]
 fn checked_time_is_the_later_of_pmds_last_sweep_and_the_status_and_optional() {
@@ -147,6 +149,8 @@ fn checked_time_is_the_later_of_pmds_last_sweep_and_the_status_and_optional() {
     let checked = |health: Reply| {
         let health = Arc::new(Mutex::new(Some(health)));
         let server = Server::new(move |path| match path {
+            "/v1/assignments?project=gh-x&limit=500" => Reply::json(json!({"assignments":[],"truncated":false})),
+            "/v1/dispatch/plan" => Reply::json(json!({"recommendations":[],"skipped":[]})),
             "/healthz" => health.lock().unwrap().take().unwrap(),
             _ => response(path),
         });
@@ -713,6 +717,75 @@ fn board_and_later_work_page_timeouts_keep_status_and_schedule_recovery() {
                 .unwrap()
                 .work_error
                 .is_none()
+        );
+    }
+}
+
+#[test]
+fn backlog_read_failure_never_discards_fresh_project_board_or_work() {
+    for failure in ["assignments", "plan", "truncated", "timeout"] {
+        let checkout = Checkout::new();
+        let failing = Arc::new(AtomicBool::new(false));
+        let flag = failing.clone();
+        let server = Server::new(move |path| {
+            let fresh = flag.load(Ordering::SeqCst);
+            if fresh && path.starts_with("/v1/assignments") {
+                match failure {
+                    "assignments" => {
+                        return Reply {
+                            code: 503,
+                            body: String::new(),
+                        };
+                    }
+                    "truncated" => return Reply::json(json!({"assignments":[],"truncated":true})),
+                    "timeout" => std::thread::sleep(Duration::from_millis(600)),
+                    _ => {}
+                }
+            }
+            if fresh && failure == "plan" && path == "/v1/dispatch/plan" {
+                return Reply {
+                    code: 503,
+                    body: String::new(),
+                };
+            }
+            let mut reply = response(path);
+            if !fresh && path == "/v1/dispatch/plan" {
+                reply = Reply::json(json!({"recommendations":[],"skipped":[],"blocked":"previous plan"}));
+            }
+            if fresh && (path.starts_with("/v1/work") || path.starts_with("/v1/board")) {
+                reply.body = reply.body.replace("API data", "Fresh Project work");
+            }
+            reply
+        });
+        let source = checkout.source(&server);
+        let mut cache = StatusCache::default();
+        let mut board = Board::new(std::slice::from_ref(&checkout.0), &cache);
+        apply(&mut board, &mut cache, &checkout, source.fetch(&checkout.0, false));
+        failing.store(true, Ordering::SeqCst);
+        apply(
+            &mut board,
+            &mut cache,
+            &checkout,
+            source.fetch_with_timeout(&checkout.0, Duration::from_millis(300)),
+        );
+        let hosted = board.cards()[0].document.as_ref().unwrap().hosted.as_ref().unwrap();
+        assert!(
+            hosted.backlog.error.is_some(),
+            "{failure}: backlog error must remain separate"
+        );
+        assert_eq!(hosted.backlog.plan.blocked.as_deref(), Some("previous plan"));
+        assert!(hosted.work_transport_error.is_none());
+        assert_eq!(board.cards()[0].recovery.retry_at.is_some(), failure == "timeout");
+        assert!(hosted.work_error.is_none(), "{failure}: work read succeeded");
+        assert_eq!(hosted.work[0].title, "Fresh Project work", "{failure}");
+        assert_eq!(
+            hosted.board.as_ref().unwrap().columns[0].items[0].title,
+            "Fresh Project work",
+            "{failure}"
+        );
+        assert_eq!(
+            cache.get(&checkout.0).unwrap().hosted.as_ref().unwrap().work,
+            hosted.work
         );
     }
 }

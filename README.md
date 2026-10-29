@@ -323,3 +323,11 @@ See [project-manager's token documentation](https://github.com/hemsoft-dev/proje
 ## License
 
 [MIT](LICENSE)
+
+### Project and Backlog views
+
+The header switches between the existing Project board and Backlog. The last choice is saved as `view = "project"` or `view = "backlog"` in config.toml. Backlog groups closing issue/PR links from pmd, shows assignment machine and model, and preserves the `model:` author label separately. Only running, queued or waiting-input holders count as In progress; idle, failed, done, settled, stale and released holders do not. Open PRs alone do not imply activity. Compact single-line rows show closing issues/PRs, a live worker when present and separate author-model chips, with full text in a tooltip. Work in progress comes first, followed by Ready work ordered by effective priority and rank, waiting work with pmd reasons, then P4 and later. Dispatch recommendations break equal-priority/rank ties; Up next omits dispatcher diagnostics and thread IDs. Truncated plans are identified.
+
+Both views share refresh and automatic transport retries. A failed work read keeps the last good work snapshot; assignment/dispatch failures show a separate Backlog error and retain enrichment without replacing fresh Project board/work data. Rows open their PR, or their issue when no PR is linked. Backlog reads `/v1/work`, `/v1/assignments` and `/v1/dispatch/plan`; it does not infer closing references from titles.
+
+Live Backlog captures are opt-in with `PMD_CAPTURE_TOKEN` pointing to a local read-token file. They skip before any network or render setup when the variable is absent. CI uses the deterministic `captures_fixture_backlog` capture and headless Backlog tests; no live token or tailnet connection is needed.

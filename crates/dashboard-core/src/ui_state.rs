@@ -18,6 +18,7 @@ pub struct UiState {
     pub zoom: f64,
     pub columns: ColumnWidths,
     pub placement: Option<crate::placement::Placement>,
+    pub native_placement: Option<crate::placement::NativePlacement>,
 }
 
 impl Default for UiState {
@@ -26,6 +27,7 @@ impl Default for UiState {
             zoom: zoom::DEFAULT,
             columns: ColumnWidths::default(),
             placement: None,
+            native_placement: None,
         }
     }
 }
@@ -45,6 +47,10 @@ impl UiState {
                 .and_then(Value::as_f64)
                 .map_or(zoom::DEFAULT, zoom::clamp),
             columns: ColumnWidths::from_value(value.and_then(|value| value.get("columns"))),
+            native_placement: value
+                .and_then(|v| v.get("nativePlacement"))
+                .and_then(|v| serde_json::from_value::<crate::placement::NativePlacement>(v.clone()).ok())
+                .filter(|p| p.valid()),
             placement: value
                 .and_then(|v| v.get("placement"))
                 .and_then(|v| serde_json::from_value::<crate::placement::Placement>(v.clone()).ok())

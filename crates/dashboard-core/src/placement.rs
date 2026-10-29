@@ -47,3 +47,19 @@ impl Placement {
         ))
     }
 }
+
+/// Windows WINDOWPLACEMENT normal rectangle, in physical workspace pixels.
+/// DPI is metadata, never a multiplier during restoration.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativePlacement {
+    pub rect: [i32; 4],
+    pub monitor: String,
+    pub dpi: u32,
+    pub maximized: bool,
+}
+impl NativePlacement {
+    pub fn valid(&self) -> bool {
+        self.rect[2] > self.rect[0] && self.rect[3] > self.rect[1] && (48..=768).contains(&self.dpi)
+    }
+}

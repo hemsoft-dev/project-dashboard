@@ -1064,3 +1064,48 @@ fn captures_compact_columns() {
     cx.run_until_parked();
     save(&mut cx, window, &out, "compact-130");
 }
+
+#[test]
+#[ignore = "writes issue 55 screenshots and refresh recording frames offscreen"]
+fn captures_live_rows() {
+    let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").unwrap());
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cx = headless();
+    cx.update(|cx| {
+        crate::zoom::set_level(1.3, cx);
+        crate::zoom::hide_toast(cx);
+    });
+    for width in [480., 1680.] {
+        let (window, view) = open_sized(&mut cx, demo::checkouts(), width, 600.);
+        fill(&mut cx, &view, &demo::HostedSource);
+        settle(&mut cx);
+        save(&mut cx, window, &out, &format!("links-{}", width as u32));
+    }
+    let (window, view) = open_sized(&mut cx, demo::checkouts(), 1680., 600.);
+    fill(&mut cx, &view, &demo::HostedSource);
+    settle(&mut cx);
+    for frame in 0..80 {
+        if frame == 15 {
+            cx.update(|cx| {
+                view.update(cx, |v, cx| {
+                    let checkout = PathBuf::from("/demo/codexbar");
+                    let mut doc = demo::HostedSource.fetch(&checkout, false).unwrap();
+                    doc.hosted.as_mut().unwrap().merge_counts.merged_24h = Some(7);
+                    v.apply(
+                        Outcome {
+                            checkout,
+                            result: Ok(doc),
+                        },
+                        cx,
+                    );
+                })
+            });
+        }
+        save(&mut cx, window, &out, &format!("refresh-{frame:03}"));
+        if frame == 25 {
+            save(&mut cx, window, &out, "row-mid-glow");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        cx.run_until_parked();
+    }
+}

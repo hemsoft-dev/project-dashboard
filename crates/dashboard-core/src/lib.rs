@@ -521,3 +521,6 @@ pub mod fixtures {
         StatusDocument::parse(json).expect("fixtures parse")
     }
 }
+
+/// Field-based refresh comparison, excluding polling/provenance timestamps.
+pub mod changes;

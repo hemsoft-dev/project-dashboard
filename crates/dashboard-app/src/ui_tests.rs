@@ -770,7 +770,7 @@ async fn activity_labels_keep_a_readable_prefix_when_the_cell_is_too_narrow_to_s
                 readable &= label.size.width >= px(24. * level as f32 - 1.);
                 assert!(label.left() >= cell.left());
                 assert!(title.right() <= cell.right());
-                assert!(cell.right() <= window.find(("t3", ix)).bounds().left());
+                assert!(window.find(("row-scroll", ix)).bounds().right() <= window.find(("t3", ix)).bounds().left());
                 assert!(window.find(("refresh", ix)).bounds().right() <= px(1060.));
             }
         })
@@ -819,7 +819,7 @@ async fn activity_descriptions_use_the_residual_width_even_with_long_workflow_na
                     let title_width = f32::from(title.size.width);
                     let gap = 8. * scale;
                     assert_eq!(activity, cell, "nested activity fills its residual column");
-                    if width >= 1100. {
+                    if cell_width >= 72. * scale {
                         assert!(f32::from(label.size.width) <= cell_width / 3. + 1.);
                         assert!(
                             title_width - gap >= cell_width * 2. / 3. - gap - 1.,
@@ -834,7 +834,7 @@ async fn activity_descriptions_use_the_residual_width_even_with_long_workflow_na
                     assert_eq!(title.right(), cell.right(), "no unused tail after the description");
                     assert!(label.right() <= title.left());
                     assert!(updated.right() <= cell.left());
-                    assert!(cell.right() <= t3.left());
+                    assert!(window.find(("row-scroll", ix)).bounds().right() <= t3.left());
                     assert!(t3.right() <= refresh.left());
                     assert!(refresh.right() <= px(width), "controls remain in the window");
                     assert!(name.size.width >= px(Column::Repository.min_width() * 16. * scale - 1.));
@@ -857,10 +857,17 @@ async fn activity_descriptions_use_the_residual_width_even_with_long_workflow_na
                     let empty_label = window.find(("activity-summary", 2usize)).bounds();
                     assert!(empty_label.size.width > empty_cell.size.width / 2.);
                 }
+                // Reveal the activity when saved columns need horizontal scrolling. The session lane stays pinned.
+                window.scroll(
+                    "table",
+                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-3000.), px(0.))),
+                    cx,
+                );
+                window.render_frame(cx);
                 // A narrow description may have no width; its label still opens the same activity.
                 window.click(
                     (
-                        if width >= 1100. {
+                        if window.find(("activity-title", 1usize)).bounds().size.width > px(1.) {
                             "activity-title"
                         } else {
                             "activity-summary"
@@ -1128,7 +1135,7 @@ async fn at_200_percent_in_the_narrowest_window_the_table_scrolls_sideways_to_ev
         // Wider than the window: the refresh buttons start out of view, and names keep their minimum.
         let refresh = window.find(("refresh", 0usize)).bounds();
         assert!(
-            refresh.origin.x > px(480.),
+            refresh.right() <= px(480.),
             "starts off to the right at {:?}",
             refresh.origin.x
         );
@@ -1377,7 +1384,7 @@ async fn columns_wider_than_the_window_scroll_sideways_with_the_header(cx: &mut 
         window.render_frame(cx);
         let refresh = window.find(("refresh", 0usize)).bounds();
         assert!(
-            refresh.origin.x > px(1100.),
+            refresh.right() <= px(1100.),
             "starts off to the right at {:?}",
             refresh.origin.x
         );
@@ -1434,7 +1441,8 @@ async fn each_row_has_a_t3_button_just_left_of_its_refresh_button(cx: &mut TestA
                 let t3 = window.find(("t3", ix)).bounds();
                 let refresh = window.find(("refresh", ix)).bounds();
                 // Same size, same line, directly before it, and in view.
-                assert_eq!(t3.size, refresh.size, "row {ix} at {width}");
+                assert_eq!(t3.size.height, refresh.size.height, "row {ix} at {width}");
+                assert!(t3.size.width > refresh.size.width);
                 assert_eq!(t3.center().y, refresh.center().y, "row {ix} at {width}");
                 assert!(t3.origin.x + t3.size.width <= refresh.origin.x, "row {ix} at {width}");
                 assert!(
@@ -3010,4 +3018,84 @@ async fn project_view_uses_canonical_pmd_open_counts(cx: &mut TestAppContext) {
         assert_eq!(window.find(("issues", 0usize)).label(), Some("37 open issues"));
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+async fn session_links_stay_visible_when_columns_are_wide_or_scrolled(cx: &mut TestAppContext) {
+    for width in [480., 1680.] {
+        let (handle, view) = open_board_sized(
+            cx,
+            four(),
+            StatusCache::default(),
+            Arc::new(demo::DemoSource),
+            options(),
+            width,
+        );
+        cx.update(|cx| {
+            zoom::set_level(1.3, cx);
+            view.update(cx, |v, cx| v.refresh_all(cx));
+        });
+        settle(cx, handle, &view).await;
+        drag_border(cx, handle, Column::Repository, 500.);
+        for scroll in [0., -2000.] {
+            cx.update_window(handle, |_, window, cx| {
+                use gpui_kit::{ScrollDelta, point};
+                window.scroll("table", ScrollDelta::Pixels(point(px(scroll), px(0.))), cx);
+                window.render_frame(cx);
+                for ix in 0..4usize {
+                    let link = window.find(("t3", ix)).bounds();
+                    let refresh = window.find(("refresh", ix)).bounds();
+                    assert!(link.left() >= px(0.) && link.right() <= px(width));
+                    assert!(link.size.width > px(80.));
+                    assert!(refresh.right() <= px(width));
+                    window.click(("t3", ix), cx);
+                }
+            })
+            .unwrap();
+        }
+    }
+}
+
+#[gpui_kit::test]
+async fn only_updated_rows_glow_and_the_marker_expires_with_reduced_motion(cx: &mut TestAppContext) {
+    let (handle, view) = open_board(
+        cx,
+        four(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        options(),
+    );
+    cx.update(|cx| view.update(cx, |v, cx| v.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    assert!(cx.update(|cx| view.read(cx).glows.is_empty()));
+    cx.update(|cx| {
+        cx.set_reduce_motion(true);
+        view.update(cx, |view, cx| {
+            let checkout = view.board().checkouts()[0].clone();
+            let mut doc = view.board().card(&checkout).unwrap().document.clone().unwrap();
+            view.apply(
+                Outcome {
+                    checkout: checkout.clone(),
+                    result: Ok(doc.clone()),
+                },
+                cx,
+            );
+            assert!(view.glows.is_empty());
+            doc.workflow_runs_perfect = Some(false);
+            view.apply(
+                Outcome {
+                    checkout: checkout.clone(),
+                    result: Ok(doc),
+                },
+                cx,
+            );
+            assert_eq!(view.glows.len(), 1);
+            assert!(view.glows.contains_key(&checkout));
+        });
+    });
+    for _ in 0..51 {
+        cx.executor().advance_clock(Duration::from_millis(50));
+        cx.run_until_parked();
+    }
+    assert!(cx.update(|cx| view.read(cx).glows.is_empty()));
 }

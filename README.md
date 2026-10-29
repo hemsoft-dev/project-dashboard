@@ -323,3 +323,9 @@ See [project-manager's token documentation](https://github.com/hemsoft-dev/proje
 ## License
 
 [MIT](LICENSE)
+
+### Project and Backlog views
+
+The header switches between the existing Project board and Backlog. The last choice is saved as `view = "project"` or `view = "backlog"` in config.toml. Backlog groups closing issue/PR links from pmd, shows assignment machine, thread and model, and preserves the `model:` author label separately. Work in progress comes first, followed by Ready work ordered by effective priority and rank, waiting work with pmd reasons, then P4 and later. Dispatch recommendations break equal-priority/rank ties; skipped decisions explain why work cannot launch yet. Truncated plans are identified.
+
+Both views share refresh, automatic retries and the last good pmd snapshot during outages. Rows open their PR, or their issue when no PR is linked. Backlog reads `/v1/work`, `/v1/assignments` and `/v1/dispatch/plan`; it does not infer closing references from titles.

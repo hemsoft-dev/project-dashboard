@@ -1,6 +1,7 @@
 // A release build is a windowed app: no console window behind it on Windows.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod backlog_view;
 mod board_view;
 // GPUI renders headlessly from a test on Linux (wgpu) and macOS (Metal).
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]

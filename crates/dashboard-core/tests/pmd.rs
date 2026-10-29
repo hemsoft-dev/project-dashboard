@@ -91,6 +91,8 @@ fn response(path: &str) -> Reply {
         "/v1/work?project=gh-x&limit=500&cursor=page%2B2%2F%3D" => {
             Reply::json(json!({"items":[item("stable-2")],"nextCursor":null}))
         }
+        "/v1/assignments?project=gh-x&limit=500" => Reply::json(json!({"assignments":[],"truncated":false})),
+        "/v1/dispatch/plan" => Reply::json(json!({"recommendations":[],"skipped":[]})),
         "/healthz" => Reply::json(json!({"sweepAgeSeconds":60,"webhookAgeSeconds":null,"githubLow":false})),
         _ => panic!("unexpected API request {path}"),
     }
@@ -139,7 +141,7 @@ fn hosted_status_preserves_rows_and_board_truncation_and_follows_encoded_work_cu
         // Nothing blocked, waiting or failing: an old, unchanged status is still OK.
         assert_eq!(board.cards()[0].overall(), Overall::Clean);
     }
-    assert_eq!(server.requests.lock().unwrap().len(), 12);
+    assert_eq!(server.requests.lock().unwrap().len(), 16);
 }
 #[test]
 fn checked_time_is_the_later_of_pmds_last_sweep_and_the_status_and_optional() {
@@ -147,6 +149,8 @@ fn checked_time_is_the_later_of_pmds_last_sweep_and_the_status_and_optional() {
     let checked = |health: Reply| {
         let health = Arc::new(Mutex::new(Some(health)));
         let server = Server::new(move |path| match path {
+            "/v1/assignments?project=gh-x&limit=500" => Reply::json(json!({"assignments":[],"truncated":false})),
+            "/v1/dispatch/plan" => Reply::json(json!({"recommendations":[],"skipped":[]})),
             "/healthz" => health.lock().unwrap().take().unwrap(),
             _ => response(path),
         });

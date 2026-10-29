@@ -2356,6 +2356,8 @@ fn pmd_response(path: &str, token: &str) -> pmd_http::Reply {
     };
     let item = r#"{"id":"stable-work-id","project":"gh-x","kind":"issue","number":31,"title":"LABEL work","url":"https://github.com/hemsoft-dev/gh-x/issues/31","status":"ready"}"#.replace("LABEL", label);
     let body = match path {
+        "/v1/assignments?project=gh-x&limit=500" => r#"{"assignments":[],"truncated":false}"#.into(),
+        "/v1/dispatch/plan" => r#"{"recommendations":[],"skipped":[]}"#.into(),
         "/v1/projects" => r#"{"projects":[{"slug":"gh-x","repo":"hemsoft-dev/gh-x","priority":PRIORITY,"tracked":true}]}"#.replace("PRIORITY", &priority.to_string()),
         "/v1/projects/gh-x/status" => format!(r#"{{"project":"gh-x","generatedAt":"{stamp}","lastError":null,"status":{}}}"#, fixtures::CLEAN),
         "/v1/board?project=gh-x" => r#"{"generatedAt":"STAMP","columns":[{"status":"ready","title":"Ready","items":[ITEM],"truncated":false},{"status":"in_progress","title":"In progress","items":[],"truncated":false},{"status":"waiting_on_franz","title":"Waiting on Franz","items":[],"truncated":false},{"status":"blocked","title":"Blocked","items":[],"truncated":false}]}"#.replace("STAMP",stamp).replace("ITEM",&item),
@@ -2793,4 +2795,58 @@ fn offline_row_still_shows_retained_upstream_error(cx: &mut TestAppContext) {
         })
     });
     assert_eq!(overall(cx, &view), [Overall::Clean]);
+}
+
+#[gpui_kit::test]
+fn backlog_empty_state_and_switcher_render(cx: &mut TestAppContext) {
+    let (handle, view) = open_board(
+        cx,
+        vec![],
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        options(),
+    );
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.selected_view = dashboard_core::config::View::Backlog;
+            cx.notify();
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("backlog-empty").is_some());
+        assert!(window.try_find("Project").is_some());
+    })
+    .unwrap();
+}
+#[gpui_kit::test]
+async fn backlog_keeps_rows_when_pmd_is_offline(cx: &mut TestAppContext) {
+    let checkout = PathBuf::from("/demo/codexbar");
+    let (handle, view) = open_board(
+        cx,
+        vec![checkout.clone()],
+        StatusCache::default(),
+        Arc::new(demo::HostedSource),
+        options(),
+    );
+    cx.update(|cx| view.update(cx, |v, cx| v.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.selected_view = dashboard_core::config::View::Backlog;
+            v.apply(
+                Outcome {
+                    checkout,
+                    result: Err(FetchError::Timeout),
+                },
+                cx,
+            );
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("backlog-row", 0usize)).is_some());
+        assert!(window.try_find("backlog-empty").is_none());
+    })
+    .unwrap();
 }

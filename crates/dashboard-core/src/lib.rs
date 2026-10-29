@@ -4,6 +4,7 @@
 //! Hosted verdicts are rendered as supplied; local health is unavailable.
 
 pub mod activity;
+pub mod backlog;
 pub mod cache;
 pub mod columns;
 pub mod config;
@@ -372,6 +373,7 @@ impl Board {
                 {
                     hosted.board = previous.board.clone();
                     hosted.work = previous.work.clone();
+                    hosted.backlog = previous.backlog.clone();
                 }
                 cache.insert(outcome.checkout, document.clone());
                 card.document = Some(document);

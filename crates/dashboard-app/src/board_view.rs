@@ -35,7 +35,8 @@ use dashboard_core::{APP_NAME, Board, Card, Overall, SortOrder};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, TitleBar, h_flex, v_flex,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, TitleBar,
+    h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -111,7 +112,8 @@ struct Resize {
 }
 
 pub struct BoardView {
-    board: Board,
+    pub(crate) selected_view: dashboard_core::config::View,
+    pub(crate) board: Board,
     cache: StatusCache,
     /// Caps every refresh, together, at `parallelism` HTTP reads.
     limiter: Arc<scheduler::Limited>,
@@ -178,6 +180,12 @@ impl BoardView {
             _ => None,
         };
         let mut view = Self {
+            selected_view: options
+                .config_dir
+                .as_deref()
+                .and_then(|d| Config::load(d).ok())
+                .map(|c| c.view)
+                .unwrap_or_default(),
             board: Board::new(checkouts, &cache),
             cache,
             limiter,
@@ -573,6 +581,7 @@ impl BoardView {
                 return;
             }
         };
+        self.selected_view = config.view;
         self.options.config_problem = None;
         if self.options.pmd.is_some() {
             let dir = self
@@ -1451,13 +1460,41 @@ fn table_min(widths: &ColumnWidths) -> gpui_kit::Rems {
 impl Render for BoardView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut content = v_flex().id("board").flex_1().min_h_0();
+        content = content.child(
+            h_flex().px_3().py_2().gap_2().children(
+                [
+                    ("Project", dashboard_core::config::View::Project),
+                    ("Backlog", dashboard_core::config::View::Backlog),
+                ]
+                .into_iter()
+                .map(|(name, choice)| {
+                    div().occlude().child(
+                        Button::new(name)
+                            .small()
+                            .label(name)
+                            .selected(self.selected_view == choice)
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                if let Some(dir) = &view.options.config_dir
+                                    && let Err(error) = Config::save_view(dir, choice)
+                                {
+                                    view.options.config_problem = Some(error.to_string());
+                                }
+                                view.selected_view = choice;
+                                cx.notify();
+                            })),
+                    )
+                }),
+            ),
+        );
         if let Some(problem) = &self.options.config_problem {
             content = content.child(self.render_banner(IconName::TriangleAlert, problem.clone(), cx));
         }
         if let Some(problem) = self.board.setup_problem() {
             content = content.child(self.render_banner(IconName::CircleAlert, problem.to_string(), cx));
         }
-        if self.board.is_empty() {
+        if self.selected_view == dashboard_core::config::View::Backlog {
+            content = content.child(self.render_backlog(cx));
+        } else if self.board.is_empty() {
             content = content.child(self.render_empty(cx));
         } else {
             let cards = self.board.cards().to_vec();

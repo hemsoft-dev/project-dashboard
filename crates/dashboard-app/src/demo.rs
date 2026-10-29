@@ -178,6 +178,7 @@ impl StatusSource for HostedSource {
         let name = checkout.file_name().and_then(|name| name.to_str()).unwrap_or_default();
         let repo = &document.repository.name_with_owner;
         let item = |id: &str, kind: &str, number: u64, title: &str, status: &str| WorkItem {
+            detail: Default::default(),
             id: id.into(),
             project: name.into(),
             kind: kind.into(),
@@ -238,6 +239,7 @@ impl StatusSource for HostedSource {
                 .collect(),
         });
         document.hosted = Some(Hosted {
+            backlog: Default::default(),
             service_url: "http://fixture.invalid".into(),
             generated_at: at(323),
             checked_at: Some(at(12)),

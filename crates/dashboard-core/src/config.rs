@@ -27,6 +27,7 @@ pub const MAX_REFRESH_MINUTES: u64 = 24 * 60;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub view: View,
     /// The folder scanned for checkouts when the config file is first created.
     pub root: Option<PathBuf>,
     /// Minutes between automatic refreshes (at most a day); 0 turns them off.
@@ -48,9 +49,18 @@ pub struct Config {
     pub pmd_write_token_path: Option<PathBuf>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum View {
+    #[default]
+    Project,
+    Backlog,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
+            view: View::Project,
             root: None,
             refresh_minutes: DEFAULT_REFRESH_MINUTES,
             parallelism: DEFAULT_PARALLELISM,
@@ -104,6 +114,35 @@ pub fn default_root() -> PathBuf {
 }
 
 impl Config {
+    pub fn save_view(dir: &Path, view: View) -> Result<(), ConfigError> {
+        let path = dir.join(FILE_NAME);
+        let text = std::fs::read_to_string(&path).map_err(|e| ConfigError::Read(path.clone(), e))?;
+        let mut expected = Self::parse(&text, &path)?;
+        expected.view = view;
+        let name = match view {
+            View::Project => "project",
+            View::Backlog => "backlog",
+        };
+        let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+        let top = lines
+            .iter()
+            .position(|s| s.trim_start().starts_with('['))
+            .unwrap_or(lines.len());
+        if let Some(i) = lines[..top]
+            .iter()
+            .position(|s| s.split_once('=').is_some_and(|(k, _)| k.trim() == "view"))
+        {
+            lines[i] = format!("view = \"{name}\"");
+        } else {
+            lines.insert(0, format!("view = \"{name}\""));
+        }
+        let edited = lines.join("\n") + "\n";
+        if Self::parse(&edited, &path)? != expected {
+            return Err(ConfigError::Parse(path, "view could not be saved safely".into()));
+        }
+        std::fs::write(&path, edited).map_err(|e| ConfigError::Write(path, e))
+    }
+
     pub fn parse(text: &str, path: &Path) -> Result<Self, ConfigError> {
         let mut config: Self =
             toml::from_str(text).map_err(|err| ConfigError::Parse(path.to_owned(), err.to_string()))?;
@@ -380,4 +419,21 @@ fn insert_repository(text: &str, entry: &str) -> Option<String> {
     }
     edited.push_str(&text[close..]);
     Some(edited)
+}
+
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+    #[test]
+    fn view_defaults_to_project_and_round_trips() {
+        assert_eq!(Config::parse("", Path::new("config.toml")).unwrap().view, View::Project);
+        let config = Config {
+            view: View::Backlog,
+            ..Default::default()
+        };
+        assert_eq!(
+            Config::parse(&config.to_toml(), Path::new("config.toml")).unwrap().view,
+            View::Backlog
+        );
+    }
 }

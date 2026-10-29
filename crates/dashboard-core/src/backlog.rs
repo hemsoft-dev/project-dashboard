@@ -419,6 +419,8 @@ mod tests {
     fn document(items: Vec<WorkItem>) -> StatusDocument {
         let mut doc = StatusDocument::parse(crate::fixtures::CLEAN).unwrap();
         doc.hosted = Some(crate::pmd::Hosted {
+            open_counts: Default::default(),
+            merge_counts: Default::default(),
             service_url: "http://pmd".into(),
             generated_at: "2026-10-28T00:00:00Z".into(),
             checked_at: None,

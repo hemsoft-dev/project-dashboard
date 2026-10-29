@@ -1004,6 +1004,8 @@ impl BoardView {
                 div().truncate().text_right().child(column_title(Column::Issues)),
                 cx,
             ))
+            .child(self.header_cell(Column::Merged24h, div().text_right().child("Merged 24h"), cx))
+            .child(self.header_cell(Column::Merged7d, div().text_right().child("Merged 7d"), cx))
             .child(
                 self.header_cell(
                     Column::Updated,
@@ -1040,8 +1042,18 @@ impl BoardView {
                 |document| section_count(document, section, len(document)),
             )
         };
-        let prs = count("pullRequests.open", |document| document.pull_requests.open.len());
-        let issues = count("issues", |document| document.issues.len());
+        let open_counts = card
+            .document
+            .as_ref()
+            .and_then(|doc| doc.hosted.as_ref())
+            .map(|hosted| &hosted.open_counts);
+        let prs = open_counts.and_then(|counts| counts.open_prs).map_or_else(
+            || count("pullRequests.open", |document| document.pull_requests.open.len()),
+            |n| n.to_string(),
+        );
+        let issues = open_counts
+            .and_then(|counts| counts.open_issues)
+            .map_or_else(|| count("issues", |document| document.issues.len()), |n| n.to_string());
         let error = card.display_error().filter(|error| !error.is_setup());
         // pmd regenerates a status only when the repository changes, and confirms it on every sweep: show both, each
         // with its local time on hover.
@@ -1268,6 +1280,30 @@ impl BoardView {
                     .text_right()
                     .child(issues),
             )
+            .children([Column::Merged24h, Column::Merged7d].map(|column| {
+                let counts = card
+                    .document
+                    .as_ref()
+                    .and_then(|doc| doc.hosted.as_ref())
+                    .map(|hosted| &hosted.merge_counts);
+                let count = counts.and_then(|counts| match column {
+                    Column::Merged24h => counts.merged_24h,
+                    _ => counts.merged_7d,
+                });
+                let text = count.map_or_else(|| "—".to_owned(), |n| n.to_string());
+                column_cell(column, &self.columns)
+                    .id((
+                        match column {
+                            Column::Merged24h => "merged24h",
+                            _ => "merged7d",
+                        },
+                        ix,
+                    ))
+                    .test_support()
+                    .aria_label(format!("{}: {}", column_title(column), text))
+                    .text_right()
+                    .child(text)
+            }))
             .child(column_cell(Column::Updated, &self.columns).child(updated))
             // Takes the width the other columns leave, and shrinks first on a narrow window, so the refresh button
             // stays in view.
@@ -1445,6 +1481,8 @@ fn column_title(column: Column) -> &'static str {
         Column::Priority => "Priority",
         Column::PullRequests => "PRs",
         Column::Issues => "Issues",
+        Column::Merged24h => "Merged 24h",
+        Column::Merged7d => "Merged 7d",
         Column::Updated => "Updated",
     }
 }
@@ -1454,7 +1492,7 @@ fn column_title(column: Column) -> &'static str {
 /// Narrow windows and wider saved columns scroll sideways with the header and rows together.
 fn table_min(widths: &ColumnWidths) -> gpui_kit::Rems {
     let resizable = widths.total() - widths.get(Column::Repository) + Column::Repository.min_width();
-    rems(1.75 + 0.75 + 3.5 + resizable + 0.75 + 1.5 + 8. * 0.5 + 2. * 0.5)
+    rems(1.75 + 0.75 + 3.5 + resizable + 0.75 + 1.5 + 10. * 0.5 + 2. * 0.5)
 }
 
 impl Render for BoardView {

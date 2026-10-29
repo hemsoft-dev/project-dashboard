@@ -747,7 +747,7 @@ async fn activity_labels_keep_a_readable_prefix_when_the_cell_is_too_narrow_to_s
             StatusCache::default(),
             Arc::new(ActivityLayoutSource),
             Options { columns, ..options() },
-            760.,
+            1060.,
         );
         cx.update(|cx| zoom::set_level(level, cx));
         cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
@@ -771,7 +771,7 @@ async fn activity_labels_keep_a_readable_prefix_when_the_cell_is_too_narrow_to_s
                 assert!(label.left() >= cell.left());
                 assert!(title.right() <= cell.right());
                 assert!(cell.right() <= window.find(("t3", ix)).bounds().left());
-                assert!(window.find(("refresh", ix)).bounds().right() <= px(760.));
+                assert!(window.find(("refresh", ix)).bounds().right() <= px(1060.));
             }
         })
         .unwrap();
@@ -786,7 +786,7 @@ async fn activity_descriptions_use_the_residual_width_even_with_long_workflow_na
     for (level, repository) in [(1.0_f64, 18.0_f32), (1.3, 20.88)] {
         // Match zoom::apply's conversion at the pixel boundary; the saved zoom itself remains f64.
         let scale = level as f32;
-        for width in [760., 1100., 1680.] {
+        for width in [1060., 1400., 1980.] {
             let mut columns = ColumnWidths::default();
             columns.set(Column::Repository, repository);
             let (handle, view) = open_board_sized(
@@ -1231,7 +1231,7 @@ async fn the_repository_column_defaults_to_a_name_sized_width(cx: &mut TestAppCo
         // Last activity got the width the narrower repository column freed.
         let summary = window.find(("activity-summary", 0usize)).bounds();
         assert!(
-            summary.origin.x < px(700.),
+            summary.origin.x < px(924.),
             "last activity starts at {:?}",
             summary.origin.x
         );
@@ -1307,7 +1307,7 @@ async fn on_a_narrow_window_a_repository_drag_starts_from_the_width_on_screen(cx
     drag_border(cx, handle, Column::Repository, -16.);
     // One rem left of what was on screen, not one rem left of the setting (which would show no change at all).
     let after = width_of(cx, handle, "header-repository");
-    assert_eq!(after, shown - px(16.));
+    assert_eq!(after, (shown - px(16.)).max(px(Column::Repository.min_width() * 16.)));
     assert_eq!(
         cx.update(|cx| view.read(cx).columns()).get(Column::Repository),
         Column::Repository.clamp(f32::from(shown) / 16. - 1.)
@@ -2948,4 +2948,66 @@ fn backlog_only_renders_worker_text_for_a_live_holder(cx: &mut TestAppContext) {
         })
         .unwrap();
     }
+}
+
+#[gpui_kit::test]
+async fn project_view_shows_both_merge_windows(cx: &mut TestAppContext) {
+    let (handle, view) = open_board_sized(
+        cx,
+        vec!["/demo/project-manager".into()],
+        StatusCache::default(),
+        Arc::new(demo::HostedSource),
+        options(),
+        1500.,
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    cx.update_window(handle, |_, window, _| {
+        assert!(window.try_find(("resize", Column::Merged24h as usize)).is_some());
+        assert!(window.try_find(("resize", Column::Merged7d as usize)).is_some());
+        assert_eq!(window.find(("merged24h", 0usize)).label(), Some("Merged 24h: 3"));
+        assert_eq!(window.find(("merged7d", 0usize)).label(), Some("Merged 7d: 17"));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn project_view_shows_dashes_without_merge_counts(cx: &mut TestAppContext) {
+    let (handle, _) = twelve(cx).await;
+    cx.update_window(handle, |_, window, _| {
+        assert_eq!(window.find(("merged24h", 0usize)).label(), Some("Merged 24h: —"));
+        assert_eq!(window.find(("merged7d", 0usize)).label(), Some("Merged 7d: —"));
+    })
+    .unwrap();
+}
+
+struct ProjectCountsSource;
+impl StatusSource for ProjectCountsSource {
+    fn fetch(&self, checkout: &Path, _: bool) -> Result<StatusDocument, FetchError> {
+        let mut doc = demo::HostedSource.fetch(checkout, false)?;
+        doc.hosted.as_mut().unwrap().open_counts = dashboard_core::pmd::OpenCounts {
+            open_prs: Some(42),
+            open_issues: Some(37),
+        };
+        Ok(doc)
+    }
+}
+
+#[gpui_kit::test]
+async fn project_view_uses_canonical_pmd_open_counts(cx: &mut TestAppContext) {
+    let (handle, view) = open_board_sized(
+        cx,
+        vec!["/demo/project-manager".into()],
+        StatusCache::default(),
+        Arc::new(ProjectCountsSource),
+        options(),
+        1500.,
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    cx.update_window(handle, |_, window, _| {
+        assert_eq!(window.find(("prs", 0usize)).label(), Some("42 open pull requests"));
+        assert_eq!(window.find(("issues", 0usize)).label(), Some("37 open issues"));
+    })
+    .unwrap();
 }

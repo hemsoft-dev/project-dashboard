@@ -2850,3 +2850,58 @@ async fn backlog_keeps_rows_when_pmd_is_offline(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn backlog_long_linked_work_stays_on_one_compact_line(cx: &mut TestAppContext) {
+    let checkout = PathBuf::from("/demo/codexbar");
+    let mut doc = demo::HostedSource.fetch(&checkout, false).unwrap();
+    let hosted = doc.hosted.as_mut().unwrap();
+    let mut issue = hosted.work[0].clone();
+    issue.id = "compact-issue".into();
+    issue.kind = "issue".into();
+    issue.number = 1;
+    issue.title = "A long issue title that must never wrap to a second line ".repeat(8);
+    issue.detail.priority = Some(1);
+    issue.detail.labels = vec!["model:gpt-6.1-sol".into()];
+    let mut pr = issue.clone();
+    pr.id = "compact-pr".into();
+    pr.kind = "pr".into();
+    pr.number = 2;
+    pr.detail.links.push(dashboard_core::backlog::Link {
+        kind: "closes".into(),
+        to: Some(issue.id.clone()),
+        by: None,
+    });
+    hosted.work = vec![issue, pr];
+    let (handle, view) = open_board_sized(
+        cx,
+        vec![checkout.clone()],
+        StatusCache::default(),
+        Arc::new(demo::HostedSource),
+        options(),
+        480.,
+    );
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.apply(
+                Outcome {
+                    checkout,
+                    result: Ok(doc),
+                },
+                cx,
+            );
+            v.selected_view = dashboard_core::config::View::Backlog;
+            cx.notify();
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let row = window.find(("backlog-row", 0usize));
+        assert!(row.bounds().size.height <= px(32.));
+        assert!(row.bounds().origin.x + row.bounds().size.width <= px(480.));
+        let work = window.find(("backlog-work", 0usize));
+        assert!(work.bounds().size.height <= px(32.));
+        assert!(window.try_find(("backlog-row", 1usize)).is_none());
+    })
+    .unwrap();
+}

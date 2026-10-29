@@ -967,11 +967,15 @@ fn captures_recovery() {
 #[test]
 #[ignore = "captures live pmd data for backlog validation"]
 fn captures_live_backlog() {
+    let Some(token_path) = std::env::var_os("PMD_CAPTURE_TOKEN").filter(|p| !p.is_empty()) else {
+        eprintln!("Skipping live backlog capture: PMD_CAPTURE_TOKEN is not set.");
+        return;
+    };
     let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").expect("CAPTURE_DIR"));
     std::fs::create_dir_all(&out).unwrap();
     let pmd = dashboard_core::priority::Pmd {
         url: "http://100.97.164.73:8790".into(),
-        token_path: PathBuf::from(std::env::var_os("PMD_CAPTURE_TOKEN").expect("PMD_CAPTURE_TOKEN")),
+        token_path: PathBuf::from(token_path),
     };
     let checkouts = ["project-dashboard", "project-manager", "chief", "gh-x", "skills"]
         .map(|n| PathBuf::from(format!("/home/franz/github/hemsoft/{n}")));
@@ -1009,4 +1013,22 @@ fn captures_live_backlog() {
     });
     cx.run_until_parked();
     save(&mut cx, handle, &out, "live-backlog");
+}
+
+#[test]
+#[ignore = "writes deterministic Backlog UI evidence offscreen"]
+fn captures_fixture_backlog() {
+    let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").expect("CAPTURE_DIR"));
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cx = headless();
+    let (handle, view) = open(&mut cx, vec![PathBuf::from("/demo/codexbar")], 600.);
+    fill(&mut cx, &view, &demo::HostedSource);
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.selected_view = dashboard_core::config::View::Backlog;
+            cx.notify();
+        })
+    });
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "fixture-backlog");
 }

@@ -33,7 +33,35 @@ pub struct Assignment {
     pub thread_id: String,
     pub model: String,
     pub state: String,
-    pub holds: bool,
+    pub holds: Option<bool>,
+    pub stale: bool,
+    pub ownership: String,
+    pub ended_at: Option<String>,
+    pub work_item: Option<WorkRef>,
+}
+/// The work list uses an id; the assignment list uses an item reference.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum WorkRef {
+    Id(String),
+    Item { id: String },
+}
+impl WorkRef {
+    fn matches(&self, item: &str) -> bool {
+        match self {
+            Self::Id(id) | Self::Item { id } => id == item,
+        }
+    }
+}
+impl Assignment {
+    /// Holding work is broader than doing work: pmd retains idle needs-check holders.
+    fn live(&self) -> bool {
+        matches!(self.state.as_str(), "running" | "queued" | "waiting_input")
+            && !self.stale
+            && self.ended_at.is_none()
+            && self.ownership != "settled-complete"
+            && self.holds != Some(false)
+    }
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -102,11 +130,44 @@ pub struct Row {
     pub reason: String,
     pub workers: Vec<String>,
     pub reviews: Vec<String>,
+    pub author_models: Vec<String>,
     priority: u8,
     rank: i64,
     dispatch: usize,
 }
 impl Row {
+    pub fn work_label(&self) -> String {
+        let issues = self
+            .items
+            .iter()
+            .filter(|i| i.kind == "issue")
+            .map(|i| format!("#{} {}", i.number, i.title))
+            .collect::<Vec<_>>();
+        let prs = self
+            .items
+            .iter()
+            .filter(|i| i.kind == "pr")
+            .map(|i| {
+                let detail = self
+                    .reviews
+                    .iter()
+                    .find(|r| r.starts_with(&format!("PR #{} (", i.number)))
+                    .cloned()
+                    .unwrap_or_else(|| format!("PR #{} ({}, review unavailable)", i.number, i.detail.gh_state));
+                if issues.is_empty() {
+                    format!("{} {}", detail, i.title)
+                } else {
+                    detail
+                }
+            })
+            .collect::<Vec<_>>();
+        [issues.join(" / "), prs.join(" / ")]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" → ")
+    }
+
     pub fn priority_label(&self) -> String {
         if self.priority <= 5 {
             format!("P{}", self.priority)
@@ -160,6 +221,7 @@ pub fn rows<'a>(documents: impl IntoIterator<Item = &'a StatusDocument>) -> Vec<
             }
             items.sort_by_key(|i| (i.kind != "issue", i.number));
             let mut workers = Vec::new();
+            let mut author_models = Vec::new();
             let mut reasons = Vec::new();
             let mut reviews = Vec::new();
             let mut active = false;
@@ -167,34 +229,47 @@ pub fn rows<'a>(documents: impl IntoIterator<Item = &'a StatusDocument>) -> Vec<
             let mut dispatch = usize::MAX;
             for item in &items {
                 let d = &item.detail;
-                waiting |= d.assignment.as_ref().is_some_and(|a| {
-                    matches!(a.state.as_str(), "blocked" | "watching" | "parked" | "waiting_on_franz")
-                });
-                waiting |= matches!(
+                let item_waiting = matches!(
                     item.status.as_str(),
                     "waiting_on_franz" | "blocked" | "watching" | "parked"
-                );
-                active |= item.status == "in_progress";
+                ) || d.labels.iter().any(|l| {
+                    matches!(
+                        l.as_str(),
+                        "waiting-on-franz" | "waiting_on_franz" | "blocked" | "watching" | "parked"
+                    )
+                });
+                waiting |= item_waiting;
                 if let Some(reason) = &d.status_reason {
                     reasons.push(reason.clone());
                 }
-                if waiting {
+                if item_waiting {
                     reasons.push(item.status.replace('_', " "));
                 }
-                if let Some(a) = &d.assignment {
-                    active = true;
-                    let model = hosted
-                        .backlog
-                        .assignments
-                        .iter()
-                        .find(|b| b.id == a.id)
-                        .map(|b| b.model.as_str())
-                        .unwrap_or(&a.model);
-                    workers.push(format!("{} · {}", a.machine, model));
+                // Prefer the richer current assignment list over the work item's summary.
+                // Also consider another live holder when the newest summary is idle.
+                let assignments: Vec<_> = hosted
+                    .backlog
+                    .assignments
+                    .iter()
+                    .filter(|a| {
+                        d.assignment.as_ref().is_some_and(|summary| summary.id == a.id)
+                            || a.work_item.as_ref().is_some_and(|r| r.matches(&item.id))
+                    })
+                    .collect();
+                if assignments.is_empty() {
+                    if let Some(a) = d.assignment.as_ref().filter(|a| a.live()) {
+                        active = true;
+                        workers.push(format!("{} · {}", a.machine, a.model));
+                    }
+                } else {
+                    for a in assignments.into_iter().filter(|a| a.live()) {
+                        active = true;
+                        workers.push(format!("{} · {}", a.machine, a.model));
+                    }
                 }
                 for label in &d.labels {
                     if label.starts_with("model:") {
-                        workers.push(label.clone());
+                        author_models.push(label.clone());
                     }
                 }
                 if let Some(pr) = doc
@@ -203,14 +278,22 @@ pub fn rows<'a>(documents: impl IntoIterator<Item = &'a StatusDocument>) -> Vec<
                     .iter()
                     .find(|p| item.kind == "pr" && p.number == item.number)
                 {
+                    let review = [&pr.review, &pr.ai_review]
+                        .into_iter()
+                        .filter(|s| !s.is_empty() && s.as_str() != "—" && s.as_str() != "-")
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     reviews.push(format!(
-                        "PR #{} · {} · {} · {}",
-                        pr.number, pr.state, pr.review, pr.ai_review
+                        "PR #{} ({}, {})",
+                        pr.number,
+                        pr.state,
+                        if review.is_empty() {
+                            "review unavailable"
+                        } else {
+                            &review
+                        }
                     ));
-                    active = true;
-                }
-                if item.kind == "pr" && item.status == "ready" {
-                    active = true;
                 }
                 if let Some(n) = hosted
                     .backlog
@@ -225,6 +308,8 @@ pub fn rows<'a>(documents: impl IntoIterator<Item = &'a StatusDocument>) -> Vec<
                     reasons.push(d.reason.clone());
                 }
             }
+            author_models.sort();
+            author_models.dedup();
             workers.sort();
             workers.dedup();
             reasons.sort();
@@ -237,7 +322,10 @@ pub fn rows<'a>(documents: impl IntoIterator<Item = &'a StatusDocument>) -> Vec<
                 Group::InProgress
             } else if priority >= 4 {
                 Group::Later
-            } else if items.iter().any(|i| i.status == "ready") {
+            } else if items
+                .iter()
+                .any(|i| matches!(i.status.as_str(), "ready" | "in_progress"))
+            {
                 Group::UpNext
             } else {
                 Group::Waiting
@@ -249,6 +337,7 @@ pub fn rows<'a>(documents: impl IntoIterator<Item = &'a StatusDocument>) -> Vec<
                 reason: reasons.join(" · "),
                 workers,
                 reviews,
+                author_models,
                 priority,
                 rank,
                 dispatch,
@@ -298,9 +387,24 @@ mod tests {
         doc
     }
     #[test]
+    fn idle_holders_do_not_make_in_progress_status_live() {
+        let mut i = item("chief-9", "issue", "in_progress", 1, 0);
+        i.detail.assignment = Some(Assignment {
+            id: "old".into(),
+            state: "idle".into(),
+            ..Default::default()
+        });
+        let doc = document(vec![i]);
+        assert_eq!(rows([&doc])[0].group, Group::UpNext);
+    }
+    #[test]
     fn closing_links_group_transitively_and_keep_unrelated_items() {
         let issue = item("issue", "issue", "ready", 3, 0);
         let mut pr = item("pr", "pr", "in_progress", 3, 0);
+        pr.detail.assignment = Some(Assignment {
+            state: "running".into(),
+            ..Default::default()
+        });
         pr.detail.links.push(Link {
             kind: "closes".into(),
             to: Some("issue".into()),
@@ -315,13 +419,18 @@ mod tests {
     }
     #[test]
     fn stages_then_priority_then_rank_define_predictable_order() {
+        let mut active = item("active", "pr", "in_progress", 3, 0);
+        active.detail.assignment = Some(Assignment {
+            state: "running".into(),
+            ..Default::default()
+        });
         let doc = document(vec![
             item("later", "issue", "ready", 4, 0),
             item("wait", "issue", "blocked", 0, 0),
             item("p3", "issue", "ready", 3, 0),
             item("rank2", "issue", "ready", 0, 2),
             item("rank1", "issue", "ready", 0, 1),
-            item("active", "pr", "in_progress", 3, 0),
+            active,
         ]);
         assert_eq!(
             rows([&doc]).iter().map(|r| r.items[0].id.as_str()).collect::<Vec<_>>(),
@@ -348,11 +457,122 @@ mod tests {
         let mut doc = document(vec![i]);
         doc.hosted.as_mut().unwrap().backlog.assignments.push(Assignment {
             id: "a".into(),
+            state: "running".into(),
             model: "claude".into(),
             ..Default::default()
         });
-        let workers = &rows([&doc])[0].workers;
-        assert!(workers.contains(&"model:gpt-6.1-sol".into()));
+        let projected = rows([&doc]);
+        let workers = &projected[0].workers;
+        assert!(projected[0].author_models.contains(&"model:gpt-6.1-sol".into()));
         assert!(workers.iter().any(|w| w.contains("claude")));
+    }
+    #[test]
+    fn only_live_holders_count_and_full_assignment_state_is_authoritative() {
+        for state in [
+            "running",
+            "queued",
+            "waiting_input",
+            "idle",
+            "done",
+            "failed",
+            "completed",
+            "unknown",
+            "",
+        ] {
+            let mut i = item("held", "issue", "in_progress", 1, 0);
+            i.detail.assignment = Some(Assignment {
+                id: "owner".into(),
+                state: "running".into(),
+                ..Default::default()
+            });
+            let mut doc = document(vec![i]);
+            doc.hosted.as_mut().unwrap().backlog.assignments.push(Assignment {
+                id: "owner".into(),
+                state: state.into(),
+                ..Default::default()
+            });
+            let group = if matches!(state, "running" | "queued" | "waiting_input") {
+                Group::InProgress
+            } else {
+                Group::UpNext
+            };
+            assert_eq!(rows([&doc])[0].group, group, "state {state}");
+        }
+    }
+    #[test]
+    fn stale_ended_settled_and_released_holders_are_not_live() {
+        for patch in [
+            json!({"stale":true}),
+            json!({"endedAt":"2026-10-28T00:00:00Z"}),
+            json!({"ownership":"settled-complete"}),
+            json!({"holds":false}),
+        ] {
+            let mut value = json!({"id":"owner","state":"running","holds":true});
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(patch.as_object().unwrap().clone());
+            let mut i = item("held", "issue", "in_progress", 1, 0);
+            i.detail.assignment = Some(serde_json::from_value(value).unwrap());
+            assert_eq!(rows([&document(vec![i])])[0].group, Group::UpNext);
+        }
+    }
+    #[test]
+    fn idle_blocked_holders_wait_with_reason_and_unowned_prs_do_not_imply_activity() {
+        let mut blocked = item("blocked", "issue", "in_progress", 1, 0);
+        blocked.detail.labels.push("waiting-on-franz".into());
+        blocked.detail.status_reason = Some("Needs credentials".into());
+        blocked.detail.assignment = Some(Assignment {
+            state: "idle".into(),
+            ..Default::default()
+        });
+        let mut doc = document(vec![blocked, item("pr", "pr", "ready", 1, 0)]);
+        doc.pull_requests
+            .open
+            .push(crate::fixtures::document(crate::fixtures::ATTENTION).pull_requests.open[0].clone());
+        doc.pull_requests.open[0].number = 1;
+        let projected = rows([&doc]);
+        assert_eq!(projected[0].group, Group::UpNext);
+        assert_eq!(projected[1].group, Group::Waiting);
+        assert!(projected[1].reason.contains("Needs credentials"));
+    }
+    #[test]
+    fn another_live_holder_is_found_by_work_item_reference() {
+        let mut i = item("held", "issue", "in_progress", 1, 0);
+        i.detail.assignment = Some(Assignment {
+            id: "idle".into(),
+            state: "idle".into(),
+            ..Default::default()
+        });
+        let mut doc = document(vec![i]);
+        doc.hosted.as_mut().unwrap().backlog.assignments.push(Assignment {
+            id: "live".into(),
+            state: "queued".into(),
+            work_item: Some(WorkRef::Item { id: "held".into() }),
+            ..Default::default()
+        });
+        assert_eq!(rows([&doc])[0].group, Group::InProgress);
+    }
+    #[test]
+    fn work_label_combines_issue_and_pr_in_one_line() {
+        let mut pr = item("pr", "pr", "ready", 1, 0);
+        pr.number = 2;
+        pr.detail.links.push(Link {
+            kind: "closes".into(),
+            to: Some("issue".into()),
+            by: None,
+        });
+        let mut doc = document(vec![item("issue", "issue", "ready", 1, 0), pr]);
+        doc.pull_requests
+            .open
+            .push(crate::fixtures::document(crate::fixtures::ATTENTION).pull_requests.open[0].clone());
+        doc.pull_requests.open[0].number = 2;
+        doc.pull_requests.open[0].state = "open".into();
+        doc.pull_requests.open[0].review = "approved".into();
+        assert!(
+            rows([&doc])[0]
+                .work_label()
+                .starts_with("#1 issue → PR #2 (open, approved")
+        );
     }
 }

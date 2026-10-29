@@ -1281,7 +1281,18 @@ impl BoardView {
                     _ => counts.merged_7d,
                 });
                 let text = count.map_or_else(|| "—".to_owned(), |n| n.to_string());
-                column_cell(column, &self.columns).text_right().child(text)
+                column_cell(column, &self.columns)
+                    .id((
+                        match column {
+                            Column::Merged24h => "merged24h",
+                            _ => "merged7d",
+                        },
+                        ix,
+                    ))
+                    .test_support()
+                    .aria_label(format!("{}: {}", column_title(column), text))
+                    .text_right()
+                    .child(text)
             }))
             .child(column_cell(Column::Updated, &self.columns).child(updated))
             // Takes the width the other columns leave, and shrinks first on a narrow window, so the refresh button

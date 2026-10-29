@@ -2965,6 +2965,18 @@ async fn project_view_shows_both_merge_windows(cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, _| {
         assert!(window.try_find(("resize", Column::Merged24h as usize)).is_some());
         assert!(window.try_find(("resize", Column::Merged7d as usize)).is_some());
+        assert_eq!(window.find(("merged24h", 0usize)).label(), Some("Merged 24h: 3"));
+        assert_eq!(window.find(("merged7d", 0usize)).label(), Some("Merged 7d: 17"));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn project_view_shows_dashes_without_merge_counts(cx: &mut TestAppContext) {
+    let (handle, _) = twelve(cx).await;
+    cx.update_window(handle, |_, window, _| {
+        assert_eq!(window.find(("merged24h", 0usize)).label(), Some("Merged 24h: —"));
+        assert_eq!(window.find(("merged7d", 0usize)).label(), Some("Merged 7d: —"));
     })
     .unwrap();
 }

@@ -239,6 +239,7 @@ impl StatusSource for HostedSource {
                 .collect(),
         });
         document.hosted = Some(Hosted {
+            open_counts: Default::default(),
             merge_counts: dashboard_core::pmd::MergeCounts {
                 merged_24h: Some(3),
                 merged_7d: Some(17),

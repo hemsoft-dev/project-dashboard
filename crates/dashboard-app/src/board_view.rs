@@ -1042,8 +1042,18 @@ impl BoardView {
                 |document| section_count(document, section, len(document)),
             )
         };
-        let prs = count("pullRequests.open", |document| document.pull_requests.open.len());
-        let issues = count("issues", |document| document.issues.len());
+        let open_counts = card
+            .document
+            .as_ref()
+            .and_then(|doc| doc.hosted.as_ref())
+            .map(|hosted| &hosted.open_counts);
+        let prs = open_counts.and_then(|counts| counts.open_prs).map_or_else(
+            || count("pullRequests.open", |document| document.pull_requests.open.len()),
+            |n| n.to_string(),
+        );
+        let issues = open_counts
+            .and_then(|counts| counts.open_issues)
+            .map_or_else(|| count("issues", |document| document.issues.len()), |n| n.to_string());
         let error = card.display_error().filter(|error| !error.is_setup());
         // pmd regenerates a status only when the repository changes, and confirms it on every sweep: show both, each
         // with its local time on hover.

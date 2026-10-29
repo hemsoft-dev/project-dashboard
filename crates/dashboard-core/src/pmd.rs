@@ -17,6 +17,8 @@ const TOTAL_TIMEOUT: Duration = Duration::from_secs(15);
 #[serde(rename_all = "camelCase")]
 pub struct Hosted {
     #[serde(default)]
+    pub open_counts: OpenCounts,
+    #[serde(default)]
     pub merge_counts: MergeCounts,
     pub service_url: String,
     /// When pmd last regenerated this status, which it does only when the repository changed.
@@ -115,8 +117,17 @@ pub struct MergeCounts {
     pub merged_7d: Option<u64>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenCounts {
+    pub open_prs: Option<u64>,
+    pub open_issues: Option<u64>,
+}
+
 #[derive(Deserialize)]
 pub(crate) struct Project {
+    #[serde(default)]
+    pub counts: OpenCounts,
     #[serde(flatten)]
     pub merge_counts: MergeCounts,
     pub slug: String,
@@ -493,6 +504,7 @@ impl Pmd {
             Default::default()
         };
         doc.hosted = Some(Hosted {
+            open_counts: project.counts.clone(),
             merge_counts: project.merge_counts.clone(),
             backlog,
             service_url: self.url.clone(),
@@ -565,13 +577,16 @@ mod merge_count_tests {
     #[test]
     fn project_merge_counts_accept_current_and_older_pmd() {
         let current: Project = serde_json::from_str(
-            r#"{"slug":"test","repo":"owner/test","tracked":true,"priority":1,"merged24h":0,"merged7d":42}"#,
+            r#"{"slug":"test","repo":"owner/test","tracked":true,"priority":1,"merged24h":0,"merged7d":42,"counts":{"openPrs":6,"openIssues":9}}"#,
         )
         .unwrap();
+        assert_eq!(current.counts.open_prs, Some(6));
+        assert_eq!(current.counts.open_issues, Some(9));
         assert_eq!(current.merge_counts.merged_24h, Some(0));
         assert_eq!(current.merge_counts.merged_7d, Some(42));
         let older: Project =
             serde_json::from_str(r#"{"slug":"test","repo":"owner/test","tracked":true,"priority":1}"#).unwrap();
+        assert_eq!(older.counts, OpenCounts::default());
         assert_eq!(older.merge_counts, MergeCounts::default());
     }
 }

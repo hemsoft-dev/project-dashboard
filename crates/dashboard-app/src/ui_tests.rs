@@ -2980,3 +2980,34 @@ async fn project_view_shows_dashes_without_merge_counts(cx: &mut TestAppContext)
     })
     .unwrap();
 }
+
+struct ProjectCountsSource;
+impl StatusSource for ProjectCountsSource {
+    fn fetch(&self, checkout: &Path, _: bool) -> Result<StatusDocument, FetchError> {
+        let mut doc = demo::HostedSource.fetch(checkout, false)?;
+        doc.hosted.as_mut().unwrap().open_counts = dashboard_core::pmd::OpenCounts {
+            open_prs: Some(42),
+            open_issues: Some(37),
+        };
+        Ok(doc)
+    }
+}
+
+#[gpui_kit::test]
+async fn project_view_uses_canonical_pmd_open_counts(cx: &mut TestAppContext) {
+    let (handle, view) = open_board_sized(
+        cx,
+        vec!["/demo/project-manager".into()],
+        StatusCache::default(),
+        Arc::new(ProjectCountsSource),
+        options(),
+        1500.,
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    cx.update_window(handle, |_, window, _| {
+        assert_eq!(window.find(("prs", 0usize)).label(), Some("42 open pull requests"));
+        assert_eq!(window.find(("issues", 0usize)).label(), Some("37 open issues"));
+    })
+    .unwrap();
+}

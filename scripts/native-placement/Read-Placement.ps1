@@ -12,6 +12,7 @@ public class W53 {
  [DllImport("user32.dll")] public static extern bool SetWindowPlacement(IntPtr h,ref WP p);
  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out R r);
  [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr c);
+ [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h,IntPtr dc,uint flags);
  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int command);
  [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)] public struct MI { public int Size; public R Monitor,Work; public int Flags; [MarshalAs(UnmanagedType.ByValTStr,SizeConst=32)] public string Device; }
  [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr h,int flags);
@@ -34,4 +35,8 @@ if (![W53]::GetMonitorInfoW([W53]::MonitorFromWindow($h,2),[ref]$m)) { throw 'Ge
 Add-Type -AssemblyName System.Drawing
 $bitmap=New-Object Drawing.Bitmap ($r.Ri-$r.L),($r.B-$r.T)
 $graphics=[Drawing.Graphics]::FromImage($bitmap)
-try { $graphics.CopyFromScreen($r.L,$r.T,0,0,$bitmap.Size); $bitmap.Save($Output+'.png') } finally { $graphics.Dispose(); $bitmap.Dispose() }
+try {
+ $dc=$graphics.GetHdc()
+ try { if (![W53]::PrintWindow($h,$dc,2)) {throw 'PrintWindow failed'} } finally {$graphics.ReleaseHdc($dc)}
+ $bitmap.Save($Output+'.png')
+} finally { $graphics.Dispose(); $bitmap.Dispose() }

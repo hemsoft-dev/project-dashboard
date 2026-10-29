@@ -126,7 +126,7 @@ pmd_token_path = 'missing-synthetic-token'
     $stage = Join-Path ([IO.Path]::GetTempPath()) $name
     Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Path $stage | Out-Null
-    Copy-Item $exe, (Join-Path $root 'README.md'), (Join-Path $root 'LICENSE') $stage
+    Copy-Item $exe, (Join-Path $root 'README.md'), (Join-Path $root 'LICENSE'), (Join-Path $root 'scripts/Install-WindowsRelease.ps1') $stage
     # The README shows the icon from assets/.
     New-Item -ItemType Directory -Path (Join-Path $stage 'assets') | Out-Null
     Copy-Item (Join-Path $root 'assets/icon-256.png') (Join-Path $stage 'assets')

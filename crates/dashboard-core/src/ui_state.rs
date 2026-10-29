@@ -17,6 +17,7 @@ pub const STATE_FILE: &str = "ui-state.json";
 pub struct UiState {
     pub zoom: f64,
     pub columns: ColumnWidths,
+    pub placement: Option<crate::placement::Placement>,
 }
 
 impl Default for UiState {
@@ -24,6 +25,7 @@ impl Default for UiState {
         Self {
             zoom: zoom::DEFAULT,
             columns: ColumnWidths::default(),
+            placement: None,
         }
     }
 }
@@ -43,6 +45,10 @@ impl UiState {
                 .and_then(Value::as_f64)
                 .map_or(zoom::DEFAULT, zoom::clamp),
             columns: ColumnWidths::from_value(value.and_then(|value| value.get("columns"))),
+            placement: value
+                .and_then(|v| v.get("placement"))
+                .and_then(|v| serde_json::from_value::<crate::placement::Placement>(v.clone()).ok())
+                .filter(|p| p.valid()),
         }
     }
 

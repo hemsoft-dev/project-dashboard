@@ -47,11 +47,11 @@ impl Column {
     pub fn min_width(self) -> f32 {
         match self {
             Self::Repository => 6.0,
-            Self::Priority => 4.5,
-            Self::PullRequests => 2.5,
-            Self::Issues => 3.0,
-            Self::Merged24h | Self::Merged7d => 6.5,
-            Self::Updated => 4.25,
+            Self::Priority => 3.0,
+            Self::PullRequests => 1.75,
+            Self::Issues => 2.25,
+            Self::Merged24h | Self::Merged7d => 4.5,
+            Self::Updated => 3.5,
         }
     }
 

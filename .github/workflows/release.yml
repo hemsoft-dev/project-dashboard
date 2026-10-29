@@ -11,6 +11,7 @@ on:
     paths:
       - .github/workflows/release.yml
       - scripts/Build-WindowsRelease.ps1
+      - scripts/Install-WindowsRelease.ps1
       - scripts/native-capture/**
       - crates/dashboard-app/build.rs
       - crates/dashboard-app/src/mark.rs

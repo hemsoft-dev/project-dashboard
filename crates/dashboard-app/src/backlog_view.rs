@@ -23,6 +23,9 @@ impl BoardView {
                 if let Some(e) = &h.work_error {
                     body = body.child(div().child(format!("Backlog unavailable · {e} · showing last good work")));
                 }
+                if let Some(error) = &h.backlog.error {
+                    body = body.child(div().child(format!("Backlog assignments/dispatch unavailable · {error}")));
+                }
                 if h.backlog.plan.items_truncated || h.backlog.plan.skipped_truncated {
                     body = body.child(
                         div().child("Dispatch plan incomplete; remaining Ready items use pmd priority and rank."),

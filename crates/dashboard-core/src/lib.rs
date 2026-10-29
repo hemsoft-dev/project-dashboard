@@ -367,13 +367,18 @@ impl Board {
         match outcome.result {
             Ok(mut document) => {
                 if let Some(hosted) = &mut document.hosted
-                    && hosted.work_error.is_some()
                     && let Some(previous) = card.document.as_ref().and_then(|doc| doc.hosted.as_ref())
                     && previous.service_url == hosted.service_url
                 {
-                    hosted.board = previous.board.clone();
-                    hosted.work = previous.work.clone();
-                    hosted.backlog = previous.backlog.clone();
+                    if hosted.work_error.is_some() {
+                        hosted.board = previous.board.clone();
+                        hosted.work = previous.work.clone();
+                        hosted.backlog = previous.backlog.clone();
+                    } else if hosted.backlog.error.is_some() {
+                        // Keep only the failed enrichment. Fresh Project board/work remains authoritative.
+                        hosted.backlog.assignments = previous.backlog.assignments.clone();
+                        hosted.backlog.plan = previous.backlog.plan.clone();
+                    }
                 }
                 cache.insert(outcome.checkout, document.clone());
                 card.document = Some(document);

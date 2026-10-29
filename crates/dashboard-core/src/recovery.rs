@@ -13,10 +13,9 @@ impl Recovery {
     pub fn record(&mut self, result: &Result<StatusDocument, FetchError>, now: Instant, wall: DateTime<Local>) {
         let transport_failure = match result {
             Err(error) => error.is_transient(),
-            Ok(doc) => doc
-                .hosted
-                .as_ref()
-                .is_some_and(|hosted| hosted.work_transport_error.is_some()),
+            Ok(doc) => doc.hosted.as_ref().is_some_and(|hosted| {
+                hosted.work_transport_error.is_some() || hosted.backlog.transport_error.is_some()
+            }),
         };
         if transport_failure {
             let seconds = [5, 10, 20, 60][self.failures.min(3)];

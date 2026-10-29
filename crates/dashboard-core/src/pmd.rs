@@ -473,17 +473,13 @@ impl Pmd {
             Err(error) => (None, Vec::new(), Some(error.to_string()), error.transport()),
         };
         let backlog = if work_error.is_none() {
-            crate::backlog::read(&api, &project.slug)
+            crate::backlog::read(&api, &project.slug).unwrap_or_else(|error| crate::backlog::Context {
+                error: Some(error.to_string()),
+                transport_error: error.transport(),
+                ..Default::default()
+            })
         } else {
-            Err(FetchError::Unavailable)
-        };
-        let (backlog, work_error, work_transport_error) = match backlog {
-            Ok(context) => (context, work_error, work_transport_error),
-            Err(error) => (
-                Default::default(),
-                work_error.or_else(|| Some(error.to_string())),
-                work_transport_error.or_else(|| error.transport()),
-            ),
+            Default::default()
         };
         doc.hosted = Some(Hosted {
             backlog,

@@ -68,6 +68,9 @@ impl Assignment {
 pub struct Context {
     pub assignments: Vec<Assignment>,
     pub plan: Plan,
+    /// Assignment/dispatch failures are independent of the Project board/work read.
+    pub error: Option<String>,
+    pub transport_error: Option<crate::source::TransportError>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -103,6 +106,7 @@ pub(crate) fn read(api: &ReadApi, slug: &str) -> Result<Context, FetchError> {
     Ok(Context {
         assignments: page.assignments,
         plan,
+        ..Default::default()
     })
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -223,6 +227,7 @@ pub fn rows<'a>(documents: impl IntoIterator<Item = &'a StatusDocument>) -> Vec<
             let mut workers = Vec::new();
             let mut author_models = Vec::new();
             let mut reasons = Vec::new();
+            let mut waiting_reasons = Vec::new();
             let mut reviews = Vec::new();
             let mut active = false;
             let mut waiting = false;
@@ -239,11 +244,30 @@ pub fn rows<'a>(documents: impl IntoIterator<Item = &'a StatusDocument>) -> Vec<
                     )
                 });
                 waiting |= item_waiting;
-                if let Some(reason) = &d.status_reason {
-                    reasons.push(reason.clone());
-                }
                 if item_waiting {
-                    reasons.push(item.status.replace('_', " "));
+                    if let Some(reason) = &d.status_reason {
+                        waiting_reasons.push(reason.clone());
+                    }
+                    // Only the waiting member contributes to a grouped row's waiting reasons.
+                    if matches!(
+                        item.status.as_str(),
+                        "waiting_on_franz" | "blocked" | "watching" | "parked"
+                    ) {
+                        waiting_reasons.push(item.status.replace('_', " "));
+                    }
+                    waiting_reasons.extend(
+                        d.labels
+                            .iter()
+                            .filter(|l| {
+                                matches!(
+                                    l.as_str(),
+                                    "waiting-on-franz" | "waiting_on_franz" | "blocked" | "watching" | "parked"
+                                )
+                            })
+                            .map(|l| l.replace('_', " ")),
+                    );
+                } else if let Some(reason) = &d.status_reason {
+                    reasons.push(reason.clone());
                 }
                 // Prefer the richer current assignment list over the work item's summary.
                 // Also consider another live holder when the newest summary is idle.
@@ -252,8 +276,9 @@ pub fn rows<'a>(documents: impl IntoIterator<Item = &'a StatusDocument>) -> Vec<
                     .assignments
                     .iter()
                     .filter(|a| {
-                        d.assignment.as_ref().is_some_and(|summary| summary.id == a.id)
-                            || a.work_item.as_ref().is_some_and(|r| r.matches(&item.id))
+                        hosted.backlog.error.is_none()
+                            && (d.assignment.as_ref().is_some_and(|summary| summary.id == a.id)
+                                || a.work_item.as_ref().is_some_and(|r| r.matches(&item.id)))
                     })
                     .collect();
                 if assignments.is_empty() {
@@ -312,6 +337,9 @@ pub fn rows<'a>(documents: impl IntoIterator<Item = &'a StatusDocument>) -> Vec<
             author_models.dedup();
             workers.sort();
             workers.dedup();
+            if waiting {
+                reasons = waiting_reasons;
+            }
             reasons.sort();
             reasons.dedup();
             let priority = items.iter().filter_map(|i| i.detail.priority).min().unwrap_or(9);
@@ -574,5 +602,26 @@ mod tests {
                 .work_label()
                 .starts_with("#1 issue → PR #2 (open, approved")
         );
+    }
+
+    #[test]
+    fn waiting_reasons_only_come_from_waiting_members() {
+        let mut issue = item("blocked", "issue", "blocked", 1, 0);
+        issue.detail.status_reason = Some("Needs access".into());
+        let mut pr = item("ready", "pr", "ready", 1, 0);
+        pr.detail.status_reason = Some("Ready for merge".into());
+        pr.detail.links.push(Link {
+            kind: "closes".into(),
+            to: Some(issue.id.clone()),
+            by: None,
+        });
+        let mut doc = document(vec![issue, pr]);
+        doc.hosted.as_mut().unwrap().backlog.plan.skipped.push(Decision {
+            work_item: Ref { id: "ready".into() },
+            reason: "Ready dispatch reason".into(),
+        });
+        let row = &rows([&doc])[0];
+        assert_eq!(row.group, Group::Waiting);
+        assert_eq!(row.reason, "Needs access · blocked");
     }
 }

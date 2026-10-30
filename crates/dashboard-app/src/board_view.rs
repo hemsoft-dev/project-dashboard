@@ -133,6 +133,11 @@ pub struct BoardView {
     /// Each checkout's T3 thread, once looked up.
     threads: HashMap<PathBuf, Lookup>,
     finding_threads: bool,
+    priorities_loaded: bool,
+    row_baselines: HashMap<PathBuf, StatusDocument>,
+    pub(crate) glows: HashMap<PathBuf, (u64, f32)>,
+    glow_serial: u64,
+    table_scroll: gpui_kit::ScrollHandle,
     /// Another lookup was asked for while one ran; it starts when that one lands, so its result is never stale.
     threads_wanted: bool,
     finding_priorities: bool,
@@ -200,6 +205,11 @@ impl BoardView {
             repository_laid_out: Rc::new(Cell::new(None)),
             threads: HashMap::new(),
             finding_threads: false,
+            priorities_loaded: false,
+            row_baselines: HashMap::new(),
+            glows: HashMap::new(),
+            glow_serial: 0,
+            table_scroll: gpui_kit::ScrollHandle::new(),
             threads_wanted: false,
             finding_priorities: false,
             priorities_wanted: false,
@@ -302,7 +312,7 @@ impl BoardView {
     // Only the offscreen screenshot fixtures inject priorities directly.
     #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
     pub fn apply_priorities(&mut self, priorities: dashboard_core::priority::Priorities, cx: &mut Context<Self>) {
-        self.board.set_priorities(priorities);
+        self.set_priorities(priorities, cx);
         cx.notify();
     }
 
@@ -465,10 +475,12 @@ impl BoardView {
                 };
                 let _ = this.update(cx, |view, cx| {
                     view.finding_priorities = false;
-                    if view.priority_generation == generation
-                        && let Ok(priorities) = priorities
-                    {
-                        view.board.set_priorities(priorities);
+                    if view.priority_generation == generation {
+                        match priorities {
+                            Ok(priorities) => view.set_priorities(priorities, cx),
+                            // Keep displaying last good priorities, but recovery is a new baseline for highlighting.
+                            Err(_) => view.priorities_loaded = false,
+                        }
                     }
                     if std::mem::take(&mut view.priorities_wanted) {
                         view.refresh_priorities(cx);
@@ -616,6 +628,8 @@ impl BoardView {
         let present: HashSet<PathBuf> = self.board.checkouts().into_iter().collect();
         self.expanded.retain(|checkout| present.contains(checkout));
         self.threads.retain(|checkout, _| present.contains(checkout));
+        self.row_baselines.retain(|checkout, _| present.contains(checkout));
+        self.glows.retain(|checkout, _| present.contains(checkout));
         // One limiter for all refreshes, old and new, so a lower limit holds as soon as running fetches finish.
         if config.parallelism != self.options.parallelism {
             self.options.parallelism = config.parallelism;
@@ -709,7 +723,9 @@ impl BoardView {
                         let Some(&generation) = generations.get(&outcome.checkout) else {
                             continue;
                         };
+                        let checkout = outcome.checkout.clone();
                         if view.board.apply_started(outcome, generation, &mut view.cache) {
+                            view.observe_row(&checkout, cx);
                             cx.notify();
                         }
                     }
@@ -733,9 +749,80 @@ impl BoardView {
     /// Shows one refresh result on its card, for the screenshot captures (which only run on Linux).
     #[cfg(test)]
     pub fn apply(&mut self, outcome: Outcome, cx: &mut Context<Self>) {
+        let checkout = outcome.checkout.clone();
         if self.board.apply(outcome, &mut self.cache) {
+            self.observe_row(&checkout, cx);
             cx.notify();
         }
+    }
+
+    fn set_priorities(&mut self, priorities: dashboard_core::priority::Priorities, cx: &mut Context<Self>) {
+        let before: Vec<_> = self
+            .board
+            .cards()
+            .iter()
+            .map(|c| (c.checkout.clone(), self.board.priority(c)))
+            .collect();
+        self.board.set_priorities(priorities);
+        if self.priorities_loaded {
+            for (checkout, old) in before {
+                if self
+                    .board
+                    .card(&checkout)
+                    .is_some_and(|c| self.board.priority(c) != old)
+                {
+                    self.glow(checkout, cx);
+                }
+            }
+        }
+        self.priorities_loaded = true;
+    }
+
+    fn observe_row(&mut self, checkout: &Path, cx: &mut Context<Self>) {
+        let Some(card) = self.board.card(checkout) else {
+            return;
+        };
+        if card.error.is_some() || card.document.is_none() {
+            // Keep last good data on screen. An outage discards only the highlight baseline, so recovery is quiet.
+            self.row_baselines.remove(checkout);
+            return;
+        }
+        let document = card.document.as_ref().expect("checked above");
+        let changed = dashboard_core::changes::changed(self.row_baselines.get(checkout), document);
+        self.row_baselines.insert(checkout.to_owned(), document.clone());
+        if changed {
+            self.glow(checkout.to_owned(), cx);
+        }
+    }
+
+    fn glow(&mut self, checkout: PathBuf, cx: &mut Context<Self>) {
+        self.glow_serial += 1;
+        let serial = self.glow_serial;
+        self.glows.insert(checkout.clone(), (serial, 1.));
+        cx.spawn(async move |this, cx| {
+            for tick in 1..=50 {
+                cx.background_executor().timer(Duration::from_millis(50)).await;
+                let active = this
+                    .update(cx, |view, cx| {
+                        if view.glows.get(&checkout).is_none_or(|(id, _)| *id != serial) {
+                            return false;
+                        }
+                        if tick == 50 {
+                            view.glows.remove(&checkout);
+                        } else {
+                            view.glows.insert(checkout.clone(), (serial, 1. - tick as f32 / 50.));
+                        }
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !active {
+                    break;
+                }
+            }
+        })
+        .detach();
+        cx.notify();
     }
 
     /// Looks up every checkout's T3 thread off the UI thread. Asked again while a lookup runs, it runs once more
@@ -761,11 +848,21 @@ impl BoardView {
                 view.finding_threads = false;
                 // Checkouts removed while the lookup ran don't come back with its answer.
                 let present: HashSet<PathBuf> = view.board.checkouts().into_iter().collect();
+                let old_threads = view.threads.clone();
                 view.threads = checkouts
                     .into_iter()
                     .zip(found)
                     .filter(|(checkout, _)| present.contains(checkout))
                     .collect();
+                let changed: Vec<_> = view
+                    .threads
+                    .iter()
+                    .filter(|(path, link)| dashboard_core::changes::session_changed(old_threads.get(*path), link))
+                    .map(|(path, _)| path.clone())
+                    .collect();
+                for path in changed {
+                    view.glow(path, cx);
+                }
                 if std::mem::take(&mut view.threads_wanted) {
                     view.find_threads(cx);
                 }
@@ -938,7 +1035,7 @@ impl BoardView {
             )
     }
 
-    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_header(&self, cx: &mut Context<Self>) -> gpui_kit::Stateful<gpui_kit::Div> {
         let theme = cx.theme();
         let foreground = theme.foreground;
         let (arrow, sort_label) = match self.sort {
@@ -1025,7 +1122,6 @@ impl BoardView {
                 ),
             )
             .child(div().flex_1().min_w(ACTIVITY_MIN).truncate().child("Last activity"))
-            .child(div().w(ACTIONS).flex_none())
     }
 
     fn render_row(&self, ix: usize, card: &Card, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1175,7 +1271,9 @@ impl BoardView {
             .text_sm()
             .cursor_pointer()
             .hover(|style| style.bg(theme.list_hover))
-            .when(expanded, |this| this.bg(theme.list_active))
+            .when(expanded && !self.glows.contains_key(&card.checkout), |this| {
+                this.bg(theme.list_active)
+            })
             .on_click(cx.listener(move |view, _, _, cx| view.toggle_expanded(&toggle, cx)))
             .child(
                 div().w(CHEVRON).flex_none().child(
@@ -1330,10 +1428,24 @@ impl BoardView {
                     .flex_1()
                     .min_w(ACTIVITY_MIN)
                     .child(activity),
+            );
+        let row = h_flex()
+            .items_center()
+            .child(
+                div()
+                    .id(("row-scroll", ix))
+                    .test_support()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_x_scroll()
+                    .track_scroll(&self.table_scroll)
+                    .child(row.min_w(table_min(&self.columns))),
             )
             .child(
                 h_flex()
                     .w(ACTIONS)
+                    .px_2()
+                    .gap_1()
                     .flex_none()
                     .justify_end()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -1354,10 +1466,26 @@ impl BoardView {
         let theme = cx.theme();
         v_flex()
             .id(("entry", ix))
+            .test_support()
+            .when(self.glows.contains_key(&card.checkout), |this| {
+                let progress = self.glows[&card.checkout].1;
+                let opacity = if cx.reduce_motion() { 0.16 } else { 0.22 * progress };
+                this.bg(theme.primary.opacity(opacity))
+            })
             .border_b_1()
             .border_color(theme.border)
             .child(row)
-            .when(expanded, |this| this.child(self.render_details(ix, card, cx)))
+            .when(expanded, |this| {
+                this.child(
+                    div()
+                        .id(("details-scroll", ix))
+                        .test_support()
+                        .min_w_0()
+                        .overflow_x_scroll()
+                        .restrict_scroll_to_axis()
+                        .child(self.render_details(ix, card, cx)),
+                )
+            })
     }
 
     /// Opens the checkout's T3 Code thread; disabled, with the reason as its tooltip, when there is none to open.
@@ -1370,8 +1498,18 @@ impl BoardView {
         Button::new(("t3", ix))
             .ghost()
             .xsmall()
-            .icon(IconName::Bot)
-            .tooltip(tooltip)
+            .min_w_0()
+            .flex_1()
+            .overflow_hidden()
+            .child(
+                div().min_w_0().truncate().child(
+                    lookup
+                        .and_then(|l| l.as_ref().ok())
+                        .map_or("T3 session", |l| l.title.as_str())
+                        .to_owned(),
+                ),
+            )
+            .tooltip(url.as_ref().map_or(tooltip.clone(), |url| format!("{tooltip}\n{url}")))
             .disabled(url.is_none())
             .on_click(move |_, _, cx| {
                 cx.stop_propagation();
@@ -1387,6 +1525,9 @@ impl BoardView {
         let mut body = v_flex()
             .id(("details", ix))
             .test_support()
+            // Fixed detail cells need room for checks, reviews, ages and a readable title. Scroll their own
+            // viewport independently of the pinned session lane and the resizable Project columns.
+            .min_w(rems(48.))
             .pl(rems(3.25))
             .pr_4()
             .pt_1()
@@ -1462,8 +1603,8 @@ impl BoardView {
 // Table column widths, in rems so they follow the text size. The resizable columns' widths are in `ColumnWidths`.
 const CHEVRON: gpui_kit::Rems = rems(1.75);
 const STATE: gpui_kit::Rems = rems(0.75);
-/// The T3 and refresh buttons at the end of each row.
-const ACTIONS: gpui_kit::Rems = rems(3.5);
+/// Fixed session lane, outside the data columns’ horizontal scroll area.
+const ACTIONS: gpui_kit::Rems = rems(11.);
 /// The space between columns.
 const GAP: gpui_kit::Rems = rems(0.5);
 /// Extra space before the update time, so it doesn't read as part of the right-aligned issue count before it.
@@ -1503,12 +1644,10 @@ fn column_title(column: Column) -> &'static str {
     }
 }
 
-/// The table's least width: chevron, state and the two row buttons; the repository column's minimum and the other resizable
-/// columns' widths; the lead before Updated; last activity's minimum; eight gaps and 0.5 rem padding on each side.
-/// Narrow windows and wider saved columns scroll sideways with the header and rows together.
+/// Data columns keep their saved widths and scroll together, independently of the fixed session lane.
 fn table_min(widths: &ColumnWidths) -> gpui_kit::Rems {
     let resizable = widths.total() - widths.get(Column::Repository) + Column::Repository.min_width();
-    rems(1.75 + 0.75 + 3.5 + resizable + 0.75 + 1.5 + 10. * 0.5 + 2. * 0.5)
+    rems(1.75 + 0.75 + resizable + 0.75 + 1.5 + 10. * 0.5 + 2. * 0.5)
 }
 
 impl Render for BoardView {
@@ -1558,28 +1697,32 @@ impl Render for BoardView {
                 .into_iter()
                 .map(|ix| self.render_row(ix, &cards[ix], cx).into_any_element())
                 .collect();
-            // The table never narrows below its columns' minimums. When zoom makes those wider than the window, it
-            // scrolls sideways, header and all, so every row's controls stay reachable.
             content = content.child(
-                div()
-                    .id("table")
-                    .test_support()
+                v_flex()
                     .flex_1()
                     .min_h_0()
-                    .overflow_x_scroll()
+                    .child(
+                        h_flex()
+                            .child(
+                                div()
+                                    .id("table")
+                                    .test_support()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_x_scroll()
+                                    .track_scroll(&self.table_scroll)
+                                    .child(self.render_header(cx).min_w(table_min(&self.columns))),
+                            )
+                            .child(div().w(ACTIONS).flex_none().px_2().text_xs().child("T3 session")),
+                    )
                     .child(
                         v_flex()
-                            .size_full()
-                            .min_w(table_min(&self.columns))
-                            .child(self.render_header(cx))
-                            .child(
-                                v_flex()
-                                    .id("rows")
-                                    .flex_1()
-                                    .min_h_0()
-                                    .overflow_y_scroll()
-                                    .children(rows),
-                            ),
+                            .id("rows")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .restrict_scroll_to_axis()
+                            .children(rows),
                     ),
             );
         }

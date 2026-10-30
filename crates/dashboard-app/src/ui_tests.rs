@@ -770,7 +770,7 @@ async fn activity_labels_keep_a_readable_prefix_when_the_cell_is_too_narrow_to_s
                 readable &= label.size.width >= px(24. * level as f32 - 1.);
                 assert!(label.left() >= cell.left());
                 assert!(title.right() <= cell.right());
-                assert!(cell.right() <= window.find(("t3", ix)).bounds().left());
+                assert!(window.find(("row-scroll", ix)).bounds().right() <= window.find(("t3", ix)).bounds().left());
                 assert!(window.find(("refresh", ix)).bounds().right() <= px(1060.));
             }
         })
@@ -819,7 +819,7 @@ async fn activity_descriptions_use_the_residual_width_even_with_long_workflow_na
                     let title_width = f32::from(title.size.width);
                     let gap = 8. * scale;
                     assert_eq!(activity, cell, "nested activity fills its residual column");
-                    if width >= 1100. {
+                    if cell_width >= 72. * scale {
                         assert!(f32::from(label.size.width) <= cell_width / 3. + 1.);
                         assert!(
                             title_width - gap >= cell_width * 2. / 3. - gap - 1.,
@@ -834,7 +834,7 @@ async fn activity_descriptions_use_the_residual_width_even_with_long_workflow_na
                     assert_eq!(title.right(), cell.right(), "no unused tail after the description");
                     assert!(label.right() <= title.left());
                     assert!(updated.right() <= cell.left());
-                    assert!(cell.right() <= t3.left());
+                    assert!(window.find(("row-scroll", ix)).bounds().right() <= t3.left());
                     assert!(t3.right() <= refresh.left());
                     assert!(refresh.right() <= px(width), "controls remain in the window");
                     assert!(name.size.width >= px(Column::Repository.min_width() * 16. * scale - 1.));
@@ -857,10 +857,17 @@ async fn activity_descriptions_use_the_residual_width_even_with_long_workflow_na
                     let empty_label = window.find(("activity-summary", 2usize)).bounds();
                     assert!(empty_label.size.width > empty_cell.size.width / 2.);
                 }
+                // Reveal the activity when saved columns need horizontal scrolling. The session lane stays pinned.
+                window.scroll(
+                    "table",
+                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-3000.), px(0.))),
+                    cx,
+                );
+                window.render_frame(cx);
                 // A narrow description may have no width; its label still opens the same activity.
                 window.click(
                     (
-                        if width >= 1100. {
+                        if window.find(("activity-title", 1usize)).bounds().size.width > px(1.) {
                             "activity-title"
                         } else {
                             "activity-summary"
@@ -1109,7 +1116,7 @@ async fn at_200_percent_the_table_keeps_readable_columns_and_scrolls_to_controls
 }
 
 #[gpui_kit::test]
-async fn at_200_percent_in_the_narrowest_window_the_table_scrolls_sideways_to_every_control(cx: &mut TestAppContext) {
+async fn at_200_percent_data_scrolls_while_session_controls_stay_pinned(cx: &mut TestAppContext) {
     use gpui_kit::{ScrollDelta, point};
     let (handle, view) = open_board_sized(
         cx,
@@ -1125,12 +1132,13 @@ async fn at_200_percent_in_the_narrowest_window_the_table_scrolls_sideways_to_ev
     cx.run_until_parked();
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        // Wider than the window: the refresh buttons start out of view, and names keep their minimum.
-        let refresh = window.find(("refresh", 0usize)).bounds();
+        // Data columns keep their minimums and scroll; session controls remain in the fixed lane.
+        let before_refresh = window.find(("refresh", 0usize)).bounds();
+        let before_link = window.find(("t3", 0usize)).bounds();
+        let before_updated = window.find(("updated", 0usize)).bounds();
         assert!(
-            refresh.origin.x > px(480.),
-            "starts off to the right at {:?}",
-            refresh.origin.x
+            before_refresh.right() <= px(480.),
+            "refresh stays visible before scrolling"
         );
         assert!(window.find(("name", 0usize)).bounds().size.width >= px(6. * 32.));
         window.scroll("table", ScrollDelta::Pixels(point(px(-2000.), px(0.))), cx);
@@ -1138,8 +1146,20 @@ async fn at_200_percent_in_the_narrowest_window_the_table_scrolls_sideways_to_ev
         let refresh = window.find(("refresh", 0usize)).bounds();
         assert!(
             refresh.origin.x >= px(0.) && refresh.origin.x + refresh.size.width <= px(480.),
-            "scrolled into view: {:?}",
-            refresh
+            "refresh stays visible after scrolling: {refresh:?}"
+        );
+        assert_eq!(refresh, before_refresh, "refresh position stays fixed");
+        assert_eq!(
+            window.find(("t3", 0usize)).bounds(),
+            before_link,
+            "session link stays fixed"
+        );
+        let updated = window.find(("updated", 0usize)).bounds();
+        assert!(updated.left() < before_updated.left(), "data columns actually scroll");
+        assert_eq!(
+            window.find("sort-updated").bounds().left(),
+            updated.left(),
+            "header follows the data columns"
         );
     })
     .unwrap();
@@ -1375,18 +1395,29 @@ async fn columns_wider_than_the_window_scroll_sideways_with_the_header(cx: &mut 
     settle(cx, handle, &view).await;
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        let refresh = window.find(("refresh", 0usize)).bounds();
+        let before_refresh = window.find(("refresh", 0usize)).bounds();
+        let before_link = window.find(("t3", 0usize)).bounds();
+        let before_updated = window.find(("updated", 0usize)).bounds();
         assert!(
-            refresh.origin.x > px(1100.),
-            "starts off to the right at {:?}",
-            refresh.origin.x
+            before_refresh.right() <= px(1100.),
+            "refresh stays visible before scrolling"
         );
         window.scroll("table", ScrollDelta::Pixels(point(px(-2000.), px(0.))), cx);
         window.render_frame(cx);
         let refresh = window.find(("refresh", 0usize)).bounds();
         assert!(
             refresh.origin.x + refresh.size.width <= px(1100.),
-            "scrolled into view: {refresh:?}"
+            "refresh stays visible after scrolling: {refresh:?}"
+        );
+        assert_eq!(refresh, before_refresh, "refresh position stays fixed");
+        assert_eq!(
+            window.find(("t3", 0usize)).bounds(),
+            before_link,
+            "session link stays fixed"
+        );
+        assert!(
+            window.find(("updated", 0usize)).bounds().left() < before_updated.left(),
+            "data columns actually scroll"
         );
         // The header scrolled with the rows: its Updated cell still lines up with theirs.
         assert_eq!(
@@ -1434,7 +1465,8 @@ async fn each_row_has_a_t3_button_just_left_of_its_refresh_button(cx: &mut TestA
                 let t3 = window.find(("t3", ix)).bounds();
                 let refresh = window.find(("refresh", ix)).bounds();
                 // Same size, same line, directly before it, and in view.
-                assert_eq!(t3.size, refresh.size, "row {ix} at {width}");
+                assert_eq!(t3.size.height, refresh.size.height, "row {ix} at {width}");
+                assert!(t3.size.width > refresh.size.width);
                 assert_eq!(t3.center().y, refresh.center().y, "row {ix} at {width}");
                 assert!(t3.origin.x + t3.size.width <= refresh.origin.x, "row {ix} at {width}");
                 assert!(
@@ -3010,4 +3042,322 @@ async fn project_view_uses_canonical_pmd_open_counts(cx: &mut TestAppContext) {
         assert_eq!(window.find(("issues", 0usize)).label(), Some("37 open issues"));
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+async fn session_links_stay_visible_when_columns_are_wide_or_scrolled(cx: &mut TestAppContext) {
+    for width in [480., 1680.] {
+        let (handle, view) = open_board_sized(
+            cx,
+            four(),
+            StatusCache::default(),
+            Arc::new(demo::DemoSource),
+            options(),
+            width,
+        );
+        cx.update(|cx| {
+            zoom::set_level(1.3, cx);
+            view.update(cx, |v, cx| v.refresh_all(cx));
+        });
+        settle(cx, handle, &view).await;
+        drag_border(cx, handle, Column::Repository, 500.);
+        for scroll in [0., -2000.] {
+            cx.update_window(handle, |_, window, cx| {
+                use gpui_kit::{ScrollDelta, point};
+                window.scroll("table", ScrollDelta::Pixels(point(px(scroll), px(0.))), cx);
+                window.render_frame(cx);
+                for ix in 0..4usize {
+                    let link = window.find(("t3", ix)).bounds();
+                    let refresh = window.find(("refresh", ix)).bounds();
+                    assert!(link.left() >= px(0.) && link.right() <= px(width));
+                    assert!(link.size.width > px(80.));
+                    assert!(refresh.right() <= px(width));
+                    window.click(("t3", ix), cx);
+                }
+            })
+            .unwrap();
+        }
+    }
+}
+
+#[gpui_kit::test]
+async fn only_updated_rows_glow_and_the_marker_expires_with_reduced_motion(cx: &mut TestAppContext) {
+    let (handle, view) = open_board(
+        cx,
+        four(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        options(),
+    );
+    cx.update(|cx| view.update(cx, |v, cx| v.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    assert!(cx.update(|cx| view.read(cx).glows.is_empty()));
+    cx.update(|cx| {
+        cx.set_reduce_motion(true);
+        view.update(cx, |view, cx| {
+            let checkout = view.board().checkouts()[0].clone();
+            let mut doc = view.board().card(&checkout).unwrap().document.clone().unwrap();
+            view.apply(
+                Outcome {
+                    checkout: checkout.clone(),
+                    result: Ok(doc.clone()),
+                },
+                cx,
+            );
+            assert!(view.glows.is_empty());
+            doc.workflow_runs_perfect = Some(false);
+            view.apply(
+                Outcome {
+                    checkout: checkout.clone(),
+                    result: Ok(doc),
+                },
+                cx,
+            );
+            assert_eq!(view.glows.len(), 1);
+            assert!(view.glows.contains_key(&checkout));
+        });
+    });
+    for _ in 0..51 {
+        cx.executor().advance_clock(Duration::from_millis(50));
+        cx.run_until_parked();
+    }
+    assert!(cx.update(|cx| view.read(cx).glows.is_empty()));
+}
+
+#[gpui_kit::test]
+fn t3_outage_and_recovery_rebaseline_rows_but_real_session_changes_glow(cx: &mut TestAppContext) {
+    use dashboard_core::t3::{Lookup, NoThread, ThreadFinder, ThreadLink};
+    struct Threads(std::sync::Mutex<Vec<Lookup>>);
+    impl ThreadFinder for Threads {
+        fn find(&self, _: &[PathBuf]) -> Vec<Lookup> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+    let link = |name: &str| {
+        Ok(ThreadLink {
+            title: name.into(),
+            url: format!("http://fixture/{name}"),
+            running: true,
+        })
+    };
+    let first = vec![link("one"), link("two")];
+    let threads = Arc::new(Threads(std::sync::Mutex::new(first.clone())));
+    let checkouts: Vec<_> = four().into_iter().take(2).collect();
+    let (_, view) = open_board(
+        cx,
+        checkouts.clone(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        Options {
+            threads: threads.clone(),
+            ..options()
+        },
+    );
+    until(cx, |cx| {
+        cx.update(|cx| view.read(cx).thread(&checkouts[1]) == Some(&first[1]))
+    });
+    assert!(cx.update(|cx| view.read(cx).glows.is_empty()));
+    let update = |next: Vec<Lookup>, cx: &mut TestAppContext| {
+        *threads.0.lock().unwrap() = next.clone();
+        cx.update(|cx| view.update(cx, |v, cx| v.find_threads(cx)));
+        until(cx, |cx| {
+            cx.update(|cx| {
+                checkouts
+                    .iter()
+                    .zip(&next)
+                    .all(|(path, result)| view.read(cx).thread(path) == Some(result))
+            })
+        });
+    };
+    update(vec![Err(NoThread::NotRunning); 2], cx);
+    assert!(cx.update(|cx| view.read(cx).glows.is_empty()), "outage does not glow");
+    update(vec![Err(NoThread::Unreadable("busy".into())); 2], cx);
+    assert!(
+        cx.update(|cx| view.read(cx).glows.is_empty()),
+        "persistent outage diagnostics do not glow"
+    );
+    let recovered = vec![link("recovered-one"), link("recovered-two")];
+    update(recovered.clone(), cx);
+    assert!(
+        cx.update(|cx| view.read(cx).glows.is_empty()),
+        "changed sessions on recovery rebaseline"
+    );
+    update(vec![link("new-session"), recovered[1].clone()], cx);
+    cx.update(|cx| {
+        assert_eq!(view.read(cx).glows.len(), 1);
+        assert!(view.read(cx).glows.contains_key(&checkouts[0]));
+    });
+}
+
+#[gpui_kit::test]
+fn status_source_recovery_is_quiet_then_healthy_data_changes_glow(cx: &mut TestAppContext) {
+    let checkout = PathBuf::from("/demo/gh-x");
+    let (_, view) = open_board(
+        cx,
+        vec![checkout.clone()],
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        options(),
+    );
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            let mut document = fixtures::document(CLEAN);
+            v.apply(
+                Outcome {
+                    checkout: checkout.clone(),
+                    result: Ok(document.clone()),
+                },
+                cx,
+            );
+            assert!(v.glows.is_empty());
+            v.apply(
+                Outcome {
+                    checkout: checkout.clone(),
+                    result: Err(FetchError::Unavailable),
+                },
+                cx,
+            );
+            assert!(v.glows.is_empty());
+            document.pull_requests.merged_limit += 1;
+            v.apply(
+                Outcome {
+                    checkout: checkout.clone(),
+                    result: Ok(document.clone()),
+                },
+                cx,
+            );
+            assert!(
+                v.glows.is_empty(),
+                "data changed during outage establishes the recovery baseline"
+            );
+            document.pull_requests.merged_limit += 1;
+            v.apply(
+                Outcome {
+                    checkout: checkout.clone(),
+                    result: Ok(document),
+                },
+                cx,
+            );
+            assert!(v.glows.contains_key(&checkout));
+        })
+    });
+}
+
+#[gpui_kit::test]
+fn priority_source_recovery_rebaselines_before_highlighting_new_changes(cx: &mut TestAppContext) {
+    use dashboard_core::priority::{Priorities, PrioritySource};
+    struct PrioritiesSource(std::sync::Mutex<Result<Priorities, FetchError>>);
+    impl PrioritySource for PrioritiesSource {
+        fn fetch(&self) -> Priorities {
+            self.fetch_result().unwrap_or_default()
+        }
+        fn fetch_result(&self) -> Result<Priorities, FetchError> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+    let priorities = |priority| {
+        Priorities::parse(
+            serde_json::to_vec(&serde_json::json!({"projects":[{
+                "slug":"gh-x", "repo":"hemsoft-dev/gh-x", "priority":priority, "tracked":true
+            }]}))
+            .unwrap()
+            .as_slice(),
+        )
+        .unwrap()
+    };
+    let source = Arc::new(PrioritiesSource(std::sync::Mutex::new(Ok(priorities(1)))));
+    let checkout = PathBuf::from("/demo/gh-x");
+    let (_, view) = open_board(
+        cx,
+        vec![checkout.clone()],
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        Options {
+            priorities: source.clone(),
+            ..options()
+        },
+    );
+    until(cx, |cx| cx.update(|cx| !view.read(cx).priorities_pending()));
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.apply(
+                Outcome {
+                    checkout: checkout.clone(),
+                    result: Ok(fixtures::document(CLEAN)),
+                },
+                cx,
+            )
+        })
+    });
+    let update = |result, cx: &mut TestAppContext| {
+        *source.0.lock().unwrap() = result;
+        cx.update(|cx| view.update(cx, |v, cx| v.refresh_priorities(cx)));
+        until(cx, |cx| cx.update(|cx| !view.read(cx).priorities_pending()));
+    };
+    update(Err(FetchError::Unavailable), cx);
+    assert!(cx.update(|cx| view.read(cx).glows.is_empty()));
+    update(Ok(priorities(5)), cx);
+    assert!(
+        cx.update(|cx| view.read(cx).glows.is_empty()),
+        "recovery with a new priority is quiet"
+    );
+    update(Ok(priorities(3)), cx);
+    assert!(cx.update(|cx| view.read(cx).glows.contains_key(&checkout)));
+}
+
+#[gpui_kit::test]
+async fn expanded_details_scroll_to_their_trailing_columns_while_session_links_stay_pinned(cx: &mut TestAppContext) {
+    use gpui_kit::{ScrollDelta, point};
+    for (width, level) in [(480., 1.3), (1100., 2.0)] {
+        let checkout = PathBuf::from("/demo/codexbar");
+        let (handle, view) = open_board_sized(
+            cx,
+            vec![checkout.clone()],
+            StatusCache::default(),
+            Arc::new(demo::DemoSource),
+            options(),
+            width,
+        );
+        cx.update(|cx| {
+            zoom::set_level(level, cx);
+            view.update(cx, |v, cx| v.refresh_all(cx));
+        });
+        settle(cx, handle, &view).await;
+        let number = cx.update(|cx| {
+            view.read(cx).board().cards()[0]
+                .document
+                .as_ref()
+                .unwrap()
+                .pull_requests
+                .open[0]
+                .number
+        });
+        cx.update(|cx| view.update(cx, |v, cx| v.toggle_expanded(&checkout, cx)));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let link_before = window.find(("t3", 0usize)).bounds();
+            let id = format!("pr-0-{number}");
+            let before = window.find(id.clone()).bounds();
+            assert!(
+                before.right() > px(width),
+                "trailing columns start beyond the detail viewport"
+            );
+            window.scroll(
+                ("details-scroll", 0usize),
+                ScrollDelta::Pixels(point(px(-3000.), px(0.))),
+                cx,
+            );
+            window.render_frame(cx);
+            let after = window.find(id).bounds();
+            assert!(after.left() < before.left(), "expanded details actually scroll");
+            assert!(after.right() <= px(width), "trailing detail columns can be reached");
+            assert_eq!(
+                window.find(("t3", 0usize)).bounds(),
+                link_before,
+                "session lane stays pinned"
+            );
+            assert!(link_before.left() >= px(0.) && link_before.right() <= px(width));
+        })
+        .unwrap();
+    }
 }

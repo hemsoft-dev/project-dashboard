@@ -475,10 +475,12 @@ impl BoardView {
                 };
                 let _ = this.update(cx, |view, cx| {
                     view.finding_priorities = false;
-                    if view.priority_generation == generation
-                        && let Ok(priorities) = priorities
-                    {
-                        view.set_priorities(priorities, cx);
+                    if view.priority_generation == generation {
+                        match priorities {
+                            Ok(priorities) => view.set_priorities(priorities, cx),
+                            // Keep displaying last good priorities, but recovery is a new baseline for highlighting.
+                            Err(_) => view.priorities_loaded = false,
+                        }
                     }
                     if std::mem::take(&mut view.priorities_wanted) {
                         view.refresh_priorities(cx);
@@ -780,12 +782,12 @@ impl BoardView {
         let Some(card) = self.board.card(checkout) else {
             return;
         };
-        if card.error.is_some() {
+        if card.error.is_some() || card.document.is_none() {
+            // Keep last good data on screen. An outage discards only the highlight baseline, so recovery is quiet.
+            self.row_baselines.remove(checkout);
             return;
         }
-        let Some(document) = card.document.as_ref() else {
-            return;
-        };
+        let document = card.document.as_ref().expect("checked above");
         let changed = dashboard_core::changes::changed(self.row_baselines.get(checkout), document);
         self.row_baselines.insert(checkout.to_owned(), document.clone());
         if changed {
@@ -855,7 +857,7 @@ impl BoardView {
                 let changed: Vec<_> = view
                     .threads
                     .iter()
-                    .filter(|(path, link)| old_threads.get(*path).is_some_and(|old| old != *link))
+                    .filter(|(path, link)| dashboard_core::changes::session_changed(old_threads.get(*path), link))
                     .map(|(path, _)| path.clone())
                     .collect();
                 for path in changed {

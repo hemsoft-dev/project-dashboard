@@ -3123,3 +3123,184 @@ async fn only_updated_rows_glow_and_the_marker_expires_with_reduced_motion(cx: &
     }
     assert!(cx.update(|cx| view.read(cx).glows.is_empty()));
 }
+
+#[gpui_kit::test]
+fn t3_outage_and_recovery_rebaseline_rows_but_real_session_changes_glow(cx: &mut TestAppContext) {
+    use dashboard_core::t3::{Lookup, NoThread, ThreadFinder, ThreadLink};
+    struct Threads(std::sync::Mutex<Vec<Lookup>>);
+    impl ThreadFinder for Threads {
+        fn find(&self, _: &[PathBuf]) -> Vec<Lookup> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+    let link = |name: &str| {
+        Ok(ThreadLink {
+            title: name.into(),
+            url: format!("http://fixture/{name}"),
+            running: true,
+        })
+    };
+    let first = vec![link("one"), link("two")];
+    let threads = Arc::new(Threads(std::sync::Mutex::new(first.clone())));
+    let checkouts: Vec<_> = four().into_iter().take(2).collect();
+    let (_, view) = open_board(
+        cx,
+        checkouts.clone(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        Options {
+            threads: threads.clone(),
+            ..options()
+        },
+    );
+    until(cx, |cx| {
+        cx.update(|cx| view.read(cx).thread(&checkouts[1]) == Some(&first[1]))
+    });
+    assert!(cx.update(|cx| view.read(cx).glows.is_empty()));
+    let update = |next: Vec<Lookup>, cx: &mut TestAppContext| {
+        *threads.0.lock().unwrap() = next.clone();
+        cx.update(|cx| view.update(cx, |v, cx| v.find_threads(cx)));
+        until(cx, |cx| {
+            cx.update(|cx| {
+                checkouts
+                    .iter()
+                    .zip(&next)
+                    .all(|(path, result)| view.read(cx).thread(path) == Some(result))
+            })
+        });
+    };
+    update(vec![Err(NoThread::NotRunning); 2], cx);
+    assert!(cx.update(|cx| view.read(cx).glows.is_empty()), "outage does not glow");
+    update(vec![Err(NoThread::Unreadable("busy".into())); 2], cx);
+    assert!(
+        cx.update(|cx| view.read(cx).glows.is_empty()),
+        "persistent outage diagnostics do not glow"
+    );
+    let recovered = vec![link("recovered-one"), link("recovered-two")];
+    update(recovered.clone(), cx);
+    assert!(
+        cx.update(|cx| view.read(cx).glows.is_empty()),
+        "changed sessions on recovery rebaseline"
+    );
+    update(vec![link("new-session"), recovered[1].clone()], cx);
+    cx.update(|cx| {
+        assert_eq!(view.read(cx).glows.len(), 1);
+        assert!(view.read(cx).glows.contains_key(&checkouts[0]));
+    });
+}
+
+#[gpui_kit::test]
+fn status_source_recovery_is_quiet_then_healthy_data_changes_glow(cx: &mut TestAppContext) {
+    let checkout = PathBuf::from("/demo/gh-x");
+    let (_, view) = open_board(
+        cx,
+        vec![checkout.clone()],
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        options(),
+    );
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            let mut document = fixtures::document(CLEAN);
+            v.apply(
+                Outcome {
+                    checkout: checkout.clone(),
+                    result: Ok(document.clone()),
+                },
+                cx,
+            );
+            assert!(v.glows.is_empty());
+            v.apply(
+                Outcome {
+                    checkout: checkout.clone(),
+                    result: Err(FetchError::Unavailable),
+                },
+                cx,
+            );
+            assert!(v.glows.is_empty());
+            document.pull_requests.merged_limit += 1;
+            v.apply(
+                Outcome {
+                    checkout: checkout.clone(),
+                    result: Ok(document.clone()),
+                },
+                cx,
+            );
+            assert!(
+                v.glows.is_empty(),
+                "data changed during outage establishes the recovery baseline"
+            );
+            document.pull_requests.merged_limit += 1;
+            v.apply(
+                Outcome {
+                    checkout: checkout.clone(),
+                    result: Ok(document),
+                },
+                cx,
+            );
+            assert!(v.glows.contains_key(&checkout));
+        })
+    });
+}
+
+#[gpui_kit::test]
+fn priority_source_recovery_rebaselines_before_highlighting_new_changes(cx: &mut TestAppContext) {
+    use dashboard_core::priority::{Priorities, PrioritySource};
+    struct PrioritiesSource(std::sync::Mutex<Result<Priorities, FetchError>>);
+    impl PrioritySource for PrioritiesSource {
+        fn fetch(&self) -> Priorities {
+            self.fetch_result().unwrap_or_default()
+        }
+        fn fetch_result(&self) -> Result<Priorities, FetchError> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+    let priorities = |priority| {
+        Priorities::parse(
+            serde_json::to_vec(&serde_json::json!({"projects":[{
+                "slug":"gh-x", "repo":"hemsoft-dev/gh-x", "priority":priority, "tracked":true
+            }]}))
+            .unwrap()
+            .as_slice(),
+        )
+        .unwrap()
+    };
+    let source = Arc::new(PrioritiesSource(std::sync::Mutex::new(Ok(priorities(1)))));
+    let checkout = PathBuf::from("/demo/gh-x");
+    let (_, view) = open_board(
+        cx,
+        vec![checkout.clone()],
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        Options {
+            priorities: source.clone(),
+            ..options()
+        },
+    );
+    until(cx, |cx| cx.update(|cx| !view.read(cx).priorities_pending()));
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.apply(
+                Outcome {
+                    checkout: checkout.clone(),
+                    result: Ok(fixtures::document(CLEAN)),
+                },
+                cx,
+            )
+        })
+    });
+    let update = |result, cx: &mut TestAppContext| {
+        *source.0.lock().unwrap() = result;
+        cx.update(|cx| view.update(cx, |v, cx| v.refresh_priorities(cx)));
+        until(cx, |cx| cx.update(|cx| !view.read(cx).priorities_pending()));
+    };
+    update(Err(FetchError::Unavailable), cx);
+    assert!(cx.update(|cx| view.read(cx).glows.is_empty()));
+    update(Ok(priorities(5)), cx);
+    assert!(
+        cx.update(|cx| view.read(cx).glows.is_empty()),
+        "recovery with a new priority is quiet"
+    );
+    update(Ok(priorities(3)), cx);
+    assert!(cx.update(|cx| view.read(cx).glows.contains_key(&checkout)));
+}

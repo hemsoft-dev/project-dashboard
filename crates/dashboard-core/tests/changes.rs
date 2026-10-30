@@ -33,7 +33,6 @@ fn row_fields_trigger_independently_of_polling_timestamps() {
         |d| d.pull_requests.open[0].checks.push_str(" changed"),
         |d| d.pull_requests.open[0].title = "Updated title".into(),
         |d| d.verdict.get_or_insert_with(Default::default).reason = "changed".into(),
-        |d| d.hosted.as_mut().unwrap().work_error = Some("unavailable".into()),
     ];
     for edit in edits {
         let mut next = doc.clone();
@@ -211,6 +210,107 @@ fn absolute_activity_times_and_section_verdicts_still_trigger_glows() {
         assert!(
             changed(Some(&baseline), &next),
             "activity/verdict field {index} must glow"
+        );
+    }
+}
+
+#[test]
+fn session_source_outages_and_recoveries_rebaseline_without_glowing() {
+    use dashboard_core::{
+        changes::session_changed,
+        t3::{NoThread, ThreadLink},
+    };
+    let first = Ok(ThreadLink {
+        title: "First".into(),
+        url: "http://fixture/first".into(),
+        running: true,
+    });
+    let next = Ok(ThreadLink {
+        title: "Next".into(),
+        url: "http://fixture/next".into(),
+        running: true,
+    });
+    let failures = [
+        Err(NoThread::NotInstalled),
+        Err(NoThread::NotRunning),
+        Err(NoThread::Unreadable("busy".into())),
+    ];
+    for outage in &failures {
+        assert!(!session_changed(Some(&first), outage));
+        for other in &failures {
+            assert!(!session_changed(Some(outage), other));
+        }
+        assert!(!session_changed(Some(outage), &first));
+        assert!(
+            !session_changed(Some(outage), &next),
+            "changed data on recovery rebaselines"
+        );
+    }
+    assert!(!session_changed(None, &first));
+    assert!(!session_changed(Some(&first), &first));
+    assert!(session_changed(Some(&first), &next));
+    assert!(session_changed(Some(&Err(NoThread::NoOpenThread)), &first));
+    assert!(session_changed(Some(&first), &Err(NoThread::NoOpenThread)));
+}
+
+#[test]
+fn project_sources_rebaseline_on_outage_and_recovery() {
+    let baseline: StatusDocument = serde_json::from_value(serde_json::json!({
+        "hosted": {"serviceUrl":"http://fixture", "generatedAt":"before", "lastError":null,
+        "board":null,"work":[],"workError":null},
+        "sections":[{"name":"issues","status":"available"}]
+    }))
+    .unwrap();
+    let failures: Vec<fn(&mut StatusDocument)> = vec![
+        |d| {
+            d.hosted.as_mut().unwrap().last_error = Some(dashboard_core::pmd::LastError {
+                message: "offline".into(),
+                at: "before".into(),
+            })
+        },
+        |d| d.hosted.as_mut().unwrap().work_error = Some("offline".into()),
+        |d| d.hosted.as_mut().unwrap().work_transport_error = Some(dashboard_core::source::TransportError::Connect),
+        |d| {
+            d.sections[0].status = "unavailable".into();
+            d.sections[0].reason = "offline".into();
+        },
+    ];
+    for fail in failures {
+        let mut outage = baseline.clone();
+        fail(&mut outage);
+        assert!(!changed(Some(&baseline), &outage), "source outage is quiet");
+        assert!(!changed(Some(&outage), &outage));
+        let mut another_failure = outage.clone();
+        let hosted = another_failure.hosted.as_mut().unwrap();
+        if let Some(error) = &mut hosted.last_error {
+            error.message = "still unavailable".into();
+            error.at = "later".into();
+        }
+        if hosted.work_error.is_some() {
+            hosted.work_error = Some("still unavailable".into());
+        }
+        if hosted.work_transport_error.is_some() {
+            hosted.work_transport_error = Some(dashboard_core::source::TransportError::Timeout);
+        }
+        if another_failure.sections[0].is_unavailable() {
+            another_failure.sections[0].reason = "still unavailable".into();
+        }
+        assert!(
+            !changed(Some(&outage), &another_failure),
+            "persistent outage diagnostics are quiet"
+        );
+        let mut recovery = baseline.clone();
+        recovery.hosted.as_mut().unwrap().merge_counts.merged_24h = Some(7);
+        assert!(
+            !changed(Some(&outage), &recovery),
+            "even changed data on recovery rebaselines"
+        );
+        assert!(!changed(Some(&recovery), &recovery));
+        let mut real_change = recovery.clone();
+        real_change.hosted.as_mut().unwrap().merge_counts.merged_24h = Some(8);
+        assert!(
+            changed(Some(&recovery), &real_change),
+            "subsequent healthy changes still glow"
         );
     }
 }

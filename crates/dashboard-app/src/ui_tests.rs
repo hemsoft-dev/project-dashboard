@@ -3304,3 +3304,60 @@ fn priority_source_recovery_rebaselines_before_highlighting_new_changes(cx: &mut
     update(Ok(priorities(3)), cx);
     assert!(cx.update(|cx| view.read(cx).glows.contains_key(&checkout)));
 }
+
+#[gpui_kit::test]
+async fn expanded_details_scroll_to_their_trailing_columns_while_session_links_stay_pinned(cx: &mut TestAppContext) {
+    use gpui_kit::{ScrollDelta, point};
+    for (width, level) in [(480., 1.3), (1100., 2.0)] {
+        let checkout = PathBuf::from("/demo/codexbar");
+        let (handle, view) = open_board_sized(
+            cx,
+            vec![checkout.clone()],
+            StatusCache::default(),
+            Arc::new(demo::DemoSource),
+            options(),
+            width,
+        );
+        cx.update(|cx| {
+            zoom::set_level(level, cx);
+            view.update(cx, |v, cx| v.refresh_all(cx));
+        });
+        settle(cx, handle, &view).await;
+        let number = cx.update(|cx| {
+            view.read(cx).board().cards()[0]
+                .document
+                .as_ref()
+                .unwrap()
+                .pull_requests
+                .open[0]
+                .number
+        });
+        cx.update(|cx| view.update(cx, |v, cx| v.toggle_expanded(&checkout, cx)));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let link_before = window.find(("t3", 0usize)).bounds();
+            let id = format!("pr-0-{number}");
+            let before = window.find(id.clone()).bounds();
+            assert!(
+                before.right() > px(width),
+                "trailing columns start beyond the detail viewport"
+            );
+            window.scroll(
+                ("details-scroll", 0usize),
+                ScrollDelta::Pixels(point(px(-3000.), px(0.))),
+                cx,
+            );
+            window.render_frame(cx);
+            let after = window.find(id).bounds();
+            assert!(after.left() < before.left(), "expanded details actually scroll");
+            assert!(after.right() <= px(width), "trailing detail columns can be reached");
+            assert_eq!(
+                window.find(("t3", 0usize)).bounds(),
+                link_before,
+                "session lane stays pinned"
+            );
+            assert!(link_before.left() >= px(0.) && link_before.right() <= px(width));
+        })
+        .unwrap();
+    }
+}

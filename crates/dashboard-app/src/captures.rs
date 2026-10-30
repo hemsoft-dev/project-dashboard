@@ -1109,3 +1109,31 @@ fn captures_live_rows() {
         cx.run_until_parked();
     }
 }
+
+#[test]
+#[ignore = "writes narrow expanded detail scrolling evidence offscreen"]
+fn captures_expanded_details_scroll() {
+    use gpui_kit::{ScrollDelta, point};
+    let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").unwrap());
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cx = headless();
+    cx.update(|cx| {
+        crate::zoom::set_level(1.3, cx);
+        crate::zoom::hide_toast(cx);
+    });
+    let checkout = PathBuf::from("/demo/codexbar");
+    let (window, view) = open_sized(&mut cx, vec![checkout.clone()], 480., 800.);
+    fill(&mut cx, &view, &demo::DemoSource);
+    settle(&mut cx);
+    cx.update(|cx| view.update(cx, |v, cx| v.toggle_expanded(&checkout, cx)));
+    save(&mut cx, window, &out, "details-narrow-130-before");
+    cx.update_window(window, |_, window, cx| {
+        window.scroll(
+            ("details-scroll", 0usize),
+            ScrollDelta::Pixels(point(px(-3000.), px(0.))),
+            cx,
+        );
+    })
+    .unwrap();
+    save(&mut cx, window, &out, "details-narrow-130-scrolled");
+}

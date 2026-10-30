@@ -1475,7 +1475,17 @@ impl BoardView {
             .border_b_1()
             .border_color(theme.border)
             .child(row)
-            .when(expanded, |this| this.child(self.render_details(ix, card, cx)))
+            .when(expanded, |this| {
+                this.child(
+                    div()
+                        .id(("details-scroll", ix))
+                        .test_support()
+                        .min_w_0()
+                        .overflow_x_scroll()
+                        .restrict_scroll_to_axis()
+                        .child(self.render_details(ix, card, cx)),
+                )
+            })
     }
 
     /// Opens the checkout's T3 Code thread; disabled, with the reason as its tooltip, when there is none to open.
@@ -1515,6 +1525,9 @@ impl BoardView {
         let mut body = v_flex()
             .id(("details", ix))
             .test_support()
+            // Fixed detail cells need room for checks, reviews, ages and a readable title. Scroll their own
+            // viewport independently of the pinned session lane and the resizable Project columns.
+            .min_w(rems(48.))
             .pl(rems(3.25))
             .pr_4()
             .pt_1()
@@ -1708,6 +1721,7 @@ impl Render for BoardView {
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()
+                            .restrict_scroll_to_axis()
                             .children(rows),
                     ),
             );

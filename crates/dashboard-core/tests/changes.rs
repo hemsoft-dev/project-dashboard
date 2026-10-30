@@ -133,3 +133,84 @@ fn backlog_only_changes_do_not_glow_project_rows() {
         );
     }
 }
+
+#[test]
+fn relative_ages_and_section_cache_freshness_do_not_glow_project_rows() {
+    let baseline = fixtures::document(fixtures::ATTENTION);
+    assert!(!baseline.issues.is_empty());
+    assert!(!baseline.pull_requests.open.is_empty());
+    assert!(!baseline.pull_requests.merged.is_empty());
+    assert!(!baseline.workflow_runs.is_empty());
+    assert!(!baseline.sections.is_empty());
+    let edits: Vec<fn(&mut StatusDocument)> = vec![
+        |d| d.issues.iter_mut().for_each(|i| i.updated.push_str(" later")),
+        |d| {
+            d.pull_requests
+                .open
+                .iter_mut()
+                .for_each(|p| p.updated.push_str(" later"))
+        },
+        |d| {
+            d.pull_requests
+                .merged
+                .iter_mut()
+                .for_each(|p| p.updated.push_str(" later"))
+        },
+        |d| d.workflow_runs.iter_mut().for_each(|r| r.age.push_str(" later")),
+        |d| d.workflow_runs.iter_mut().for_each(|r| r.elapsed.push_str(" later")),
+        |d| {
+            d.sections
+                .iter_mut()
+                .for_each(|s| s.fetched_at = Some("2026-10-30T01:00:00Z".into()))
+        },
+        |d| d.sections.iter_mut().for_each(|s| s.cache_age_seconds += 300.),
+        |d| d.sections.iter_mut().for_each(|s| s.cached = !s.cached),
+    ];
+    for (index, edit) in edits.iter().enumerate() {
+        let mut next = baseline.clone();
+        edit(&mut next);
+        assert!(
+            !changed(Some(&baseline), &next),
+            "clock-only field {index} must not glow"
+        );
+        assert!(
+            !changed(Some(&next), &baseline),
+            "cache reset/refresh {index} must not glow"
+        );
+    }
+    let mut next = baseline.clone();
+    for edit in edits {
+        edit(&mut next);
+    }
+    assert!(!changed(Some(&baseline), &next), "snapshot turnover must not glow");
+    next.pull_requests.open[0].checks.push_str(" changed");
+    assert!(
+        changed(Some(&baseline), &next),
+        "checks still glow alongside clock-only changes"
+    );
+}
+
+#[test]
+fn absolute_activity_times_and_section_verdicts_still_trigger_glows() {
+    let baseline = fixtures::document(fixtures::ATTENTION);
+    let edits: Vec<fn(&mut StatusDocument)> = vec![
+        |d| d.issues[0].updated_at = Some("2026-10-30T01:00:00Z".into()),
+        |d| d.pull_requests.open[0].updated_at = Some("2026-10-30T01:00:00Z".into()),
+        |d| d.pull_requests.merged[0].updated_at = Some("2026-10-30T01:00:00Z".into()),
+        |d| d.pull_requests.merged[0].merged_at = Some("2026-10-30T01:00:00Z".into()),
+        |d| d.workflow_runs[0].created_at = Some("2026-10-30T01:00:00Z".into()),
+        |d| d.workflow_runs[0].started_at = Some("2026-10-30T01:00:00Z".into()),
+        |d| d.workflow_runs[0].updated_at = Some("2026-10-30T01:00:00Z".into()),
+        |d| d.workflow_runs[0].status.push_str(" changed"),
+        |d| d.sections[0].status.push_str(" changed"),
+        |d| d.sections[0].reason.push_str(" changed"),
+    ];
+    for (index, edit) in edits.iter().enumerate() {
+        let mut next = baseline.clone();
+        edit(&mut next);
+        assert!(
+            changed(Some(&baseline), &next),
+            "activity/verdict field {index} must glow"
+        );
+    }
+}

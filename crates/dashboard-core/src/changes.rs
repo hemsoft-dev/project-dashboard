@@ -4,6 +4,23 @@ use crate::status::StatusDocument;
 pub fn row_data(document: &StatusDocument) -> StatusDocument {
     let mut data = document.clone();
     data.generated_at.clear();
+    // Relative display strings and cache bookkeeping advance even when the underlying events do not.
+    // Keep absolute event timestamps, section verdicts, and item content in the comparison.
+    for issue in &mut data.issues {
+        issue.updated.clear();
+    }
+    for pr in data.pull_requests.open.iter_mut().chain(&mut data.pull_requests.merged) {
+        pr.updated.clear();
+    }
+    for run in &mut data.workflow_runs {
+        run.age.clear();
+        run.elapsed.clear();
+    }
+    for section in &mut data.sections {
+        section.fetched_at = None;
+        section.cache_age_seconds = 0.;
+        section.cached = false;
+    }
     if let Some(hosted) = &mut data.hosted {
         hosted.generated_at.clear();
         hosted.checked_at = None;

@@ -92,6 +92,7 @@ fn response(path: &str) -> Reply {
             Reply::json(json!({"items":[item("stable-2")],"nextCursor":null}))
         }
         "/v1/assignments?project=gh-x&limit=500" => Reply::json(json!({"assignments":[],"truncated":false})),
+        "/v1/portfolio" => Reply::json(json!({})),
         "/v1/dispatch/plan" => Reply::json(json!({"recommendations":[],"skipped":[]})),
         "/healthz" => Reply::json(json!({"sweepAgeSeconds":60,"webhookAgeSeconds":null,"githubLow":false})),
         _ => panic!("unexpected API request {path}"),
@@ -141,7 +142,7 @@ fn hosted_status_preserves_rows_and_board_truncation_and_follows_encoded_work_cu
         // Nothing blocked, waiting or failing: an old, unchanged status is still OK.
         assert_eq!(board.cards()[0].overall(), Overall::Clean);
     }
-    assert_eq!(server.requests.lock().unwrap().len(), 16);
+    assert_eq!(server.requests.lock().unwrap().len(), 18);
 }
 #[test]
 fn checked_time_is_the_later_of_pmds_last_sweep_and_the_status_and_optional() {
@@ -788,4 +789,48 @@ fn backlog_read_failure_never_discards_fresh_project_board_or_work() {
             hosted.work
         );
     }
+}
+
+#[test]
+fn readiness_reads_only_this_projects_reason_and_retains_values_when_optional_endpoints_fail() {
+    let checkout = Checkout::new();
+    let unavailable = Arc::new(AtomicBool::new(false));
+    let flag = unavailable.clone();
+    let server = Server::new(move |path| {
+        if flag.load(Ordering::SeqCst) && matches!(path, "/v1/dispatch/plan" | "/v1/portfolio") {
+            return Reply {
+                code: 404,
+                body: "missing".into(),
+            };
+        }
+        if path == "/v1/dispatch/plan" {
+            return Reply::json(
+                json!({"recommendations":[],"skipped":[],"projects":[{"project":"other","reason":"held"},{"project":"gh-x","reason":"capacity_gated","count":1,"holdSources":[format!("safe {TOKEN}")],"subscriptions":["codex-pro"]}]}),
+            );
+        }
+        if path == "/v1/portfolio" {
+            return Reply::json(
+                json!({"freshness":{"github":{"state":"stale","lastSuccessAt":"2026-10-28T12:00:00Z"},"capacity":{"state":"fresh"},"ghX":{},"t3":{}}}),
+            );
+        }
+        response(path)
+    });
+    let mut board = Board::new(std::slice::from_ref(&checkout.0), &StatusCache::default());
+    let mut cache = StatusCache::default();
+    let doc = checkout.source(&server).fetch(&checkout.0, false).unwrap();
+    let readiness = &doc.hosted.as_ref().unwrap().readiness;
+    assert_eq!(readiness.dispatch.as_ref().unwrap().project, "gh-x");
+    assert_eq!(readiness.dispatch.as_ref().unwrap().label(), "Capacity gated");
+    assert_eq!(readiness.sources["GitHub"].state, "stale");
+    assert!(!serde_json::to_string(readiness).unwrap().contains(TOKEN));
+    let original = readiness.clone();
+    apply(&mut board, &mut cache, &checkout, Ok(doc));
+    unavailable.store(true, Ordering::SeqCst);
+    let doc = checkout.source(&server).fetch(&checkout.0, false).unwrap();
+    apply(&mut board, &mut cache, &checkout, Ok(doc));
+    let h = board.cards()[0].document.as_ref().unwrap().hosted.as_ref().unwrap();
+    assert!(h.readiness.dispatch_unavailable && h.readiness.sources_unavailable);
+    assert_eq!(h.readiness.dispatch, original.dispatch);
+    assert_eq!(h.readiness.sources, original.sources);
+    assert!(board.cards()[0].error.is_none());
 }

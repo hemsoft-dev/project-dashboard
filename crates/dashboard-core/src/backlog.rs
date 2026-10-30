@@ -17,6 +17,8 @@ pub struct Detail {
     pub links: Vec<Link>,
     pub status_reason: Option<String>,
     pub assignment: Option<Assignment>,
+    pub waiting_since: Option<String>,
+    pub waiting_reason: Option<String>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -80,6 +82,7 @@ pub struct Plan {
     pub skipped_truncated: bool,
     pub items_truncated: bool,
     pub blocked: Option<String>,
+    pub projects: Option<Vec<crate::readiness::DispatchReason>>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -92,7 +95,7 @@ pub struct Decision {
 pub struct Ref {
     pub id: String,
 }
-pub(crate) fn read(api: &ReadApi, slug: &str) -> Result<Context, FetchError> {
+pub(crate) fn read(api: &ReadApi, slug: &str, plan: Plan) -> Result<Context, FetchError> {
     #[derive(Deserialize)]
     struct Page {
         assignments: Vec<Assignment>,
@@ -102,7 +105,6 @@ pub(crate) fn read(api: &ReadApi, slug: &str) -> Result<Context, FetchError> {
     if page.truncated {
         return Err(FetchError::Failed("pmd assignments truncated".into()));
     }
-    let plan = api.get("v1/dispatch/plan", &[])?;
     Ok(Context {
         assignments: page.assignments,
         plan,
@@ -428,6 +430,7 @@ mod tests {
             board: None,
             work: items,
             backlog: Context::default(),
+            readiness: Default::default(),
             work_error: None,
             work_transport_error: None,
         });

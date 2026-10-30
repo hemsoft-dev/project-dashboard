@@ -17,6 +17,8 @@ const TOTAL_TIMEOUT: Duration = Duration::from_secs(15);
 #[serde(rename_all = "camelCase")]
 pub struct Hosted {
     #[serde(default)]
+    pub readiness: crate::readiness::Readiness,
+    #[serde(default)]
     pub open_counts: OpenCounts,
     #[serde(default)]
     pub merge_counts: MergeCounts,
@@ -494,16 +496,37 @@ impl Pmd {
             Ok((board, work)) => (Some(board), work, None, None),
             Err(error) => (None, Vec::new(), Some(error.to_string()), error.transport()),
         };
+        let plan: Result<crate::backlog::Plan, _> = api.get("v1/dispatch/plan", &[]);
+        let dispatch = plan
+            .as_ref()
+            .ok()
+            .and_then(|p| p.projects.as_ref())
+            .and_then(|projects| projects.iter().find(|p| p.project == project.slug))
+            .cloned();
+        let dispatch_unavailable = plan.as_ref().ok().is_none_or(|p| p.projects.is_none());
         let backlog = if work_error.is_none() {
-            crate::backlog::read(&api, &project.slug).unwrap_or_else(|error| crate::backlog::Context {
-                error: Some(error.to_string()),
-                transport_error: error.transport(),
-                ..Default::default()
-            })
+            plan.and_then(|plan| crate::backlog::read(&api, &project.slug, plan))
+                .unwrap_or_else(|error| crate::backlog::Context {
+                    error: Some(error.to_string()),
+                    transport_error: error.transport(),
+                    ..Default::default()
+                })
         } else {
             Default::default()
         };
+        let portfolio: Option<crate::readiness::Freshness> = api
+            .get::<crate::readiness::Portfolio>("v1/portfolio", &[])
+            .ok()
+            .and_then(|p| p.freshness);
+        let sources_unavailable = portfolio.is_none();
+        let readiness = crate::readiness::Readiness {
+            dispatch,
+            dispatch_unavailable,
+            sources: portfolio.map(|f| f.for_repository(&identity)).unwrap_or_default(),
+            sources_unavailable,
+        };
         doc.hosted = Some(Hosted {
+            readiness,
             open_counts: project.counts.clone(),
             merge_counts: project.merge_counts.clone(),
             backlog,

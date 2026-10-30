@@ -1116,7 +1116,7 @@ async fn at_200_percent_the_table_keeps_readable_columns_and_scrolls_to_controls
 }
 
 #[gpui_kit::test]
-async fn at_200_percent_in_the_narrowest_window_the_table_scrolls_sideways_to_every_control(cx: &mut TestAppContext) {
+async fn at_200_percent_data_scrolls_while_session_controls_stay_pinned(cx: &mut TestAppContext) {
     use gpui_kit::{ScrollDelta, point};
     let (handle, view) = open_board_sized(
         cx,
@@ -1132,12 +1132,13 @@ async fn at_200_percent_in_the_narrowest_window_the_table_scrolls_sideways_to_ev
     cx.run_until_parked();
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        // Wider than the window: the refresh buttons start out of view, and names keep their minimum.
-        let refresh = window.find(("refresh", 0usize)).bounds();
+        // Data columns keep their minimums and scroll; session controls remain in the fixed lane.
+        let before_refresh = window.find(("refresh", 0usize)).bounds();
+        let before_link = window.find(("t3", 0usize)).bounds();
+        let before_updated = window.find(("updated", 0usize)).bounds();
         assert!(
-            refresh.right() <= px(480.),
-            "starts off to the right at {:?}",
-            refresh.origin.x
+            before_refresh.right() <= px(480.),
+            "refresh stays visible before scrolling"
         );
         assert!(window.find(("name", 0usize)).bounds().size.width >= px(6. * 32.));
         window.scroll("table", ScrollDelta::Pixels(point(px(-2000.), px(0.))), cx);
@@ -1145,8 +1146,20 @@ async fn at_200_percent_in_the_narrowest_window_the_table_scrolls_sideways_to_ev
         let refresh = window.find(("refresh", 0usize)).bounds();
         assert!(
             refresh.origin.x >= px(0.) && refresh.origin.x + refresh.size.width <= px(480.),
-            "scrolled into view: {:?}",
-            refresh
+            "refresh stays visible after scrolling: {refresh:?}"
+        );
+        assert_eq!(refresh, before_refresh, "refresh position stays fixed");
+        assert_eq!(
+            window.find(("t3", 0usize)).bounds(),
+            before_link,
+            "session link stays fixed"
+        );
+        let updated = window.find(("updated", 0usize)).bounds();
+        assert!(updated.left() < before_updated.left(), "data columns actually scroll");
+        assert_eq!(
+            window.find("sort-updated").bounds().left(),
+            updated.left(),
+            "header follows the data columns"
         );
     })
     .unwrap();
@@ -1382,18 +1395,29 @@ async fn columns_wider_than_the_window_scroll_sideways_with_the_header(cx: &mut 
     settle(cx, handle, &view).await;
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        let refresh = window.find(("refresh", 0usize)).bounds();
+        let before_refresh = window.find(("refresh", 0usize)).bounds();
+        let before_link = window.find(("t3", 0usize)).bounds();
+        let before_updated = window.find(("updated", 0usize)).bounds();
         assert!(
-            refresh.right() <= px(1100.),
-            "starts off to the right at {:?}",
-            refresh.origin.x
+            before_refresh.right() <= px(1100.),
+            "refresh stays visible before scrolling"
         );
         window.scroll("table", ScrollDelta::Pixels(point(px(-2000.), px(0.))), cx);
         window.render_frame(cx);
         let refresh = window.find(("refresh", 0usize)).bounds();
         assert!(
             refresh.origin.x + refresh.size.width <= px(1100.),
-            "scrolled into view: {refresh:?}"
+            "refresh stays visible after scrolling: {refresh:?}"
+        );
+        assert_eq!(refresh, before_refresh, "refresh position stays fixed");
+        assert_eq!(
+            window.find(("t3", 0usize)).bounds(),
+            before_link,
+            "session link stays fixed"
+        );
+        assert!(
+            window.find(("updated", 0usize)).bounds().left() < before_updated.left(),
+            "data columns actually scroll"
         );
         // The header scrolled with the rows: its Updated cell still lines up with theirs.
         assert_eq!(

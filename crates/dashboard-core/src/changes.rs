@@ -1,4 +1,4 @@
-//! Row change detection ignores transport freshness and the passage of time.
+//! Project row change detection ignores transport freshness, Backlog-only enrichment and the passage of time.
 use crate::status::StatusDocument;
 
 pub fn row_data(document: &StatusDocument) -> StatusDocument {
@@ -7,6 +7,9 @@ pub fn row_data(document: &StatusDocument) -> StatusDocument {
     if let Some(hosted) = &mut data.hosted {
         hosted.generated_at.clear();
         hosted.checked_at = None;
+        // Project rows and details do not render Backlog enrichment. In particular, the dispatch plan is global,
+        // so comparing it would highlight every project when unrelated work is dispatched or enrichment fails.
+        hosted.backlog = Default::default();
         if let Some(board) = &mut hosted.board {
             board.generated_at.clear();
         }

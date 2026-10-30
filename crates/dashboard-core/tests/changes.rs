@@ -61,3 +61,75 @@ fn work_status_owner_and_session_changes_trigger_the_row() {
         assert!(changed(Some(&doc), &serde_json::from_value(next).unwrap()), "{field}");
     }
 }
+
+#[test]
+fn backlog_only_changes_do_not_glow_project_rows() {
+    use dashboard_core::backlog::{Assignment, Context, Decision, Plan, Ref};
+    use dashboard_core::source::TransportError;
+
+    let baseline: StatusDocument = serde_json::from_value(serde_json::json!({
+        "hosted": {"serviceUrl":"http://fixture", "generatedAt":"before", "lastError":null,
+        "board":null,"work":[],"workError":null}
+    }))
+    .unwrap();
+    let decision = Decision {
+        work_item: Ref {
+            id: "another-project:issue:1".into(),
+        },
+        reason: "Dispatched elsewhere".into(),
+    };
+    let contexts = [
+        Context {
+            assignments: vec![Assignment {
+                thread_id: "another-thread".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        Context {
+            plan: Plan {
+                recommendations: vec![decision.clone()],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Context {
+            plan: Plan {
+                skipped: vec![decision],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Context {
+            plan: Plan {
+                blocked: Some("Global dispatch paused".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Context {
+            plan: Plan {
+                items_truncated: true,
+                skipped_truncated: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Context {
+            error: Some("Backlog enrichment unavailable".into()),
+            transport_error: Some(TransportError::Connect),
+            ..Default::default()
+        },
+    ];
+    for context in contexts {
+        let mut next = baseline.clone();
+        next.hosted.as_mut().unwrap().backlog = context;
+        assert!(!changed(Some(&baseline), &next), "Backlog-only update must not glow");
+        assert!(!changed(Some(&next), &baseline), "Backlog recovery must not glow");
+        next.hosted.as_mut().unwrap().merge_counts.merged_24h = Some(1);
+        assert!(
+            changed(Some(&baseline), &next),
+            "Project data must still glow alongside Backlog changes"
+        );
+    }
+}

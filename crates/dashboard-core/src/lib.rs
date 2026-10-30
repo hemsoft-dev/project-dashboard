@@ -381,6 +381,18 @@ impl Board {
                         hosted.backlog.plan = previous.backlog.plan.clone();
                     }
                 }
+                if let (Some(next), Some(previous)) = (
+                    document.hosted.as_mut(),
+                    card.document.as_ref().and_then(|d| d.hosted.as_ref()),
+                ) && next.service_url == previous.service_url
+                {
+                    if next.readiness.dispatch_unavailable {
+                        next.readiness.dispatch = previous.readiness.dispatch.clone();
+                    }
+                    if next.readiness.sources_unavailable {
+                        next.readiness.sources = previous.readiness.sources.clone();
+                    }
+                }
                 cache.insert(outcome.checkout, document.clone());
                 card.document = Some(document);
                 card.from_cache = false;
@@ -524,3 +536,4 @@ pub mod fixtures {
 
 /// Field-based refresh comparison, excluding polling/provenance timestamps.
 pub mod changes;
+pub mod readiness;

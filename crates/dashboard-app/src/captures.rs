@@ -1137,3 +1137,39 @@ fn captures_expanded_details_scroll() {
     .unwrap();
     save(&mut cx, window, &out, "details-narrow-130-scrolled");
 }
+
+#[test]
+#[ignore = "writes issue 57 readiness states and hover evidence offscreen"]
+fn captures_project_readiness() {
+    let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").unwrap());
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cx = headless();
+    cx.update(|cx| {
+        crate::zoom::set_level(1.3, cx);
+        crate::zoom::hide_toast(cx);
+    });
+    let (window, view) = open_sized(&mut cx, crate::ui_tests::readiness_checkouts(), 1680., 850.);
+    fill(&mut cx, &view, &crate::ui_tests::ReadinessSource);
+    settle(&mut cx);
+    save(&mut cx, window, &out, "readiness-reasons-130");
+    cx.update_window(window, |_, window, cx| window.hover(("waiting-age", 2usize), cx))
+        .unwrap();
+    for _ in 0..6 {
+        cx.advance_clock(std::time::Duration::from_millis(150));
+        cx.run_until_parked();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    save(&mut cx, window, &out, "readiness-waiting-hover-130");
+    cx.update_window(window, |_, window, cx| window.hover("source-freshness", cx))
+        .unwrap();
+    for _ in 0..6 {
+        cx.advance_clock(std::time::Duration::from_millis(150));
+        cx.run_until_parked();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    save(&mut cx, window, &out, "readiness-stale-hover-130");
+    let (narrow, view) = open_sized(&mut cx, crate::ui_tests::readiness_checkouts(), 480., 850.);
+    fill(&mut cx, &view, &crate::ui_tests::ReadinessSource);
+    settle(&mut cx);
+    save(&mut cx, narrow, &out, "readiness-narrow-130");
+}

@@ -2389,6 +2389,7 @@ fn pmd_response(path: &str, token: &str) -> pmd_http::Reply {
     let item = r#"{"id":"stable-work-id","project":"gh-x","kind":"issue","number":31,"title":"LABEL work","url":"https://github.com/hemsoft-dev/gh-x/issues/31","status":"ready"}"#.replace("LABEL", label);
     let body = match path {
         "/v1/assignments?project=gh-x&limit=500" => r#"{"assignments":[],"truncated":false}"#.into(),
+        "/v1/portfolio" => "{}".into(),
         "/v1/dispatch/plan" => r#"{"recommendations":[],"skipped":[]}"#.into(),
         "/v1/projects" => r#"{"projects":[{"slug":"gh-x","repo":"hemsoft-dev/gh-x","priority":PRIORITY,"tracked":true}]}"#.replace("PRIORITY", &priority.to_string()),
         "/v1/projects/gh-x/status" => format!(r#"{{"project":"gh-x","generatedAt":"{stamp}","lastError":null,"status":{}}}"#, fixtures::CLEAN),
@@ -3360,4 +3361,150 @@ async fn expanded_details_scroll_to_their_trailing_columns_while_session_links_s
         })
         .unwrap();
     }
+}
+
+pub(crate) struct ReadinessSource;
+impl StatusSource for ReadinessSource {
+    fn fetch(&self, checkout: &Path, _: bool) -> Result<StatusDocument, FetchError> {
+        use dashboard_core::readiness::{DispatchReason, Readiness, Source};
+        let name = checkout.file_name().unwrap().to_str().unwrap();
+        let mut doc = demo::HostedSource.fetch(Path::new("/demo/codexbar"), false)?;
+        doc.repository.name_with_owner = format!("hemsoft-dev/{name}");
+        let now = demo::fixture_now();
+        let source = Source {
+            state: "fresh".into(),
+            last_success_at: Some(now.to_rfc3339()),
+            last_attempt_at: Some(now.to_rfc3339()),
+            stale_after_seconds: 3600,
+            ..Default::default()
+        };
+        let h = doc.hosted.as_mut().unwrap();
+        h.readiness = Readiness {
+            dispatch: Some(DispatchReason {
+                project: name.into(),
+                reason: name.into(),
+                count: 2,
+                hold_sources: vec!["manual overlay".into()],
+                subscriptions: vec!["codex-pro".into()],
+                ..Default::default()
+            }),
+            sources: std::collections::BTreeMap::from([("GitHub".into(), source)]),
+            ..Default::default()
+        };
+        let fresh = h.readiness.sources["GitHub"].clone();
+        for key in ["Capacity", "gh-x/fixture", "T3/mini/default"] {
+            h.readiness.sources.insert(key.into(), fresh.clone());
+        }
+        if name == "empty_backlog" {
+            let github = h.readiness.sources.get_mut("GitHub").unwrap();
+            github.state = "stale".into();
+            github.last_success_at = Some((now - chrono::Duration::hours(2)).to_rfc3339());
+            github.reason = "observation_expired".into();
+        }
+        if let Some(reason) = &mut h.readiness.dispatch {
+            if name == "empty_backlog" {
+                reason.count = 0;
+            }
+            if name != "held" {
+                reason.hold_sources.clear();
+            }
+            if name != "capacity_gated" {
+                reason.subscriptions.clear();
+            }
+            if name == "all_owned" {
+                reason.owners.push(dashboard_core::readiness::Owner {
+                    owner: "codex".into(),
+                    machine: "mini".into(),
+                    state: "running".into(),
+                    ..Default::default()
+                });
+            }
+        }
+        if name == "unavailable" {
+            h.readiness = Readiness {
+                dispatch_unavailable: true,
+                sources_unavailable: true,
+                ..Default::default()
+            };
+        }
+        h.work=vec![serde_json::from_value(serde_json::json!({"id":"oldest","project":name,"kind":"issue","number":57,"title":"Approve the signing setup","url":format!("https://github.com/hemsoft-dev/{name}/issues/57"),"status":"waiting_on_franz","waitingSince":(now-chrono::Duration::days(6)).to_rfc3339(),"waitingReason":"manual:signing approval","ghState":"open"})).unwrap()];
+        if !matches!(name, "held" | "waiting_on_franz" | "unavailable") {
+            h.work.clear();
+        }
+        Ok(doc)
+    }
+}
+pub(crate) fn readiness_checkouts() -> Vec<PathBuf> {
+    [
+        "empty_backlog",
+        "all_owned",
+        "held",
+        "waiting_on_franz",
+        "capacity_gated",
+        "dispatchable",
+        "unavailable",
+    ]
+    .map(|n| PathBuf::from("/demo").join(n))
+    .to_vec()
+}
+#[gpui_kit::test]
+async fn project_rows_show_dispatch_reasons_waiting_links_and_source_marker(cx: &mut TestAppContext) {
+    let (handle, view) = open_board(
+        cx,
+        readiness_checkouts(),
+        StatusCache::default(),
+        Arc::new(ReadinessSource),
+        options(),
+    );
+    cx.update(|cx| view.update(cx, |v, cx| v.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        for (ix, label) in [
+            "Empty backlog",
+            "All owned",
+            "Held",
+            "Waiting on Franz",
+            "Capacity gated",
+            "Dispatchable",
+            "—",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                window.find(("why-idle", ix)).label(),
+                Some(format!("Why idle: {label}").as_str())
+            );
+            assert_eq!(
+                window.find(("waiting-age", ix)).label(),
+                Some(if matches!(ix, 2 | 3 | 6) {
+                    "Waiting 6d"
+                } else {
+                    "Waiting —"
+                })
+            );
+        }
+        assert_eq!(window.find("source-freshness").label(), Some("Sources stale"));
+        window.click(("waiting-age", 2usize), cx);
+    })
+    .unwrap();
+    assert_eq!(
+        cx.opened_url().as_deref(),
+        Some("https://github.com/hemsoft-dev/held/issues/57")
+    );
+    cx.update_window(handle, |_, window, cx| window.hover("source-freshness", cx))
+        .unwrap();
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let observations = window.find("source-observations");
+        let text = observations.label().unwrap();
+        assert!(text.contains("GitHub: stale") && text.contains("Last success:"));
+        assert!(observations.bounds().size.height <= px(540.));
+    })
+    .unwrap();
+    assert!(!cx.update(|cx| view.read(cx).is_expanded(Path::new("/demo/held"))));
 }

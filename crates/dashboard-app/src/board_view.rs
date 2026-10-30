@@ -1269,6 +1269,13 @@ impl BoardView {
             .gap(GAP)
             .items_center()
             .text_sm()
+            .when(
+                card.document
+                    .as_ref()
+                    .and_then(|d| d.hosted.as_ref())
+                    .is_some_and(|h| h.readiness.stale(now) || h.work_error.is_some() || card.from_cache),
+                |this| this.text_color(theme.muted_foreground),
+            )
             .cursor_pointer()
             .hover(|style| style.bg(theme.list_hover))
             .when(expanded && !self.glows.contains_key(&card.checkout), |this| {
@@ -1321,6 +1328,9 @@ impl BoardView {
                                     })
                                     .child(card.name()),
                             )
+                            .when(card.document.as_ref().is_some_and(|d| d.hosted.is_some()), |this| {
+                                this.child(self.render_readiness(ix, card, cx))
+                            })
                             .when_some(freshness, |this, (text, times)| {
                                 let times: SharedString = times.into();
                                 this.child(
@@ -1485,6 +1495,138 @@ impl BoardView {
                         .restrict_scroll_to_axis()
                         .child(self.render_details(ix, card, cx)),
                 )
+            })
+    }
+
+    fn render_readiness(&self, ix: usize, card: &Card, cx: &App) -> impl IntoElement + use<> {
+        let hosted = card.document.as_ref().and_then(|d| d.hosted.as_ref());
+        let dispatch = hosted.and_then(|h| h.readiness.dispatch.as_ref());
+        let idle = dispatch.map_or("—", |d| d.label()).to_owned();
+        let mut detail = dispatch.map_or_else(|| "Dispatch explanation unavailable".to_owned(), |d| d.tooltip());
+        if hosted.is_some_and(|h| h.readiness.dispatch_unavailable) {
+            detail.push_str("\nShowing last known explanation; source unavailable");
+        }
+        let waiting = hosted.and_then(dashboard_core::readiness::oldest_waiting);
+        let label = waiting.map_or_else(
+            || "Waiting —".into(),
+            |(_, since)| {
+                format!(
+                    "Waiting {}",
+                    dashboard_core::activity::age_words(since, self.now()).trim_end_matches(" ago")
+                )
+            },
+        );
+        let mut waiting_detail = waiting.map_or_else(
+            || "No dated blocked/waiting item available".into(),
+            |(item, since)| dashboard_core::readiness::waiting_tooltip(item, since),
+        );
+        if hosted.is_some_and(|h| h.work_error.is_some()) {
+            waiting_detail.push_str("\nWork source unavailable; showing last known item");
+        }
+        let url = waiting.map(|(item, _)| item.url.clone()).filter(|url| !url.is_empty());
+        h_flex()
+            .min_w_0()
+            .gap_2()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child(
+                div()
+                    .id(("why-idle", ix))
+                    .test_support()
+                    .aria_label(format!("Why idle: {idle}"))
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(idle)
+                    .tooltip(move |window, cx| {
+                        gpui_kit::component::tooltip::Tooltip::new(detail.clone()).build(window, cx)
+                    }),
+            )
+            .child(
+                div()
+                    .id(("waiting-age", ix))
+                    .test_support()
+                    .aria_label(label.clone())
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(label)
+                    .tooltip(move |window, cx| {
+                        gpui_kit::component::tooltip::Tooltip::new(waiting_detail.clone()).build(window, cx)
+                    })
+                    .when_some(url, |this, url| {
+                        this.cursor_pointer()
+                            .hover(|style| style.underline())
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                cx.open_url(&url);
+                            })
+                    }),
+            )
+    }
+
+    fn render_source_freshness(&self, cx: &App) -> impl IntoElement + use<> {
+        let mut sources = std::collections::BTreeMap::new();
+        let mut unavailable = false;
+        for hosted in self
+            .board
+            .cards()
+            .iter()
+            .filter_map(|c| c.document.as_ref()?.hosted.as_ref())
+        {
+            unavailable |= hosted.readiness.sources_unavailable;
+            for (name, source) in &hosted.readiness.sources {
+                // Different project reads can overlap a collection. Prefer an unhealthy observation for the marker.
+                if source.state_at(self.now()) != "fresh" || !sources.contains_key(name) {
+                    sources.insert(name.clone(), source.clone());
+                }
+            }
+        }
+        let problem = unavailable || sources.values().any(|s| s.state_at(self.now()) != "fresh");
+        let label = if sources.is_empty() {
+            "Sources —"
+        } else if problem {
+            "Sources stale"
+        } else {
+            "Sources fresh"
+        };
+        let has_unhealthy = sources.values().any(|source| source.state_at(self.now()) != "fresh");
+        let mut text = sources
+            .iter()
+            .filter(|(_, source)| !has_unhealthy || source.state_at(self.now()) != "fresh")
+            .map(|(name, source)| source.tooltip(name, self.now()))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if unavailable || sources.is_empty() {
+            text.push_str("\nFreshness endpoint unavailable; retained observations may be old");
+        }
+        div()
+            .id("source-freshness")
+            .test_support()
+            .aria_label(label)
+            .text_xs()
+            .text_color(if problem && !sources.is_empty() {
+                cx.theme().warning
+            } else {
+                cx.theme().muted_foreground
+            })
+            .child(label)
+            .hoverable_tooltip(move |window, cx| {
+                let text = text.clone();
+                let max_width = (window.viewport_size().width - px(48.)).max(px(120.)).min(px(600.));
+                let max_height = (window.viewport_size().height * 0.6).max(px(100.));
+                gpui_kit::component::tooltip::Tooltip::element(move |_, _| {
+                    div()
+                        .id("source-observations")
+                        .test_support()
+                        .aria_label(text.clone())
+                        .max_w(max_width)
+                        .max_h(max_height)
+                        .overflow_y_scroll()
+                        .child(text.clone())
+                })
+                .build(window, cx)
             })
     }
 
@@ -1654,30 +1796,38 @@ impl Render for BoardView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut content = v_flex().id("board").flex_1().min_h_0();
         content = content.child(
-            h_flex().px_3().py_2().gap_2().children(
-                [
-                    ("Project", dashboard_core::config::View::Project),
-                    ("Backlog", dashboard_core::config::View::Backlog),
-                ]
-                .into_iter()
-                .map(|(name, choice)| {
-                    div().occlude().child(
-                        Button::new(name)
-                            .small()
-                            .label(name)
-                            .selected(self.selected_view == choice)
-                            .on_click(cx.listener(move |view, _, _, cx| {
-                                if let Some(dir) = &view.options.config_dir
-                                    && let Err(error) = Config::save_view(dir, choice)
-                                {
-                                    view.options.config_problem = Some(error.to_string());
-                                }
-                                view.selected_view = choice;
-                                cx.notify();
-                            })),
-                    )
+            h_flex()
+                .px_3()
+                .py_2()
+                .gap_2()
+                .children(
+                    [
+                        ("Project", dashboard_core::config::View::Project),
+                        ("Backlog", dashboard_core::config::View::Backlog),
+                    ]
+                    .into_iter()
+                    .map(|(name, choice)| {
+                        div().occlude().child(
+                            Button::new(name)
+                                .small()
+                                .label(name)
+                                .selected(self.selected_view == choice)
+                                .on_click(cx.listener(move |view, _, _, cx| {
+                                    if let Some(dir) = &view.options.config_dir
+                                        && let Err(error) = Config::save_view(dir, choice)
+                                    {
+                                        view.options.config_problem = Some(error.to_string());
+                                    }
+                                    view.selected_view = choice;
+                                    cx.notify();
+                                })),
+                        )
+                    }),
+                )
+                .child(div().flex_1())
+                .when(self.selected_view == dashboard_core::config::View::Project, |this| {
+                    this.child(self.render_source_freshness(cx))
                 }),
-            ),
         );
         if let Some(problem) = &self.options.config_problem {
             content = content.child(self.render_banner(IconName::TriangleAlert, problem.clone(), cx));

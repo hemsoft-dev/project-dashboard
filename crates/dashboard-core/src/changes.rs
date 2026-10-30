@@ -27,6 +27,12 @@ pub fn row_data(document: &StatusDocument) -> StatusDocument {
     if let Some(hosted) = &mut data.hosted {
         hosted.generated_at.clear();
         hosted.checked_at = None;
+        hosted.readiness.sources.clear();
+        hosted.readiness.sources_unavailable = false;
+        hosted.readiness.dispatch_unavailable = false;
+        if let Some(dispatch) = &mut hosted.readiness.dispatch {
+            dispatch.stale = false;
+        }
         hosted.last_error = None;
         hosted.work_error = None;
         hosted.work_transport_error = None;
@@ -48,7 +54,7 @@ pub fn changed(previous: Option<&StatusDocument>, next: &StatusDocument) -> bool
 
 /// Keep source availability separate from project data. A transition establishes a new baseline, even if
 /// data changed while a source was unavailable. Error diagnostics themselves never count as project changes.
-fn availability(document: &StatusDocument) -> (bool, bool, Vec<(&str, bool)>) {
+fn availability(document: &StatusDocument) -> (bool, bool, bool, bool, Vec<(&str, bool)>) {
     let mut sections: Vec<_> = document
         .sections
         .iter()
@@ -60,7 +66,21 @@ fn availability(document: &StatusDocument) -> (bool, bool, Vec<(&str, bool)>) {
         .hosted
         .as_ref()
         .is_none_or(|h| h.work_error.is_none() && h.work_transport_error.is_none());
-    (status, work, sections)
+    let dispatch = document
+        .hosted
+        .as_ref()
+        .is_none_or(|h| !h.readiness.dispatch_unavailable);
+    let sources = document.hosted.as_ref().is_none_or(|h| {
+        !h.readiness.sources_unavailable
+            && h.readiness.sources.values().all(|s| {
+                s.state == "fresh"
+                    && s.last_success_at
+                        .as_deref()
+                        .and_then(crate::activity::parse_time)
+                        .is_some()
+            })
+    });
+    (status, work, dispatch, sources, sections)
 }
 
 /// No-project/no-session results come from a healthy source and can represent real session lifecycle changes.

@@ -3733,7 +3733,19 @@ fn fleet_borders_resize_persist_and_leave_project_widths_and_sort_unchanged(cx: 
             "trailing work column can be reached horizontally"
         );
         assert_eq!(header.left(), body.left());
+        let viewport = window.find("fleet-scroll").bounds();
+        let last_handle = window.find(("resize", Column::FleetWork as usize)).bounds();
+        assert!(
+            last_handle.right() <= viewport.right(),
+            "last resize handle must be reachable at maximum scroll"
+        );
+        let from = last_handle.center();
+        window.drag(from, gpui_kit::point(from.x - px(32.), from.y), cx);
     })
     .unwrap();
+    assert_eq!(
+        cx.update(|cx| view.read(cx).columns()).get(Column::FleetWork),
+        Column::FleetWork.default_width() - 2.
+    );
     let _ = std::fs::remove_dir_all(dir);
 }

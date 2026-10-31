@@ -1207,8 +1207,8 @@ fn captures_fleet_status() {
         save(&mut cx, window, &out, &format!("fleet-populated-{suffix}"));
         cx.update(|cx| {
             view.update(cx, |v, cx| {
-                v.columns.set(Column::FleetVersions, 14.);
-                v.columns.set(Column::FleetWork, 40.);
+                v.columns.set(dashboard_core::columns::Column::FleetVersions, 14.);
+                v.columns.set(dashboard_core::columns::Column::FleetWork, 40.);
                 cx.notify();
             })
         });

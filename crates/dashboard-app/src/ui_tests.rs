@@ -3669,7 +3669,7 @@ fn activity_http_failure_keeps_version_capacity_and_last_observation(cx: &mut Te
             body: body.to_string(),
         }
     });
-    let mut live = LivePmd::new(cx, &server, "fleet-activity-failure");
+    let live = LivePmd::new(cx, &server, "fleet-activity-failure");
     cx.update_window(live.handle, |_, window, cx| window.click("Fleet", cx))
         .unwrap();
     until(cx, |cx| {

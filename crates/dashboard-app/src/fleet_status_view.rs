@@ -105,7 +105,7 @@ impl BoardView {
                 obs.and_then(|o| o.checked_at).map_or("Never".into(), |at| {
                     format!("{} · {}", clock_time(at, now), age_words(at, now))
                 }),
-                if load_stale || load.and_then(|l| l.load_unknown.as_ref()).is_some() {
+                if load_stale || load.is_none_or(|l| l.load_unknown.is_some() || l.used.is_none()) {
                     "Unknown · source stale".into()
                 } else if work.is_empty() {
                     "None reported".into()

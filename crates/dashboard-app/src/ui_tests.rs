@@ -3532,9 +3532,15 @@ pub(crate) fn fleet_status_fixture() -> dashboard_core::fleet_status::Snapshot {
             name: name.into(),
             online: Some(i != 3),
             probe_ok: Some(i != 3),
-            server_version: (i != 3).then(|| "0.1.6-nightly.20261031.3956".into()),
+            server_version: (i != 3).then(|| {
+                if i == 0 {
+                    "0.1.7-nightly.20261031.3991".into()
+                } else {
+                    "0.1.6-nightly.20261031.3956".into()
+                }
+            }),
             latest_version: Some("0.1.7-nightly.20261031.3991".into()),
-            update_available: Some(true),
+            update_available: Some(i != 0),
             checked_at: (i != 3).then_some(now),
             attempted_at: Some(if i == 2 {
                 now - chrono::Duration::minutes(20)
@@ -3555,6 +3561,13 @@ pub(crate) fn fleet_status_fixture() -> dashboard_core::fleet_status::Snapshot {
             ..Default::default()
         }],
         fetched_at: Some(now),
+        assignments: vec![dashboard_core::backlog::Assignment {
+            machine: "mini".into(),
+            state: "running".into(),
+            thread_id: "fixture-thread".into(),
+            work_item: Some(dashboard_core::backlog::WorkRef::Id("project-dashboard#59".into())),
+            ..Default::default()
+        }],
         ..Default::default()
     }
 }

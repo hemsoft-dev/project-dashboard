@@ -1180,7 +1180,12 @@ fn captures_fleet_status() {
     let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").unwrap());
     std::fs::create_dir_all(&out).unwrap();
     let mut cx = headless();
-    for (width, level, suffix) in [(1100., 1., "default"), (480., 1., "narrow"), (1100., 1.5, "150")] {
+    for (width, level, suffix) in [
+        (1100., 1., "default"),
+        (2400., 1., "wide"),
+        (480., 1., "narrow"),
+        (1100., 1.5, "150"),
+    ] {
         cx.update(|cx| {
             crate::zoom::set_level(level, cx);
             crate::zoom::hide_toast(cx);

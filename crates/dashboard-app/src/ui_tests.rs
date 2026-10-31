@@ -3659,3 +3659,25 @@ fn fleet_reads_on_selection_and_retains_data_after_token_refresh_failure(cx: &mu
         assert_eq!(view.fleet_status.fetched_at, checked);
     });
 }
+
+#[gpui_kit::test]
+fn fleet_borders_resize_persist_and_leave_project_widths_and_sort_unchanged(cx: &mut TestAppContext) {
+    let dir = std::env::temp_dir().join(format!("fleet-widths-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (handle, view) = open_board(cx, vec![], StatusCache::default(), Arc::new(demo::DemoSource),
+        Options { ui_state_dir: Some(dir.clone()), ..options() });
+    let before = cx.update(|cx| (view.read(cx).columns(), view.read(cx).sort()));
+    cx.update(|cx| view.update(cx, |v, cx| { v.selected_view = dashboard_core::config::View::Fleet; v.fleet_status = fleet_status_fixture(); cx.notify(); }));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx)).unwrap();
+    drag_border(cx, handle, Column::FleetMachine, 48.);
+    let after = cx.update(|cx| view.read(cx).columns());
+    assert_eq!(after.get(Column::FleetMachine), before.0.get(Column::FleetMachine) + 3.);
+    for column in Column::ALL { assert_eq!(after.get(column), before.0.get(column)); }
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), before.1);
+    assert_eq!(UiState::load(&dir).columns, after);
+    drag_border(cx, handle, Column::FleetMachine, -1000.);
+    assert_eq!(cx.update(|cx| view.read(cx).columns()).get(Column::FleetMachine), Column::FleetMachine.min_width());
+    cx.update_window(handle, |_, window, cx| window.double_click(("resize", Column::FleetMachine as usize), cx)).unwrap();
+    assert_eq!(UiState::load(&dir).columns.get(Column::FleetMachine), Column::FleetMachine.default_width());
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -28,7 +28,6 @@ pub enum Column {
     FleetFree,
     FleetChecked,
     FleetWork,
-
 }
 
 impl Column {
@@ -42,7 +41,17 @@ impl Column {
         Self::Updated,
     ];
 
-    pub const FLEET: [Column; 9] = [Self::FleetMachine, Self::FleetConnectivity, Self::FleetServer, Self::FleetVersions, Self::FleetClient, Self::FleetSessions, Self::FleetFree, Self::FleetChecked, Self::FleetWork];
+    pub const FLEET: [Column; 9] = [
+        Self::FleetMachine,
+        Self::FleetConnectivity,
+        Self::FleetServer,
+        Self::FleetVersions,
+        Self::FleetClient,
+        Self::FleetSessions,
+        Self::FleetFree,
+        Self::FleetChecked,
+        Self::FleetWork,
+    ];
 
     /// The width before any drag, in rems. The repository column fits a typical `owner/name` and its Cached tag.
     pub fn default_width(self) -> f32 {
@@ -61,7 +70,6 @@ impl Column {
             Self::FleetFree => 7.0,
             Self::FleetChecked => 15.0,
             Self::FleetWork => 24.0,
-
         }
     }
 
@@ -83,7 +91,6 @@ impl Column {
             Self::FleetFree => 6.0,
             Self::FleetChecked => 10.0,
             Self::FleetWork => 10.0,
-
         }
     }
 
@@ -106,7 +113,6 @@ impl Column {
             Self::FleetFree => "fleetFree",
             Self::FleetChecked => "fleetChecked",
             Self::FleetWork => "fleetWork",
-
         }
     }
 
@@ -171,7 +177,6 @@ impl ColumnWidths {
             Column::FleetFree => self.fleet[6],
             Column::FleetChecked => self.fleet[7],
             Column::FleetWork => self.fleet[8],
-
         }
     }
 
@@ -195,7 +200,6 @@ impl ColumnWidths {
             Column::FleetFree => self.fleet[6] = width,
             Column::FleetChecked => self.fleet[7] = width,
             Column::FleetWork => self.fleet[8] = width,
-
         }
     }
 
@@ -216,7 +220,9 @@ impl ColumnWidths {
         }
         if let Some(saved) = value.and_then(|v| v.get("fleet")).and_then(Value::as_array) {
             for (column, v) in Column::FLEET.into_iter().zip(saved) {
-                if let Some(w) = v.as_f64() { widths.set(column, w.clamp(-60.0, 60.0) as f32); }
+                if let Some(w) = v.as_f64() {
+                    widths.set(column, w.clamp(-60.0, 60.0) as f32);
+                }
             }
         }
         widths

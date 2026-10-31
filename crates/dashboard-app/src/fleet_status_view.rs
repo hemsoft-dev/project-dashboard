@@ -1,6 +1,6 @@
 use crate::board_view::BoardView;
-use dashboard_core::columns::Column;
 use dashboard_core::activity::{age_words, clock_time};
+use dashboard_core::columns::Column;
 use gpui_kit::component::{ActiveTheme as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{
     Context, InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _, Styled as _,
@@ -53,14 +53,27 @@ impl BoardView {
         ];
         let widths = Column::FLEET.map(|c| self.columns.get(c));
         let total: f32 = widths.iter().sum();
-        let cell = |text: String, index: usize| div().id(("fleet-cell", index)).w(rems(widths[index])).flex_none().px_2().child(text);
-        let mut table = v_flex().w(rems(total)).flex_none().gap_2().child(
-            h_flex()
-                .font_semibold()
-                .children(headers.into_iter().enumerate().map(|(i, h)| {
-                    cell(h.into(), i).relative().child(self.resize_handle(Column::FLEET[i], cx))
-                })),
-        );
+        let cell = |text: String, index: usize| {
+            div()
+                .id(("fleet-cell", index))
+                .w(rems(widths[index]))
+                .flex_none()
+                .px_2()
+                .child(text)
+        };
+        let mut table = v_flex()
+            .w(rems(total))
+            .flex_none()
+            .gap_2()
+            .child(
+                h_flex()
+                    .font_semibold()
+                    .children(headers.into_iter().enumerate().map(|(i, h)| {
+                        cell(h.into(), i)
+                            .relative()
+                            .child(self.resize_handle(Column::FLEET[i], cx))
+                    })),
+            );
         for machine in &data.machines {
             let obs = data.observations.iter().find(|o| o.name == machine.name);
             let load = data.loads.iter().find(|l| l.name == machine.name);
@@ -110,7 +123,8 @@ impl BoardView {
                     format!("{} · {}", clock_time(at, now), age_words(at, now))
                 }),
                 if load_stale || load.is_none_or(|l| l.load_unknown.is_some() || l.used.is_none()) {
-                    load.and_then(|l| l.load_unknown.clone()).unwrap_or_else(|| "Unknown · source stale".into())
+                    load.and_then(|l| l.load_unknown.clone())
+                        .unwrap_or_else(|| "Unknown · source stale".into())
                 } else if work.is_empty() {
                     "None reported".into()
                 } else {

@@ -1851,7 +1851,6 @@ fn column_title(column: Column) -> &'static str {
         Column::FleetFree => "Free slots",
         Column::FleetChecked => "Last checked",
         Column::FleetWork => "Running work",
-
     }
 }
 

@@ -2398,6 +2398,7 @@ fn pmd_response(path: &str, token: &str) -> pmd_http::Reply {
     let body = match path {
         "/v1/assignments?project=gh-x&limit=500" => r#"{"assignments":[],"truncated":false}"#.into(),
         "/v1/portfolio" => "{}".into(),
+        "/v1/fleet/activity" => r#"{"schema":1,"machines":[]}"#.into(),
         "/v1/dispatch/plan" => r#"{"recommendations":[],"skipped":[]}"#.into(),
         "/v1/projects" => r#"{"projects":[{"slug":"gh-x","repo":"hemsoft-dev/gh-x","priority":PRIORITY,"tracked":true}]}"#.replace("PRIORITY", &priority.to_string()),
         "/v1/projects/gh-x/status" => format!(r#"{{"project":"gh-x","generatedAt":"{stamp}","lastError":null,"status":{}}}"#, fixtures::CLEAN),

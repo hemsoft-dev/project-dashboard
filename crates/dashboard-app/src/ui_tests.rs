@@ -2398,6 +2398,7 @@ fn pmd_response(path: &str, token: &str) -> pmd_http::Reply {
     let body = match path {
         "/v1/assignments?project=gh-x&limit=500" => r#"{"assignments":[],"truncated":false}"#.into(),
         "/v1/portfolio" => "{}".into(),
+        "/v1/fleet/activity" => r#"{"schema":1,"machines":[]}"#.into(),
         "/v1/dispatch/plan" => r#"{"recommendations":[],"skipped":[]}"#.into(),
         "/v1/projects" => r#"{"projects":[{"slug":"gh-x","repo":"hemsoft-dev/gh-x","priority":PRIORITY,"tracked":true}]}"#.replace("PRIORITY", &priority.to_string()),
         "/v1/projects/gh-x/status" => format!(r#"{{"project":"gh-x","generatedAt":"{stamp}","lastError":null,"status":{}}}"#, fixtures::CLEAN),
@@ -3539,6 +3540,8 @@ pub(crate) fn fleet_status_fixture() -> dashboard_core::fleet_status::Snapshot {
         .map(|(i, name)| Observation {
             name: name.into(),
             online: Some(i != 3),
+            client_status: Some(if i == 0 { "not_applicable" } else { "installed" }.into()),
+            client_version: (i != 0).then(|| "0.1.6-nightly.20261031.3956".into()),
             probe_ok: Some(i != 3),
             server_version: (i != 3).then(|| {
                 if i == 0 {
@@ -3565,7 +3568,8 @@ pub(crate) fn fleet_status_fixture() -> dashboard_core::fleet_status::Snapshot {
         loads: vec![Load {
             name: "mini".into(),
             used: Some(2),
-            free: Some(1),
+            chief_started: Some(1),
+            free: Some(2),
             ..Default::default()
         }],
         fetched_at: Some(now),
@@ -3578,6 +3582,200 @@ pub(crate) fn fleet_status_fixture() -> dashboard_core::fleet_status::Snapshot {
         }],
         ..Default::default()
     }
+}
+
+pub(crate) fn fleet_activity_fixture() -> dashboard_core::fleet_activity::Snapshot {
+    use dashboard_core::fleet_activity::{Machine, Session, Snapshot};
+    let now = chrono::Utc::now();
+    let session = |title: &str, status: &str| Session {
+        title: title.into(),
+        runtime_status: status.into(),
+        thread_id: format!("fixture-{title}"),
+        project: "chief".into(),
+        role: "chief-started".into(),
+        ..Default::default()
+    };
+    Snapshot {
+        schema: 1,
+        observed_at: Some(now),
+        machines: vec![
+            Machine {
+                name: "mini".into(),
+                observed_at: Some(now),
+                state: "ok".into(),
+                active_count: Some(4),
+                sessions: vec![
+                    session("Fleet activity fix", "working"),
+                    session("Chief request", "working"),
+                    session("hs-buddy #900 review", "monitoring"),
+                    session("yahtzee #92 review", "monitoring"),
+                ],
+                ..Default::default()
+            },
+            Machine {
+                name: "home".into(),
+                observed_at: Some(now),
+                state: "ok".into(),
+                active_count: Some(0),
+                ..Default::default()
+            },
+            Machine {
+                name: "laptop".into(),
+                observed_at: Some(now),
+                state: "unavailable".into(),
+                reason: Some("T3 runtime source unavailable".into()),
+                ..Default::default()
+            },
+            Machine {
+                name: "air".into(),
+                observed_at: Some(now),
+                state: "partial".into(),
+                active_count: Some(1),
+                reason: Some("Desktop environment not observed".into()),
+                sessions: vec![session("hs-buddy #823 runtime preparation", "monitoring")],
+                ..Default::default()
+            },
+        ],
+    }
+}
+
+#[gpui_kit::test]
+fn activity_http_failure_keeps_version_capacity_and_last_observation(cx: &mut TestAppContext) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let fail = Arc::new(AtomicBool::new(false));
+    let broken = fail.clone();
+    let stamp = chrono::Utc::now().to_rfc3339();
+    let server = pmd_http::Server::with_auth(move |path, token| {
+        let body = match path {
+            "/v1/assignments?limit=500&state=running" => serde_json::json!({"assignments":[],"truncated":false}),
+            "/v1/machines" => serde_json::json!({"machines":[{"name":"mini","os":"linux","maxSessions":3}]}),
+            "/v1/capacity" => serde_json::json!({"machines":[{"name":"mini","used":1,"chiefStarted":1,"free":2}]}),
+            "/v1/fleet/status" => {
+                serde_json::json!({"schema":1,"machines":[{"name":"mini","online":true,"probeOk":true,"serverVersion":"1","latestVersion":"1","updateAvailable":false,"clientStatus":"not_applicable","checkedAt":stamp,"attemptedAt":stamp}]})
+            }
+            "/v1/fleet/activity" if broken.load(Ordering::SeqCst) => {
+                return pmd_http::Reply {
+                    code: 503,
+                    body: "{}".into(),
+                };
+            }
+            "/v1/fleet/activity" => {
+                serde_json::json!({"schema":1,"observedAt":stamp,"machines":[{"name":"mini","observedAt":stamp,"state":"ok","activeCount":1,"chiefActive":false,"sessions":[{"environment":"","threadId":"monitor","title":"hs-buddy review","project":"hs-buddy","runtimeStatus":"monitoring","role":"chief-started"}]}]})
+            }
+            _ => return pmd_response(path, token),
+        };
+        pmd_http::Reply {
+            code: 200,
+            body: body.to_string(),
+        }
+    });
+    let live = LivePmd::new(cx, &server, "fleet-activity-failure");
+    cx.update_window(live.handle, |_, window, cx| window.click("Fleet", cx))
+        .unwrap();
+    until(cx, |cx| {
+        cx.update(|cx| live.view.read(cx).fleet_activity.machines.len() == 1)
+    });
+    let observed = cx.update(|cx| live.view.read(cx).fleet_activity.observed_at);
+    fail.store(true, Ordering::SeqCst);
+    cx.update(|cx| live.view.update(cx, |v, cx| v.refresh_all(cx)));
+    until(cx, |cx| {
+        cx.update(|cx| live.view.read(cx).fleet_activity_error.is_some())
+    });
+    cx.update(|cx| {
+        let view = live.view.read(cx);
+        assert!(view.fleet_error.is_none());
+        assert_eq!(view.fleet_activity.observed_at, observed);
+        assert_eq!(view.fleet_status.machines.len(), 1);
+        assert_eq!(view.fleet_status.loads[0].free, Some(2));
+    });
+    cx.update_window(live.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(("fleet-body", 2usize)).label(), Some("Current"));
+        assert_eq!(window.find(("fleet-body", 4usize)).label(), Some("N/A"));
+        assert!(
+            window
+                .find(("fleet-body", 8usize))
+                .label()
+                .unwrap()
+                .starts_with("Last known")
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn fleet_runtime_counts_monitoring_and_keeps_dispatch_and_expected_absence_distinct(cx: &mut TestAppContext) {
+    let (handle, view) = open_board(
+        cx,
+        vec![],
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        options(),
+    );
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.selected_view = dashboard_core::config::View::Fleet;
+            v.fleet_status = fleet_status_fixture();
+            v.fleet_activity = fleet_activity_fixture();
+            cx.notify();
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(("fleet-body", 4usize)).label(), Some("N/A"));
+        assert!(
+            window
+                .find(("fleet-body", 5usize))
+                .label()
+                .unwrap()
+                .contains("4 active\nChief 1 / 3")
+        );
+        assert_eq!(window.find(("fleet-body", 6usize)).label(), Some("2 dispatch"));
+        let work = window.find(("fleet-body", 8usize)).label().unwrap().to_owned();
+        assert!(work.contains("monitoring · hs-buddy #900 review"));
+        assert!(!work.contains("fixture-"));
+        assert_eq!(window.find(("fleet-body", 17usize)).label(), Some("None active"));
+        assert!(
+            window
+                .find(("fleet-body", 23usize))
+                .label()
+                .unwrap()
+                .starts_with("Unavailable")
+        );
+        assert!(
+            window
+                .find(("fleet-body", 32usize))
+                .label()
+                .unwrap()
+                .starts_with("≥1 · partial")
+        );
+    })
+    .unwrap();
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.fleet_activity_error = Some("Timed out".into());
+            cx.notify();
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .find(("fleet-body", 5usize))
+                .label()
+                .unwrap()
+                .starts_with("Unavailable")
+        );
+        assert!(
+            window
+                .find(("fleet-body", 8usize))
+                .label()
+                .unwrap()
+                .starts_with("Last known")
+        );
+        assert_eq!(window.find(("fleet-body", 2usize)).label(), Some("Current"));
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]

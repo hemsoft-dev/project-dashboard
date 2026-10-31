@@ -117,6 +117,8 @@ pub struct BoardView {
     cache: StatusCache,
     pub(crate) fleet_status: dashboard_core::fleet_status::Snapshot,
     pub(crate) fleet_error: Option<String>,
+    pub(crate) fleet_activity: dashboard_core::fleet_activity::Snapshot,
+    pub(crate) fleet_activity_error: Option<String>,
     fleet_loading: bool,
     /// Caps every refresh, together, at `parallelism` HTTP reads.
     limiter: Arc<scheduler::Limited>,
@@ -197,6 +199,8 @@ impl BoardView {
             board: Board::new(checkouts, &cache),
             cache,
             fleet_status: Default::default(),
+            fleet_activity: Default::default(),
+            fleet_activity_error: None,
             fleet_error: None,
             fleet_loading: false,
             limiter,
@@ -619,6 +623,8 @@ impl BoardView {
                 if !same_url {
                     self.fleet_status = Default::default();
                     self.fleet_error = None;
+                    self.fleet_activity = Default::default();
+                    self.fleet_activity_error = None;
                 }
                 if self.selected_view == dashboard_core::config::View::Fleet {
                     self.refresh_fleet(cx);
@@ -683,7 +689,9 @@ impl BoardView {
         let (send, receive) = std::sync::mpsc::channel();
         let requested = pmd.clone();
         std::thread::spawn(move || {
-            let _ = send.send(dashboard_core::fleet_status::Snapshot::fetch(&requested));
+            let status = dashboard_core::fleet_status::Snapshot::fetch(&requested);
+            let activity = dashboard_core::fleet_activity::Snapshot::fetch(&requested);
+            let _ = send.send((status, activity));
         });
         cx.spawn(async move |this, cx| {
             loop {
@@ -691,17 +699,27 @@ impl BoardView {
                 let result = match receive.try_recv() {
                     Ok(result) => result,
                     Err(TryRecvError::Empty) => continue,
-                    Err(TryRecvError::Disconnected) => Err(dashboard_core::source::FetchError::Unavailable),
+                    Err(TryRecvError::Disconnected) => (
+                        Err(dashboard_core::source::FetchError::Unavailable),
+                        Err(dashboard_core::source::FetchError::Unavailable),
+                    ),
                 };
                 let _ = this.update(cx, |view, cx| {
                     view.fleet_loading = false;
                     if view.options.pmd.as_ref() == Some(&pmd) {
-                        match result {
+                        match result.0 {
                             Ok(snapshot) => {
                                 view.fleet_status = snapshot;
                                 view.fleet_error = None;
                             }
                             Err(error) => view.fleet_error = Some(error.to_string()),
+                        }
+                        match result.1 {
+                            Ok(activity) => {
+                                view.fleet_activity = activity;
+                                view.fleet_activity_error = None;
+                            }
+                            Err(error) => view.fleet_activity_error = Some(error.to_string()),
                         }
                     } else {
                         view.refresh_fleet(cx);

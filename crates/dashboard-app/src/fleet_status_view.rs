@@ -26,19 +26,26 @@ impl BoardView {
                 "Fleet refresh failed. {error} Last good observations retained. Use F5 to retry."
             )));
         }
+        if let Some(error) = &self.fleet_activity_error {
+            body = body.child(div().text_color(cx.theme().warning).child(format!(
+                "Runtime activity unavailable. {error} Last observations retained with their original age."
+            )));
+        }
+        body = body.child(div().text_sm().text_color(cx.theme().muted_foreground)
+            .child("Active work includes runtime monitoring and visible delegates. Chief allocation and free slots are dispatch headroom."));
         body = body.child(
             div()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
                 .child(data.fetched_at.map_or_else(
-                    || "Waiting for fleet data from pmd…".into(),
-                    |at| {
-                        format!(
-                            "Read from pmd {} · observations older than 10 minutes are stale",
-                            age_words(at, now)
-                        )
-                    },
-                )),
+                || "Waiting for fleet data from pmd…".into(),
+                |at| {
+                    format!(
+                        "Read from pmd {} · version probes expire after 10 minutes; runtime activity after 90 seconds",
+                        age_words(at, now)
+                    )
+                },
+            )),
         );
         let headers = [
             "Machine",
@@ -46,19 +53,20 @@ impl BoardView {
             "T3 server",
             "Running / latest",
             "T3 client",
-            "Sessions / cap",
-            "Free slots",
+            "Active\nChief cap",
+            "Chief free",
             "Last checked",
             "Running work",
         ];
         let widths = Column::FLEET.map(|c| self.columns.get(c));
         let total: f32 = widths.iter().sum();
         let cell = |text: String, index: usize| {
-            div()
-                .w(rems(widths[index]))
-                .flex_none()
-                .px_2()
-                .child(div().w_full().truncate().child(text))
+            div().w(rems(widths[index])).flex_none().px_2().child(
+                v_flex().w_full().children(
+                    text.lines()
+                        .map(|line| div().w_full().truncate().child(line.to_owned())),
+                ),
+            )
         };
         // The shared handle extends half a rem beyond its cell, including the final column.
         let mut table = v_flex()
@@ -79,21 +87,22 @@ impl BoardView {
         for (row, machine) in data.machines.iter().enumerate() {
             let obs = data.observations.iter().find(|o| o.name == machine.name);
             let load = data.loads.iter().find(|l| l.name == machine.name);
-            let work = data
-                .assignments
-                .iter()
-                .filter(|a| a.machine == machine.name && a.state == "running" && !a.stale)
-                .map(|a| {
-                    a.work_item.as_ref().map_or_else(
-                        || a.thread_id.clone(),
-                        |w| match w {
-                            dashboard_core::backlog::WorkRef::Id(id)
-                            | dashboard_core::backlog::WorkRef::Item { id } => id.clone(),
-                        },
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
+            let activity = self.fleet_activity.machines.iter().find(|m| m.name == machine.name);
+            let activity_failed = self.fleet_activity_error.is_some();
+            let active = activity.map_or_else(
+                || "Unavailable".into(),
+                |m| {
+                    if activity_failed {
+                        "Unavailable".into()
+                    } else {
+                        m.count_label(now)
+                    }
+                },
+            );
+            let work = activity.map_or_else(
+                || "Runtime activity unavailable".into(),
+                |m| m.work_label(now, activity_failed),
+            );
             let values = [
                 format!("{} · {}", machine.name, machine.os),
                 obs.map_or("Unknown", |o| o.connectivity(now)).into(),
@@ -103,14 +112,20 @@ impl BoardView {
                     obs.and_then(|o| o.server_version.as_deref()).unwrap_or("Unknown"),
                     obs.and_then(|o| o.latest_version.as_deref()).unwrap_or("Unknown")
                 ),
-                obs.and_then(|o| o.client_version.clone())
-                    .unwrap_or_else(|| "Unknown".into()),
+                if obs.and_then(|o| o.client_status.as_deref()) == Some("not_applicable") {
+                    "N/A".into()
+                } else {
+                    obs.and_then(|o| o.client_version.clone())
+                        .unwrap_or_else(|| "Unknown".into())
+                },
                 format!(
-                    "{} / {}",
+                    "{}\nChief {} / {}",
+                    active,
                     if load_stale {
                         "Stale".into()
                     } else {
-                        load.and_then(|l| l.used).map_or("Unknown".into(), |n| n.to_string())
+                        load.and_then(|l| l.chief_started)
+                            .map_or("Unknown".into(), |n| n.to_string())
                     },
                     machine.max_sessions
                 ),
@@ -119,19 +134,13 @@ impl BoardView {
                 } else if machine.max_sessions == 0 {
                     "N/A · disabled".into()
                 } else {
-                    load.and_then(|l| l.free).map_or("Unknown".into(), |n| n.to_string())
+                    load.and_then(|l| l.free)
+                        .map_or("Unknown".into(), |n| format!("{n} dispatch"))
                 },
                 obs.and_then(|o| o.checked_at).map_or("Never".into(), |at| {
                     format!("{} · {}", clock_time(at, now), age_words(at, now))
                 }),
-                if load_stale || load.is_none_or(|l| l.load_unknown.is_some() || l.used.is_none()) {
-                    load.and_then(|l| l.load_unknown.clone())
-                        .unwrap_or_else(|| "Unknown · source stale".into())
-                } else if work.is_empty() {
-                    "None reported".into()
-                } else {
-                    work
-                },
+                work,
             ];
             table = table.child(
                 v_flex()
@@ -154,6 +163,34 @@ impl BoardView {
                             .map(|e| div().px_2().text_color(cx.theme().warning).child(e)),
                     ),
             );
+            if let Some(activity) = activity {
+                if let Some(at) = activity.observed_at {
+                    table = table.child(
+                        div()
+                            .px_2()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("{} · runtime observed {}", machine.name, age_words(at, now))),
+                    );
+                }
+                if let Some(reason) = &activity.reason {
+                    table = table.child(
+                        div()
+                            .px_2()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("{} · {reason}", machine.name)),
+                    );
+                }
+                if activity.chief_active {
+                    table = table.child(
+                        div()
+                            .px_2()
+                            .text_sm()
+                            .child("Chief is active (excluded from the session count)."),
+                    );
+                }
+            }
         }
         if data.truncated {
             body = body.child(

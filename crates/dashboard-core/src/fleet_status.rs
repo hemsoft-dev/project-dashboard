@@ -13,6 +13,7 @@ pub struct Observation {
     pub probe_ok: Option<bool>,
     pub server_version: Option<String>,
     pub client_version: Option<String>,
+    pub client_status: Option<String>,
     pub latest_version: Option<String>,
     pub checked_at: Option<DateTime<Utc>>,
     pub attempted_at: Option<DateTime<Utc>>,

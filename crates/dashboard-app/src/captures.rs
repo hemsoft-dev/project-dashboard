@@ -1201,6 +1201,7 @@ fn captures_fleet_status() {
         cx.update(|cx| {
             view.update(cx, |v, cx| {
                 v.fleet_status = crate::ui_tests::fleet_status_fixture();
+                v.fleet_activity = crate::ui_tests::fleet_activity_fixture();
                 cx.notify();
             })
         });

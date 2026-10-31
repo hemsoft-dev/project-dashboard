@@ -129,7 +129,7 @@ pub struct BoardView {
     /// Expanded rows, by checkout, so expansion survives refreshes and re-sorting.
     expanded: HashSet<PathBuf>,
     sort: SortOrder,
-    columns: ColumnWidths,
+    pub(crate) columns: ColumnWidths,
     resizing: Option<Resize>,
     /// The repository column's width as last laid out, which a narrow window can make less than its setting.
     repository_laid_out: Rc<Cell<Option<Pixels>>>,
@@ -394,7 +394,7 @@ impl BoardView {
 
     /// The handle on `column`'s right border: it spans the gap to the next column, so it never covers a header's own
     /// click target.
-    fn resize_handle(&self, column: Column, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    pub(crate) fn resize_handle(&self, column: Column, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = cx.theme();
         let (line, active) = (theme.border, theme.primary);
         let dragging = self.resizing.is_some_and(|resize| resize.column == column);
@@ -1842,6 +1842,15 @@ fn column_title(column: Column) -> &'static str {
         Column::Merged24h => "Merged 24h",
         Column::Merged7d => "Merged 7d",
         Column::Updated => "Updated",
+        Column::FleetMachine => "Machine",
+        Column::FleetConnectivity => "Connectivity",
+        Column::FleetServer => "T3 server",
+        Column::FleetVersions => "Running / latest",
+        Column::FleetClient => "T3 client",
+        Column::FleetSessions => "Sessions / cap",
+        Column::FleetFree => "Free slots",
+        Column::FleetChecked => "Last checked",
+        Column::FleetWork => "Running work",
     }
 }
 

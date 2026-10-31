@@ -1,13 +1,14 @@
 use crate::board_view::BoardView;
 use dashboard_core::activity::{age_words, clock_time};
+use dashboard_core::columns::Column;
 use gpui_kit::component::{ActiveTheme as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{
-    App, InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _, Styled as _,
+    Context, InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _, Styled as _,
     TestSupportExt as _, div, rems,
 };
 
 impl BoardView {
-    pub(crate) fn render_fleet(&self, cx: &App) -> impl IntoElement {
+    pub(crate) fn render_fleet(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let now = chrono::Utc::now();
         let data = &self.fleet_status;
         let load_stale = data
@@ -50,14 +51,32 @@ impl BoardView {
             "Last checked",
             "Running work",
         ];
-        let widths = [9., 8., 13., 24., 12., 9., 7., 15., 24.];
-        let cell = |text: String, index: usize| div().w(rems(widths[index])).flex_none().px_2().child(text);
-        let mut table = v_flex().gap_2().child(
-            h_flex()
-                .font_semibold()
-                .children(headers.into_iter().enumerate().map(|(i, h)| cell(h.into(), i))),
-        );
-        for machine in &data.machines {
+        let widths = Column::FLEET.map(|c| self.columns.get(c));
+        let total: f32 = widths.iter().sum();
+        let cell = |text: String, index: usize| {
+            div()
+                .w(rems(widths[index]))
+                .flex_none()
+                .px_2()
+                .child(div().w_full().truncate().child(text))
+        };
+        // The shared handle extends half a rem beyond its cell, including the final column.
+        let mut table = v_flex()
+            .w(rems(total + 0.5))
+            .flex_none()
+            .gap_2()
+            .child(
+                h_flex()
+                    .font_semibold()
+                    .children(headers.into_iter().enumerate().map(|(i, h)| {
+                        cell(h.into(), i)
+                            .id(("fleet-header", i))
+                            .test_support()
+                            .relative()
+                            .child(self.resize_handle(Column::FLEET[i], cx))
+                    })),
+            );
+        for (row, machine) in data.machines.iter().enumerate() {
             let obs = data.observations.iter().find(|o| o.name == machine.name);
             let load = data.loads.iter().find(|l| l.name == machine.name);
             let work = data
@@ -106,7 +125,8 @@ impl BoardView {
                     format!("{} · {}", clock_time(at, now), age_words(at, now))
                 }),
                 if load_stale || load.is_none_or(|l| l.load_unknown.is_some() || l.used.is_none()) {
-                    "Unknown · source stale".into()
+                    load.and_then(|l| l.load_unknown.clone())
+                        .unwrap_or_else(|| "Unknown · source stale".into())
                 } else if work.is_empty() {
                     "None reported".into()
                 } else {
@@ -118,7 +138,16 @@ impl BoardView {
                     .py_2()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(h_flex().children(values.into_iter().enumerate().map(|(i, v)| cell(v, i))))
+                    .child(h_flex().children(values.into_iter().enumerate().map(|(i, v)| {
+                        let full = v.clone();
+                        cell(v, i)
+                            .id(("fleet-body", row * 9 + i))
+                            .test_support()
+                            .aria_label(full.clone())
+                            .tooltip(move |window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(full.clone()).build(window, cx)
+                            })
+                    })))
                     .children(
                         obs.and_then(|o| o.error.clone())
                             .into_iter()
@@ -139,6 +168,7 @@ impl BoardView {
         body.child(
             div()
                 .id("fleet-scroll")
+                .test_support()
                 .flex_1()
                 .min_h_0()
                 .overflow_scroll()

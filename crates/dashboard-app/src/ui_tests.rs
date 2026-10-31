@@ -3639,6 +3639,70 @@ pub(crate) fn fleet_activity_fixture() -> dashboard_core::fleet_activity::Snapsh
 }
 
 #[gpui_kit::test]
+fn activity_http_failure_keeps_version_capacity_and_last_observation(cx: &mut TestAppContext) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let fail = Arc::new(AtomicBool::new(false));
+    let broken = fail.clone();
+    let stamp = chrono::Utc::now().to_rfc3339();
+    let server = pmd_http::Server::with_auth(move |path, token| {
+        let body = match path {
+            "/v1/assignments?limit=500&state=running" => serde_json::json!({"assignments":[],"truncated":false}),
+            "/v1/machines" => serde_json::json!({"machines":[{"name":"mini","os":"linux","maxSessions":3}]}),
+            "/v1/capacity" => serde_json::json!({"machines":[{"name":"mini","used":1,"chiefStarted":1,"free":2}]}),
+            "/v1/fleet/status" => {
+                serde_json::json!({"schema":1,"machines":[{"name":"mini","online":true,"probeOk":true,"serverVersion":"1","latestVersion":"1","updateAvailable":false,"clientStatus":"not_applicable","checkedAt":stamp,"attemptedAt":stamp}]})
+            }
+            "/v1/fleet/activity" if broken.load(Ordering::SeqCst) => {
+                return pmd_http::Reply {
+                    code: 503,
+                    body: "{}".into(),
+                };
+            }
+            "/v1/fleet/activity" => {
+                serde_json::json!({"schema":1,"observedAt":stamp,"machines":[{"name":"mini","observedAt":stamp,"state":"ok","activeCount":1,"chiefActive":false,"sessions":[{"environment":"","threadId":"monitor","title":"hs-buddy review","project":"hs-buddy","runtimeStatus":"monitoring","role":"chief-started"}]}]})
+            }
+            _ => return pmd_response(path, token),
+        };
+        pmd_http::Reply {
+            code: 200,
+            body: body.to_string(),
+        }
+    });
+    let mut live = LivePmd::new(cx, &server, "fleet-activity-failure");
+    cx.update_window(live.handle, |_, window, cx| window.click("Fleet", cx))
+        .unwrap();
+    until(cx, |cx| {
+        cx.update(|cx| live.view.read(cx).fleet_activity.machines.len() == 1)
+    });
+    let observed = cx.update(|cx| live.view.read(cx).fleet_activity.observed_at);
+    fail.store(true, Ordering::SeqCst);
+    cx.update(|cx| live.view.update(cx, |v, cx| v.refresh_all(cx)));
+    until(cx, |cx| {
+        cx.update(|cx| live.view.read(cx).fleet_activity_error.is_some())
+    });
+    cx.update(|cx| {
+        let view = live.view.read(cx);
+        assert!(view.fleet_error.is_none());
+        assert_eq!(view.fleet_activity.observed_at, observed);
+        assert_eq!(view.fleet_status.machines.len(), 1);
+        assert_eq!(view.fleet_status.loads[0].free, Some(2));
+    });
+    cx.update_window(live.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(("fleet-body", 2usize)).label(), Some("Current"));
+        assert_eq!(window.find(("fleet-body", 4usize)).label(), Some("N/A"));
+        assert!(
+            window
+                .find(("fleet-body", 8usize))
+                .label()
+                .unwrap()
+                .starts_with("Last known")
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn fleet_runtime_counts_monitoring_and_keeps_dispatch_and_expected_absence_distinct(cx: &mut TestAppContext) {
     let (handle, view) = open_board(
         cx,

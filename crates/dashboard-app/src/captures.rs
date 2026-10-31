@@ -1213,6 +1213,27 @@ fn captures_fleet_status() {
             })
         });
         save(&mut cx, window, &out, &format!("fleet-resized-{suffix}"));
+        cx.update_window(window, |_, window, cx| {
+            use dashboard_core::columns::Column;
+            window.scroll(
+                "fleet-scroll",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-5000.), px(0.))),
+                cx,
+            );
+            window.render_frame(cx);
+            let last = window.find(("resize", Column::FleetWork as usize)).bounds();
+            assert!(last.right() <= window.find("fleet-scroll").bounds().right());
+            let from = last.center();
+            window.drag(from, gpui_kit::point(from.x - px(32.), from.y), cx);
+        })
+        .unwrap();
+        save(&mut cx, window, &out, &format!("fleet-last-column-dragged-{suffix}"));
+        cx.update_window(window, |_, window, cx| {
+            window.double_click(("resize", dashboard_core::columns::Column::FleetWork as usize), cx);
+        })
+        .unwrap();
+        save(&mut cx, window, &out, &format!("fleet-last-column-reset-{suffix}"));
+
         cx.update(|cx| {
             view.update(cx, |v, cx| {
                 v.fleet_error = Some("pmd request timed out.".into());

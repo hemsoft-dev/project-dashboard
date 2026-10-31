@@ -3747,5 +3747,22 @@ fn fleet_borders_resize_persist_and_leave_project_widths_and_sort_unchanged(cx: 
         cx.update(|cx| view.read(cx).columns()).get(Column::FleetWork),
         Column::FleetWork.default_width() - 2.
     );
+    assert_eq!(
+        dashboard_core::ui_state::UiState::load(&dir)
+            .columns
+            .get(Column::FleetWork),
+        Column::FleetWork.default_width() - 2.
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.double_click(("resize", Column::FleetWork as usize), cx);
+    })
+    .unwrap();
+    assert_eq!(
+        dashboard_core::ui_state::UiState::load(&dir)
+            .columns
+            .get(Column::FleetWork),
+        Column::FleetWork.default_width()
+    );
     let _ = std::fs::remove_dir_all(dir);
 }

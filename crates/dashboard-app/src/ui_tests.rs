@@ -972,7 +972,14 @@ fn rgb_of(color: gpui_kit::Hsla) -> (u8, u8, u8) {
 }
 
 fn press(cx: &mut TestAppContext, handle: AnyWindowHandle, key: &str) {
-    cx.update_window(handle, |_, window, cx| window.press(key, cx)).unwrap();
+    // The native zoom modifier is Command on macOS and Ctrl elsewhere.
+    let key = if cfg!(target_os = "macos") {
+        key.replace("ctrl-", "cmd-")
+    } else {
+        key.to_owned()
+    };
+    cx.update_window(handle, |_, window, cx| window.press(&key, cx))
+        .unwrap();
     cx.run_until_parked();
 }
 
@@ -981,7 +988,7 @@ fn font_size(cx: &mut TestAppContext) -> f32 {
 }
 
 #[gpui_kit::test]
-async fn ctrl_plus_minus_and_zero_step_the_whole_ui_within_50_to_200_percent(cx: &mut TestAppContext) {
+async fn platform_zoom_shortcuts_step_the_whole_ui_within_50_to_200_percent(cx: &mut TestAppContext) {
     let (handle, _) = twelve(cx).await;
     assert_eq!(cx.update(|cx| zoom::level(cx)), 1.0);
     assert_eq!(font_size(cx), 16.0);
@@ -1024,7 +1031,7 @@ async fn the_level_shows_briefly_as_a_toast(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-async fn ctrl_wheel_zooms_and_a_plain_wheel_does_not(cx: &mut TestAppContext) {
+async fn platform_modifier_wheel_zooms_and_a_plain_wheel_does_not(cx: &mut TestAppContext) {
     use gpui_kit::{InputEvent as _, Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase, point};
     let (handle, _) = twelve(cx).await;
     let wheel = |cx: &mut TestAppContext, control: bool, notches: f32| {
@@ -1032,9 +1039,10 @@ async fn ctrl_wheel_zooms_and_a_plain_wheel_does_not(cx: &mut TestAppContext) {
             let event = ScrollWheelEvent {
                 position: point(px(500.), px(300.)),
                 delta: ScrollDelta::Lines(point(0., notches)),
-                modifiers: Modifiers {
-                    control,
-                    ..Modifiers::default()
+                modifiers: if control {
+                    Modifiers::secondary_key()
+                } else {
+                    Modifiers::default()
                 },
                 touch_phase: TouchPhase::Moved,
             };

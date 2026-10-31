@@ -1173,3 +1173,44 @@ fn captures_project_readiness() {
     settle(&mut cx);
     save(&mut cx, narrow, &out, "readiness-narrow-130");
 }
+
+#[test]
+#[ignore = "writes Fleet view evidence offscreen"]
+fn captures_fleet_status() {
+    let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").unwrap());
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cx = headless();
+    for (width, level, suffix) in [
+        (1100., 1., "default"),
+        (2400., 1., "wide"),
+        (480., 1., "narrow"),
+        (1100., 1.5, "150"),
+    ] {
+        cx.update(|cx| {
+            crate::zoom::set_level(level, cx);
+            crate::zoom::hide_toast(cx);
+        });
+        let (window, view) = open_sized(&mut cx, vec![], width, 760.);
+        cx.update(|cx| {
+            view.update(cx, |v, cx| {
+                v.selected_view = dashboard_core::config::View::Fleet;
+                cx.notify();
+            })
+        });
+        save(&mut cx, window, &out, &format!("fleet-loading-{suffix}"));
+        cx.update(|cx| {
+            view.update(cx, |v, cx| {
+                v.fleet_status = crate::ui_tests::fleet_status_fixture();
+                cx.notify();
+            })
+        });
+        save(&mut cx, window, &out, &format!("fleet-populated-{suffix}"));
+        cx.update(|cx| {
+            view.update(cx, |v, cx| {
+                v.fleet_error = Some("pmd request timed out.".into());
+                cx.notify();
+            })
+        });
+        save(&mut cx, window, &out, &format!("fleet-retained-error-{suffix}"));
+    }
+}

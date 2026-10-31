@@ -972,7 +972,14 @@ fn rgb_of(color: gpui_kit::Hsla) -> (u8, u8, u8) {
 }
 
 fn press(cx: &mut TestAppContext, handle: AnyWindowHandle, key: &str) {
-    cx.update_window(handle, |_, window, cx| window.press(key, cx)).unwrap();
+    // The native zoom modifier is Command on macOS and Ctrl elsewhere.
+    let key = if cfg!(target_os = "macos") {
+        key.replace("ctrl-", "cmd-")
+    } else {
+        key.to_owned()
+    };
+    cx.update_window(handle, |_, window, cx| window.press(&key, cx))
+        .unwrap();
     cx.run_until_parked();
 }
 
@@ -981,7 +988,7 @@ fn font_size(cx: &mut TestAppContext) -> f32 {
 }
 
 #[gpui_kit::test]
-async fn ctrl_plus_minus_and_zero_step_the_whole_ui_within_50_to_200_percent(cx: &mut TestAppContext) {
+async fn platform_zoom_shortcuts_step_the_whole_ui_within_50_to_200_percent(cx: &mut TestAppContext) {
     let (handle, _) = twelve(cx).await;
     assert_eq!(cx.update(|cx| zoom::level(cx)), 1.0);
     assert_eq!(font_size(cx), 16.0);
@@ -1024,7 +1031,7 @@ async fn the_level_shows_briefly_as_a_toast(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-async fn ctrl_wheel_zooms_and_a_plain_wheel_does_not(cx: &mut TestAppContext) {
+async fn platform_modifier_wheel_zooms_and_a_plain_wheel_does_not(cx: &mut TestAppContext) {
     use gpui_kit::{InputEvent as _, Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase, point};
     let (handle, _) = twelve(cx).await;
     let wheel = |cx: &mut TestAppContext, control: bool, notches: f32| {
@@ -1032,9 +1039,10 @@ async fn ctrl_wheel_zooms_and_a_plain_wheel_does_not(cx: &mut TestAppContext) {
             let event = ScrollWheelEvent {
                 position: point(px(500.), px(300.)),
                 delta: ScrollDelta::Lines(point(0., notches)),
-                modifiers: Modifiers {
-                    control,
-                    ..Modifiers::default()
+                modifiers: if control {
+                    Modifiers::secondary_key()
+                } else {
+                    Modifiers::default()
                 },
                 touch_phase: TouchPhase::Moved,
             };
@@ -3507,4 +3515,147 @@ async fn project_rows_show_dispatch_reasons_waiting_links_and_source_marker(cx: 
     })
     .unwrap();
     assert!(!cx.update(|cx| view.read(cx).is_expanded(Path::new("/demo/held"))));
+}
+
+pub(crate) fn fleet_status_fixture() -> dashboard_core::fleet_status::Snapshot {
+    use dashboard_core::fleet_status::{Load, Machine, Observation, Snapshot};
+    let now = chrono::Utc::now();
+    let machines = [
+        ("mini", "linux"),
+        ("home", "windows"),
+        ("laptop", "windows"),
+        ("air", "macos"),
+    ]
+    .into_iter()
+    .map(|(name, os)| Machine {
+        name: name.into(),
+        os: os.into(),
+        max_sessions: 3,
+    })
+    .collect();
+    let observations = ["mini", "home", "laptop", "air"]
+        .into_iter()
+        .enumerate()
+        .map(|(i, name)| Observation {
+            name: name.into(),
+            online: Some(i != 3),
+            probe_ok: Some(i != 3),
+            server_version: (i != 3).then(|| {
+                if i == 0 {
+                    "0.1.7-nightly.20261031.3991".into()
+                } else {
+                    "0.1.6-nightly.20261031.3956".into()
+                }
+            }),
+            latest_version: Some("0.1.7-nightly.20261031.3991".into()),
+            update_available: Some(i != 0),
+            checked_at: (i != 3).then_some(now),
+            attempted_at: Some(if i == 2 {
+                now - chrono::Duration::minutes(20)
+            } else {
+                now
+            }),
+            error: (i == 3).then(|| "T3 probe failed".into()),
+            ..Default::default()
+        })
+        .collect();
+    Snapshot {
+        machines,
+        observations,
+        loads: vec![Load {
+            name: "mini".into(),
+            used: Some(2),
+            free: Some(1),
+            ..Default::default()
+        }],
+        fetched_at: Some(now),
+        assignments: vec![dashboard_core::backlog::Assignment {
+            machine: "mini".into(),
+            state: "running".into(),
+            thread_id: "fixture-thread".into(),
+            work_item: Some(dashboard_core::backlog::WorkRef::Id("project-dashboard#59".into())),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
+#[gpui_kit::test]
+fn fleet_switcher_renders_without_project_checkouts(cx: &mut TestAppContext) {
+    let (handle, view) = open_board(
+        cx,
+        vec![],
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        options(),
+    );
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.fleet_status = fleet_status_fixture();
+            cx.notify();
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.click("Fleet", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("fleet-status").is_some());
+    })
+    .unwrap();
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.fleet_error = Some("pmd unavailable".into());
+            cx.notify();
+        })
+    });
+    assert_eq!(cx.update(|cx| view.read(cx).fleet_status.machines.len()), 4);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("Project", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("fleet-status").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn fleet_reads_on_selection_and_retains_data_after_token_refresh_failure(cx: &mut TestAppContext) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let fail = Arc::new(AtomicBool::new(false));
+    let broken = fail.clone();
+    let server = pmd_http::Server::with_auth(move |path, token| {
+        let body = match path {
+            "/v1/assignments?limit=500" => r#"{"assignments":[],"truncated":false}"#,
+            "/v1/machines" => r#"{"machines":[{"name":"mini","os":"linux","maxSessions":3}]}"#,
+            "/v1/capacity" => r#"{"machines":[{"name":"mini","used":1,"free":2}]}"#,
+            "/v1/fleet/status" if broken.load(Ordering::SeqCst) => {
+                return pmd_http::Reply {
+                    code: 503,
+                    body: "{}".into(),
+                };
+            }
+            "/v1/fleet/status" => r#"{"schema":1,"machines":[]}"#,
+            _ => return pmd_response(path, token),
+        };
+        pmd_http::Reply {
+            code: 200,
+            body: body.into(),
+        }
+    });
+    let mut live = LivePmd::new(cx, &server, "fleet-lazy-refresh");
+    assert!(!server.requests.lock().unwrap().iter().any(|p| p == "/v1/machines"));
+    cx.update_window(live.handle, |_, window, cx| window.click("Fleet", cx))
+        .unwrap();
+    until(cx, |cx| {
+        cx.update(|cx| live.view.read(cx).fleet_status.fetched_at.is_some())
+    });
+    let checked = cx.update(|cx| live.view.read(cx).fleet_status.fetched_at);
+    fail.store(true, Ordering::SeqCst);
+    live.config.view = dashboard_core::config::View::Fleet;
+    live.config.pmd_token_path = "new-token".into();
+    live.reload(cx);
+    until(cx, |cx| cx.update(|cx| live.view.read(cx).fleet_error.is_some()));
+    cx.update(|cx| {
+        let view = live.view.read(cx);
+        assert_eq!(view.fleet_status.machines[0].name, "mini");
+        assert_eq!(view.fleet_status.fetched_at, checked);
+    });
 }

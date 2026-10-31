@@ -3,6 +3,7 @@
 
 mod backlog_view;
 mod board_view;
+mod fleet_status_view;
 // GPUI renders headlessly from a test on Linux (wgpu) and macOS (Metal).
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod captures;

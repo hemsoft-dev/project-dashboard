@@ -340,3 +340,25 @@ and is clamped to its usable area. Column dividers can shrink to the header mini
 For an unattended Windows update over SSH, run `scripts/Install-WindowsRelease.ps1 -Package <zip>`.
 It preserves the AppData configuration and launches the executable directly through a temporary interactive scheduled
 task, then unregisters that task. The installer runs in session 0 without opening a console on the desktop.
+
+### Fleet status
+
+Choose **Fleet** beside Project and Backlog to see registered machines, measured
+Tailscale connectivity, T3 server response/current version and channel latest,
+separate client version when measured, session load/capacity, free dispatch slots,
+running assignments and last successful check. Scroll horizontally for the full
+status table at narrow widths. F5 and automatic refresh read pmd's caches only.
+
+Registration does not establish connectivity. Unknown means unmeasured, Offline
+is a Tailscale observation, Stale means an observation older than ten minutes,
+and Not responding means a successful host probe without a server response.
+A failed probe never proves T3 is uninstalled. Versions retained after failed
+probes are shown with an unknown/stale status. Client installation remains unknown
+unless measured separately. Session load comes from capacity's own T3 source
+freshness and is independent of host connectivity. A failed API refresh preserves
+the last successful table and original ages, with an error and F5 recovery.
+
+Fleet requires pmd's read-scoped `/v1/fleet/status` endpoint, alongside existing
+`/v1/machines`, `/v1/capacity` and `/v1/assignments`. An older pmd returns a visible
+refresh error. No subprocess, machine updates/restarts or dispatch activation is
+performed by this view. Configure the opt-in collector on pmd's host separately.

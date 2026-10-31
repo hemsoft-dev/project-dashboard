@@ -131,14 +131,16 @@ impl BoardView {
                     .py_2()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(
-                        h_flex().children(
-                            values
-                                .into_iter()
-                                .enumerate()
-                                .map(|(i, v)| cell(v, i).id(("fleet-body", row * 9 + i)).test_support()),
-                        ),
-                    )
+                    .child(h_flex().children(values.into_iter().enumerate().map(|(i, v)| {
+                        let full = v.clone();
+                        cell(v, i)
+                            .id(("fleet-body", row * 9 + i))
+                            .test_support()
+                            .aria_label(full.clone())
+                            .tooltip(move |window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(full.clone()).build(window, cx)
+                            })
+                    })))
                     .children(
                         obs.and_then(|o| o.error.clone())
                             .into_iter()

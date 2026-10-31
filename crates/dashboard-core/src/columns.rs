@@ -19,6 +19,16 @@ pub enum Column {
     Merged24h,
     Merged7d,
     Updated,
+    FleetMachine,
+    FleetConnectivity,
+    FleetServer,
+    FleetVersions,
+    FleetClient,
+    FleetSessions,
+    FleetFree,
+    FleetChecked,
+    FleetWork,
+
 }
 
 impl Column {
@@ -32,6 +42,8 @@ impl Column {
         Self::Updated,
     ];
 
+    pub const FLEET: [Column; 9] = [Self::FleetMachine, Self::FleetConnectivity, Self::FleetServer, Self::FleetVersions, Self::FleetClient, Self::FleetSessions, Self::FleetFree, Self::FleetChecked, Self::FleetWork];
+
     /// The width before any drag, in rems. The repository column fits a typical `owner/name` and its Cached tag.
     pub fn default_width(self) -> f32 {
         match self {
@@ -40,6 +52,16 @@ impl Column {
             Self::PullRequests | Self::Issues => 3.25,
             Self::Merged24h | Self::Merged7d => 6.5,
             Self::Updated => 4.5,
+            Self::FleetMachine => 9.0,
+            Self::FleetConnectivity => 8.0,
+            Self::FleetServer => 13.0,
+            Self::FleetVersions => 24.0,
+            Self::FleetClient => 12.0,
+            Self::FleetSessions => 9.0,
+            Self::FleetFree => 7.0,
+            Self::FleetChecked => 15.0,
+            Self::FleetWork => 24.0,
+
         }
     }
 
@@ -52,6 +74,16 @@ impl Column {
             Self::Issues => 2.25,
             Self::Merged24h | Self::Merged7d => 4.5,
             Self::Updated => 3.5,
+            Self::FleetMachine => 6.0,
+            Self::FleetConnectivity => 7.0,
+            Self::FleetServer => 8.0,
+            Self::FleetVersions => 12.0,
+            Self::FleetClient => 8.0,
+            Self::FleetSessions => 8.0,
+            Self::FleetFree => 6.0,
+            Self::FleetChecked => 10.0,
+            Self::FleetWork => 10.0,
+
         }
     }
 
@@ -65,6 +97,16 @@ impl Column {
             Self::Merged24h => "merged24h",
             Self::Merged7d => "merged7d",
             Self::Updated => "updated",
+            Self::FleetMachine => "fleetMachine",
+            Self::FleetConnectivity => "fleetConnectivity",
+            Self::FleetServer => "fleetServer",
+            Self::FleetVersions => "fleetVersions",
+            Self::FleetClient => "fleetClient",
+            Self::FleetSessions => "fleetSessions",
+            Self::FleetFree => "fleetFree",
+            Self::FleetChecked => "fleetChecked",
+            Self::FleetWork => "fleetWork",
+
         }
     }
 
@@ -91,6 +133,8 @@ pub struct ColumnWidths {
     #[serde(default = "merge_width")]
     merged_7d: f32,
     updated: f32,
+    #[serde(default)]
+    fleet: [f32; 9],
 }
 
 impl Default for ColumnWidths {
@@ -103,6 +147,7 @@ impl Default for ColumnWidths {
             merged_24h: merge_width(),
             merged_7d: merge_width(),
             updated: Column::Updated.default_width(),
+            fleet: Column::FLEET.map(Column::default_width),
         }
     }
 }
@@ -117,6 +162,16 @@ impl ColumnWidths {
             Column::Merged24h => self.merged_24h,
             Column::Merged7d => self.merged_7d,
             Column::Updated => self.updated,
+            Column::FleetMachine => self.fleet[0],
+            Column::FleetConnectivity => self.fleet[1],
+            Column::FleetServer => self.fleet[2],
+            Column::FleetVersions => self.fleet[3],
+            Column::FleetClient => self.fleet[4],
+            Column::FleetSessions => self.fleet[5],
+            Column::FleetFree => self.fleet[6],
+            Column::FleetChecked => self.fleet[7],
+            Column::FleetWork => self.fleet[8],
+
         }
     }
 
@@ -131,6 +186,16 @@ impl ColumnWidths {
             Column::Merged24h => self.merged_24h = width,
             Column::Merged7d => self.merged_7d = width,
             Column::Updated => self.updated = width,
+            Column::FleetMachine => self.fleet[0] = width,
+            Column::FleetConnectivity => self.fleet[1] = width,
+            Column::FleetServer => self.fleet[2] = width,
+            Column::FleetVersions => self.fleet[3] = width,
+            Column::FleetClient => self.fleet[4] = width,
+            Column::FleetSessions => self.fleet[5] = width,
+            Column::FleetFree => self.fleet[6] = width,
+            Column::FleetChecked => self.fleet[7] = width,
+            Column::FleetWork => self.fleet[8] = width,
+
         }
     }
 
@@ -142,11 +207,16 @@ impl ColumnWidths {
     /// that column's default or bound without affecting the others.
     pub fn from_value(value: Option<&Value>) -> Self {
         let mut widths = Self::default();
-        for column in Column::ALL {
+        for column in Column::ALL.into_iter().chain(Column::FLEET) {
             if let Some(width) = value.and_then(|value| value.get(column.key())).and_then(Value::as_f64) {
                 // Bounded before the cast, so a huge saved width clamps to the maximum instead of becoming infinite.
                 let width = width.clamp(f64::from(-MAX_WIDTH), f64::from(MAX_WIDTH));
                 widths.set(column, width as f32);
+            }
+        }
+        if let Some(saved) = value.and_then(|v| v.get("fleet")).and_then(Value::as_array) {
+            for (column, v) in Column::FLEET.into_iter().zip(saved) {
+                if let Some(w) = v.as_f64() { widths.set(column, w.clamp(-60.0, 60.0) as f32); }
             }
         }
         widths

@@ -64,7 +64,7 @@ impl Snapshot {
             assignments: Vec<crate::backlog::Assignment>,
             truncated: bool,
         }
-        let work: Assignments = api.get("v1/assignments", &[("limit", "500")])?;
+        let work: Assignments = api.get("v1/assignments", &[("limit", "500"), ("state", "running")])?;
         let machines: Machines = api.get("v1/machines", &[])?;
         let capacity: Capacity = api.get("v1/capacity", &[])?;
         let health: Health = api.get("v1/fleet/status", &[])?;

@@ -1205,6 +1205,12 @@ fn captures_fleet_status() {
             })
         });
         save(&mut cx, window, &out, &format!("fleet-populated-{suffix}"));
+        cx.update(|cx| view.update(cx, |v, cx| {
+            v.columns.set(Column::FleetVersions, 14.);
+            v.columns.set(Column::FleetWork, 40.);
+            cx.notify();
+        }));
+        save(&mut cx, window, &out, &format!("fleet-resized-{suffix}"));
         cx.update(|cx| {
             view.update(cx, |v, cx| {
                 v.fleet_error = Some("pmd request timed out.".into());

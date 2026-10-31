@@ -3688,7 +3688,7 @@ fn fleet_borders_resize_persist_and_leave_project_widths_and_sort_unchanged(cx: 
     let after = cx.update(|cx| view.read(cx).columns());
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        for i in 0..9 {
+        for i in 0usize..9 {
             assert_eq!(
                 window.find(("fleet-header", i)).bounds().size.width,
                 window.find(("fleet-body", i)).bounds().size.width

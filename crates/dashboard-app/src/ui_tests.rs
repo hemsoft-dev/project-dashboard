@@ -3717,5 +3717,19 @@ fn fleet_borders_resize_persist_and_leave_project_widths_and_sort_unchanged(cx: 
             .get(Column::FleetMachine),
         Column::FleetMachine.default_width()
     );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let before = window.find(("fleet-header", 8usize)).bounds();
+        window.scroll("fleet-scroll", ScrollDelta::Pixels(point(px(-3000.), px(0.))), cx);
+        window.render_frame(cx);
+        let header = window.find(("fleet-header", 8usize)).bounds();
+        let body = window.find(("fleet-body", 8usize)).bounds();
+        assert!(
+            header.left() < before.left(),
+            "trailing work column can be reached horizontally"
+        );
+        assert_eq!(header.left(), body.left());
+    })
+    .unwrap();
     let _ = std::fs::remove_dir_all(dir);
 }

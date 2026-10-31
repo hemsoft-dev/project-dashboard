@@ -53,7 +53,13 @@ impl BoardView {
         ];
         let widths = Column::FLEET.map(|c| self.columns.get(c));
         let total: f32 = widths.iter().sum();
-        let cell = |text: String, index: usize| div().w(rems(widths[index])).flex_none().px_2().child(text);
+        let cell = |text: String, index: usize| {
+            div()
+                .w(rems(widths[index]))
+                .flex_none()
+                .px_2()
+                .child(div().w_full().truncate().child(text))
+        };
         // The shared handle extends half a rem beyond its cell, including the final column.
         let mut table = v_flex()
             .w(rems(total + 0.5))

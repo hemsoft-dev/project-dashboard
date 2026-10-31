@@ -3686,6 +3686,16 @@ fn fleet_borders_resize_persist_and_leave_project_widths_and_sort_unchanged(cx: 
         .unwrap();
     drag_border(cx, handle, Column::FleetMachine, 48.);
     let after = cx.update(|cx| view.read(cx).columns());
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        for i in 0..9 {
+            assert_eq!(
+                window.find(("fleet-header", i)).bounds().size.width,
+                window.find(("fleet-body", i)).bounds().size.width
+            );
+        }
+    })
+    .unwrap();
     assert_eq!(after.get(Column::FleetMachine), before.0.get(Column::FleetMachine) + 3.);
     for column in Column::ALL {
         assert_eq!(after.get(column), before.0.get(column));

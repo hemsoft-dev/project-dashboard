@@ -53,14 +53,7 @@ impl BoardView {
         ];
         let widths = Column::FLEET.map(|c| self.columns.get(c));
         let total: f32 = widths.iter().sum();
-        let cell = |text: String, index: usize| {
-            div()
-                .id(("fleet-cell", index))
-                .w(rems(widths[index]))
-                .flex_none()
-                .px_2()
-                .child(text)
-        };
+        let cell = |text: String, index: usize| div().w(rems(widths[index])).flex_none().px_2().child(text);
         let mut table = v_flex()
             .w(rems(total))
             .flex_none()
@@ -70,11 +63,13 @@ impl BoardView {
                     .font_semibold()
                     .children(headers.into_iter().enumerate().map(|(i, h)| {
                         cell(h.into(), i)
+                            .id(("fleet-header", i))
+                            .test_support()
                             .relative()
                             .child(self.resize_handle(Column::FLEET[i], cx))
                     })),
             );
-        for machine in &data.machines {
+        for (row, machine) in data.machines.iter().enumerate() {
             let obs = data.observations.iter().find(|o| o.name == machine.name);
             let load = data.loads.iter().find(|l| l.name == machine.name);
             let work = data
@@ -136,7 +131,14 @@ impl BoardView {
                     .py_2()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(h_flex().children(values.into_iter().enumerate().map(|(i, v)| cell(v, i))))
+                    .child(
+                        h_flex().children(
+                            values
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, v)| cell(v, i).id(("fleet-body", row * 9 + i)).test_support()),
+                        ),
+                    )
                     .children(
                         obs.and_then(|o| o.error.clone())
                             .into_iter()

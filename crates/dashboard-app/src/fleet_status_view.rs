@@ -53,7 +53,7 @@ impl BoardView {
             "T3 server",
             "Running / latest",
             "T3 client",
-            "Active / Chief cap",
+            "Active\nChief cap",
             "Chief free",
             "Last checked",
             "Running work",

@@ -47,7 +47,7 @@ impl Machine {
             };
         }
         match self.active_count {
-            Some(count) if self.state == "partial" => format!("≥{count} active · partial"),
+            Some(count) if self.state == "partial" => format!("≥{count} · partial"),
             Some(count) => format!("{count} active"),
             None => "Unavailable".into(),
         }
@@ -121,7 +121,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert_eq!(machine.count_label(now), "≥1 active · partial");
+        assert_eq!(machine.count_label(now), "≥1 · partial");
         assert!(machine.work_label(now, false).contains("monitoring · hs-buddy #823"));
         machine.state = "unavailable".into();
         machine.active_count = None;

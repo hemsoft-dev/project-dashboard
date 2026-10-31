@@ -3569,7 +3569,7 @@ pub(crate) fn fleet_status_fixture() -> dashboard_core::fleet_status::Snapshot {
             name: "mini".into(),
             used: Some(2),
             chief_started: Some(1),
-            free: Some(1),
+            free: Some(2),
             ..Default::default()
         }],
         fetched_at: Some(now),
@@ -3730,7 +3730,7 @@ fn fleet_runtime_counts_monitoring_and_keeps_dispatch_and_expected_absence_disti
                 .unwrap()
                 .contains("4 active\nChief 1 / 3")
         );
-        assert_eq!(window.find(("fleet-body", 6usize)).label(), Some("1 dispatch"));
+        assert_eq!(window.find(("fleet-body", 6usize)).label(), Some("2 dispatch"));
         let work = window.find(("fleet-body", 8usize)).label().unwrap().to_owned();
         assert!(work.contains("monitoring · hs-buddy #900 review"));
         assert!(!work.contains("fixture-"));
@@ -3747,7 +3747,7 @@ fn fleet_runtime_counts_monitoring_and_keeps_dispatch_and_expected_absence_disti
                 .find(("fleet-body", 32usize))
                 .label()
                 .unwrap()
-                .starts_with("≥1 active · partial")
+                .starts_with("≥1 · partial")
         );
     })
     .unwrap();

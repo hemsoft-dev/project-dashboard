@@ -3623,7 +3623,7 @@ fn fleet_reads_on_selection_and_retains_data_after_token_refresh_failure(cx: &mu
     let broken = fail.clone();
     let server = pmd_http::Server::with_auth(move |path, token| {
         let body = match path {
-            "/v1/assignments?limit=500" => r#"{"assignments":[],"truncated":false}"#,
+            "/v1/assignments?limit=500&state=running" => r#"{"assignments":[],"truncated":false}"#,
             "/v1/machines" => r#"{"machines":[{"name":"mini","os":"linux","maxSessions":3}]}"#,
             "/v1/capacity" => r#"{"machines":[{"name":"mini","used":1,"free":2}]}"#,
             "/v1/fleet/status" if broken.load(Ordering::SeqCst) => {

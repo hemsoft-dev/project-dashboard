@@ -10,6 +10,7 @@ pub mod columns;
 pub mod config;
 pub mod edit;
 pub mod fleet;
+pub mod fleet_activity;
 pub mod fleet_status;
 pub mod placement;
 pub mod pmd;

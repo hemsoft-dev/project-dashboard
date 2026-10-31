@@ -614,10 +614,15 @@ impl BoardView {
                 self.options.priorities = Arc::new(pmd.clone());
                 self.limiter.set_source(Arc::new(pmd.clone()));
                 self.board.replace_pmd_source(&pmd.url, &mut self.cache);
+                let same_url = self.options.pmd.as_ref().is_some_and(|old| old.url == pmd.url);
                 self.options.pmd = Some(pmd);
-                self.fleet_status = Default::default();
-                self.fleet_error = None;
-                self.refresh_fleet(cx);
+                if !same_url {
+                    self.fleet_status = Default::default();
+                    self.fleet_error = None;
+                }
+                if self.selected_view == dashboard_core::config::View::Fleet {
+                    self.refresh_fleet(cx);
+                }
                 self.sync_wanted();
                 self.start(self.board.checkouts(), false, cx);
                 self.refresh_priorities(cx);
@@ -666,8 +671,7 @@ impl BoardView {
         cx.notify();
     }
 
-    /// Refreshes every card that isn't already refreshing, from pmd's cached state. The config file is
-    /// read first, so the refresh covers the current list.
+    /// Fleet reads are independent of project workers, and start when Fleet is selected.
     fn refresh_fleet(&mut self, cx: &mut Context<Self>) {
         if self.fleet_loading {
             return;
@@ -710,6 +714,7 @@ impl BoardView {
         .detach();
     }
 
+    /// Refreshes the visible view from pmd, applying config edits first.
     pub fn refresh_all(&mut self, cx: &mut Context<Self>) {
         self.reload_config(cx);
         self.refresh_idle(cx);
@@ -726,7 +731,9 @@ impl BoardView {
     fn refresh_idle(&mut self, cx: &mut Context<Self>) {
         self.check_identities(cx);
         self.refresh_priorities(cx);
-        self.refresh_fleet(cx);
+        if self.selected_view == dashboard_core::config::View::Fleet {
+            self.refresh_fleet(cx);
+        }
         let idle: Vec<PathBuf> = self
             .board
             .cards()
@@ -1872,6 +1879,9 @@ impl Render for BoardView {
                                         view.options.config_problem = Some(error.to_string());
                                     }
                                     view.selected_view = choice;
+                                    if choice == dashboard_core::config::View::Fleet {
+                                        view.refresh_fleet(cx);
+                                    }
                                     cx.notify();
                                 })),
                         )

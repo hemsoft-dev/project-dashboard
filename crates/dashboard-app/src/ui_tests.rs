@@ -3594,3 +3594,47 @@ fn fleet_switcher_renders_without_project_checkouts(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn fleet_reads_on_selection_and_retains_data_after_token_refresh_failure(cx: &mut TestAppContext) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let fail = Arc::new(AtomicBool::new(false));
+    let broken = fail.clone();
+    let server = pmd_http::Server::with_auth(move |path, token| {
+        let body = match path {
+            "/v1/assignments?limit=500" => r#"{"assignments":[],"truncated":false}"#,
+            "/v1/machines" => r#"{"machines":[{"name":"mini","os":"linux","maxSessions":3}]}"#,
+            "/v1/capacity" => r#"{"machines":[{"name":"mini","used":1,"free":2}]}"#,
+            "/v1/fleet/status" if broken.load(Ordering::SeqCst) => {
+                return pmd_http::Reply {
+                    code: 503,
+                    body: "{}".into(),
+                };
+            }
+            "/v1/fleet/status" => r#"{"schema":1,"machines":[]}"#,
+            _ => return pmd_response(path, token),
+        };
+        pmd_http::Reply {
+            code: 200,
+            body: body.into(),
+        }
+    });
+    let mut live = LivePmd::new(cx, &server, "fleet-lazy-refresh");
+    assert!(!server.requests.lock().unwrap().iter().any(|p| p == "/v1/machines"));
+    cx.update_window(live.handle, |_, window, cx| window.click("Fleet", cx))
+        .unwrap();
+    until(cx, |cx| {
+        cx.update(|cx| live.view.read(cx).fleet_status.fetched_at.is_some())
+    });
+    let checked = cx.update(|cx| live.view.read(cx).fleet_status.fetched_at);
+    fail.store(true, Ordering::SeqCst);
+    live.config.view = dashboard_core::config::View::Fleet;
+    live.config.pmd_token_path = "new-token".into();
+    live.reload(cx);
+    until(cx, |cx| cx.update(|cx| live.view.read(cx).fleet_error.is_some()));
+    cx.update(|cx| {
+        let view = live.view.read(cx);
+        assert_eq!(view.fleet_status.machines[0].name, "mini");
+        assert_eq!(view.fleet_status.fetched_at, checked);
+    });
+}

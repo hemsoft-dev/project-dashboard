@@ -55,6 +55,7 @@ pub enum View {
     #[default]
     Project,
     Backlog,
+    Fleet,
 }
 
 impl Default for Config {
@@ -122,6 +123,7 @@ impl Config {
         let name = match view {
             View::Project => "project",
             View::Backlog => "backlog",
+            View::Fleet => "fleet",
         };
         let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
         let top = lines

@@ -3508,3 +3508,89 @@ async fn project_rows_show_dispatch_reasons_waiting_links_and_source_marker(cx: 
     .unwrap();
     assert!(!cx.update(|cx| view.read(cx).is_expanded(Path::new("/demo/held"))));
 }
+
+pub(crate) fn fleet_status_fixture() -> dashboard_core::fleet_status::Snapshot {
+    use dashboard_core::fleet_status::{Load, Machine, Observation, Snapshot};
+    let now = chrono::Utc::now();
+    let machines = [
+        ("mini", "linux"),
+        ("home", "windows"),
+        ("laptop", "windows"),
+        ("air", "macos"),
+    ]
+    .into_iter()
+    .map(|(name, os)| Machine {
+        name: name.into(),
+        os: os.into(),
+        max_sessions: 3,
+    })
+    .collect();
+    let observations = ["mini", "home", "laptop", "air"]
+        .into_iter()
+        .enumerate()
+        .map(|(i, name)| Observation {
+            name: name.into(),
+            online: Some(i != 3),
+            probe_ok: Some(i != 3),
+            server_version: (i != 3).then(|| "0.1.6-nightly.20261031.3956".into()),
+            latest_version: Some("0.1.7-nightly.20261031.3991".into()),
+            update_available: Some(true),
+            checked_at: (i != 3).then_some(now),
+            attempted_at: Some(if i == 2 {
+                now - chrono::Duration::minutes(20)
+            } else {
+                now
+            }),
+            error: (i == 3).then(|| "T3 probe failed".into()),
+            ..Default::default()
+        })
+        .collect();
+    Snapshot {
+        machines,
+        observations,
+        loads: vec![Load {
+            name: "mini".into(),
+            used: Some(2),
+            free: Some(1),
+            ..Default::default()
+        }],
+        fetched_at: Some(now),
+        ..Default::default()
+    }
+}
+
+#[gpui_kit::test]
+fn fleet_switcher_renders_without_project_checkouts(cx: &mut TestAppContext) {
+    let (handle, view) = open_board(
+        cx,
+        vec![],
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        options(),
+    );
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.fleet_status = fleet_status_fixture();
+            cx.notify();
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.click("Fleet", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("fleet-status").is_some());
+    })
+    .unwrap();
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.fleet_error = Some("pmd unavailable".into());
+            cx.notify();
+        })
+    });
+    assert_eq!(cx.update(|cx| view.read(cx).fleet_status.machines.len()), 4);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("Project", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("fleet-status").is_none());
+    })
+    .unwrap();
+}

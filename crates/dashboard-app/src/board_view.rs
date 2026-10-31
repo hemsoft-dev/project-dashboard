@@ -115,6 +115,9 @@ pub struct BoardView {
     pub(crate) selected_view: dashboard_core::config::View,
     pub(crate) board: Board,
     cache: StatusCache,
+    pub(crate) fleet_status: dashboard_core::fleet_status::Snapshot,
+    pub(crate) fleet_error: Option<String>,
+    fleet_loading: bool,
     /// Caps every refresh, together, at `parallelism` HTTP reads.
     limiter: Arc<scheduler::Limited>,
     /// The cards on the board, shared with running refreshes so they skip removed checkouts.
@@ -193,6 +196,9 @@ impl BoardView {
                 .unwrap_or_default(),
             board: Board::new(checkouts, &cache),
             cache,
+            fleet_status: Default::default(),
+            fleet_error: None,
+            fleet_loading: false,
             limiter,
             wanted,
             auto_schedule: 0,
@@ -609,6 +615,9 @@ impl BoardView {
                 self.limiter.set_source(Arc::new(pmd.clone()));
                 self.board.replace_pmd_source(&pmd.url, &mut self.cache);
                 self.options.pmd = Some(pmd);
+                self.fleet_status = Default::default();
+                self.fleet_error = None;
+                self.refresh_fleet(cx);
                 self.sync_wanted();
                 self.start(self.board.checkouts(), false, cx);
                 self.refresh_priorities(cx);
@@ -659,6 +668,48 @@ impl BoardView {
 
     /// Refreshes every card that isn't already refreshing, from pmd's cached state. The config file is
     /// read first, so the refresh covers the current list.
+    fn refresh_fleet(&mut self, cx: &mut Context<Self>) {
+        if self.fleet_loading {
+            return;
+        }
+        let Some(pmd) = self.options.pmd.clone() else {
+            return;
+        };
+        self.fleet_loading = true;
+        let (send, receive) = std::sync::mpsc::channel();
+        let requested = pmd.clone();
+        std::thread::spawn(move || {
+            let _ = send.send(dashboard_core::fleet_status::Snapshot::fetch(&requested));
+        });
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(POLL).await;
+                let result = match receive.try_recv() {
+                    Ok(result) => result,
+                    Err(TryRecvError::Empty) => continue,
+                    Err(TryRecvError::Disconnected) => Err(dashboard_core::source::FetchError::Unavailable),
+                };
+                let _ = this.update(cx, |view, cx| {
+                    view.fleet_loading = false;
+                    if view.options.pmd.as_ref() == Some(&pmd) {
+                        match result {
+                            Ok(snapshot) => {
+                                view.fleet_status = snapshot;
+                                view.fleet_error = None;
+                            }
+                            Err(error) => view.fleet_error = Some(error.to_string()),
+                        }
+                    } else {
+                        view.refresh_fleet(cx);
+                    }
+                    cx.notify();
+                });
+                break;
+            }
+        })
+        .detach();
+    }
+
     pub fn refresh_all(&mut self, cx: &mut Context<Self>) {
         self.reload_config(cx);
         self.refresh_idle(cx);
@@ -675,6 +726,7 @@ impl BoardView {
     fn refresh_idle(&mut self, cx: &mut Context<Self>) {
         self.check_identities(cx);
         self.refresh_priorities(cx);
+        self.refresh_fleet(cx);
         let idle: Vec<PathBuf> = self
             .board
             .cards()
@@ -1804,6 +1856,7 @@ impl Render for BoardView {
                     [
                         ("Project", dashboard_core::config::View::Project),
                         ("Backlog", dashboard_core::config::View::Backlog),
+                        ("Fleet", dashboard_core::config::View::Fleet),
                     ]
                     .into_iter()
                     .map(|(name, choice)| {
@@ -1835,7 +1888,9 @@ impl Render for BoardView {
         if let Some(problem) = self.board.setup_problem() {
             content = content.child(self.render_banner(IconName::CircleAlert, problem.to_string(), cx));
         }
-        if self.selected_view == dashboard_core::config::View::Backlog {
+        if self.selected_view == dashboard_core::config::View::Fleet {
+            content = content.child(self.render_fleet(cx));
+        } else if self.selected_view == dashboard_core::config::View::Backlog {
             content = content.child(self.render_backlog(cx));
         } else if self.board.is_empty() {
             content = content.child(self.render_empty(cx));

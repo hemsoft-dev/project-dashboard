@@ -10,6 +10,9 @@ impl BoardView {
     pub(crate) fn render_fleet(&self, cx: &App) -> impl IntoElement {
         let now = chrono::Utc::now();
         let data = &self.fleet_status;
+        let load_stale = data
+            .fetched_at
+            .is_none_or(|at| now.signed_duration_since(at).num_seconds() > 600);
         let mut body = v_flex()
             .id("fleet-status")
             .test_support()
@@ -85,10 +88,16 @@ impl BoardView {
                     .unwrap_or_else(|| "Unknown".into()),
                 format!(
                     "{} / {}",
-                    load.and_then(|l| l.used).map_or("Unknown".into(), |n| n.to_string()),
+                    if load_stale {
+                        "Stale".into()
+                    } else {
+                        load.and_then(|l| l.used).map_or("Unknown".into(), |n| n.to_string())
+                    },
                     machine.max_sessions
                 ),
-                if machine.max_sessions == 0 {
+                if load_stale {
+                    "Stale".into()
+                } else if machine.max_sessions == 0 {
                     "N/A · disabled".into()
                 } else {
                     load.and_then(|l| l.free).map_or("Unknown".into(), |n| n.to_string())
@@ -96,7 +105,7 @@ impl BoardView {
                 obs.and_then(|o| o.checked_at).map_or("Never".into(), |at| {
                     format!("{} · {}", clock_time(at, now), age_words(at, now))
                 }),
-                if load.and_then(|l| l.load_unknown.as_ref()).is_some() {
+                if load_stale || load.and_then(|l| l.load_unknown.as_ref()).is_some() {
                     "Unknown · source stale".into()
                 } else if work.is_empty() {
                     "None reported".into()

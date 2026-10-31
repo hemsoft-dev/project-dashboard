@@ -3720,7 +3720,11 @@ fn fleet_borders_resize_persist_and_leave_project_widths_and_sort_unchanged(cx: 
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         let before = window.find(("fleet-header", 8usize)).bounds();
-        window.scroll("fleet-scroll", ScrollDelta::Pixels(point(px(-3000.), px(0.))), cx);
+        window.scroll(
+            "fleet-scroll",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-3000.), px(0.))),
+            cx,
+        );
         window.render_frame(cx);
         let header = window.find(("fleet-header", 8usize)).bounds();
         let body = window.find(("fleet-body", 8usize)).bounds();

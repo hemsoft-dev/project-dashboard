@@ -1244,3 +1244,70 @@ fn captures_fleet_status() {
         save(&mut cx, window, &out, &format!("fleet-retained-error-{suffix}"));
     }
 }
+
+#[test]
+#[ignore = "writes issue 65 trailing-column drag screenshots and recording frames offscreen"]
+fn captures_trailing_columns() {
+    use dashboard_core::columns::Column;
+    use gpui_kit::test::TestEventExt as _;
+    use gpui_kit::{MouseButton, ScrollDelta, point};
+    let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").unwrap());
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cx = headless();
+    for width in [1600., 480.] {
+        for fleet in [false, true] {
+            let name = format!("trailing-{}-{}", if fleet { "fleet" } else { "project" }, width as u32);
+            let (window, view) = open_sized(&mut cx, demo::checkouts(), width, 760.);
+            fill(&mut cx, &view, &demo::HostedSource);
+            if fleet {
+                cx.update(|cx| {
+                    view.update(cx, |v, cx| {
+                        v.selected_view = dashboard_core::config::View::Fleet;
+                        v.fleet_status = crate::ui_tests::fleet_status_fixture();
+                        v.fleet_activity = crate::ui_tests::fleet_activity_fixture();
+                        cx.notify();
+                    })
+                });
+            }
+            let scroll = if fleet { "fleet-scroll" } else { "table" };
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.scroll(scroll, ScrollDelta::Pixels(point(px(-5000.), px(0.))), cx);
+            })
+            .unwrap();
+            save(&mut cx, window, &out, &format!("{name}-before"));
+            let columns = if fleet {
+                [Column::FleetChecked, Column::FleetWork]
+            } else {
+                [Column::Activity, Column::Session]
+            };
+            for (index, column) in columns.into_iter().enumerate() {
+                let step = if fleet || column == Column::Session { -4. } else { 4. };
+                let from = cx
+                    .update_window(window, |_, window, cx| {
+                        window.render_frame(cx);
+                        window.scroll(scroll, ScrollDelta::Pixels(point(px(-5000.), px(0.))), cx);
+                        let from = window.find(("resize", column as usize)).bounds().center();
+                        window.pointer_move(from, None, cx);
+                        window.pointer_down(from, MouseButton::Left, cx);
+                        from
+                    })
+                    .unwrap();
+                for frame in 0..16 {
+                    let to = point(from.x + px(step * frame as f32), from.y);
+                    cx.update_window(window, |_, window, cx| {
+                        window.pointer_move(to, Some(MouseButton::Left), cx)
+                    })
+                    .unwrap();
+                    save(&mut cx, window, &out, &format!("{name}-{index}-frame-{frame:02}"));
+                }
+                cx.update_window(window, |_, window, cx| {
+                    window.pointer_up(point(from.x + px(step * 15.), from.y), MouseButton::Left, cx);
+                    window.scroll(scroll, ScrollDelta::Pixels(point(px(-5000.), px(0.))), cx);
+                })
+                .unwrap();
+                save(&mut cx, window, &out, &format!("{name}-after-{index}"));
+            }
+        }
+    }
+}

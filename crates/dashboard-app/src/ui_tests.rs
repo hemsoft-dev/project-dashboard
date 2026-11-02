@@ -1211,6 +1211,235 @@ async fn at_200_percent_in_the_narrowest_window_the_title_bar_keeps_its_refresh_
 
 // Resizable columns (#14).
 
+#[gpui_kit::test]
+fn trailing_existing_handles_accept_drags_at_the_horizontal_scroll_end(cx: &mut TestAppContext) {
+    for width in [1600., 480.] {
+        let (handle, view) = open_board_sized(
+            cx,
+            four(),
+            StatusCache::default(),
+            Arc::new(demo::DemoSource),
+            options(),
+            width,
+        );
+        cx.update_window(handle, |_, window, cx| {
+            window.scroll(
+                "table",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-5000.), px(0.))),
+                cx,
+            );
+        })
+        .unwrap();
+        drag_border(cx, handle, Column::Updated, 32.);
+        assert_eq!(
+            cx.update(|cx| view.read(cx).columns()).get(Column::Updated),
+            Column::Updated.default_width() + 2.
+        );
+        cx.update(|cx| {
+            view.update(cx, |v, cx| {
+                v.selected_view = dashboard_core::config::View::Fleet;
+                v.fleet_status = fleet_status_fixture();
+                cx.notify();
+            })
+        });
+        for column in [Column::FleetChecked, Column::FleetWork] {
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                window.scroll(
+                    "fleet-scroll",
+                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-5000.), px(0.))),
+                    cx,
+                );
+                window.render_frame(cx);
+                let from = window.find(("resize", column as usize)).bounds().center();
+                let viewport = window.find("fleet-scroll").bounds();
+                assert!(
+                    from.x >= viewport.left() && from.x <= viewport.right(),
+                    "{column:?} reachable at {width}"
+                );
+                window.drag(from, gpui_kit::point(from.x - px(32.), from.y), cx);
+            })
+            .unwrap();
+            assert_eq!(
+                cx.update(|cx| view.read(cx).columns()).get(column),
+                column.default_width() - 2.,
+                "{column:?} at {width}"
+            );
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn trailing_project_activity_border_changes_its_rendered_width(cx: &mut TestAppContext) {
+    for width in [1600., 480.] {
+        let (handle, _) = open_board_sized(
+            cx,
+            four(),
+            StatusCache::default(),
+            Arc::new(demo::DemoSource),
+            options(),
+            width,
+        );
+        cx.update_window(handle, |_, window, cx| {
+            window.scroll(
+                "table",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-5000.), px(0.))),
+                cx,
+            );
+            window.render_frame(cx);
+            let before = window.find(("header-cell", Column::Activity as usize)).bounds();
+            let from = gpui_kit::point(before.right() - px(2.), before.center().y);
+            window.drag(from, gpui_kit::point(from.x + px(32.), from.y), cx);
+            window.render_frame(cx);
+            let after = window.find(("header-cell", Column::Activity as usize)).bounds();
+            assert_eq!(
+                after.size.width,
+                before.size.width + px(32.),
+                "activity border at {width}px"
+            );
+            assert_eq!(
+                after.size.width,
+                window.find(("activity-cell", 0usize)).bounds().size.width
+            );
+        })
+        .unwrap();
+    }
+}
+
+#[gpui_kit::test]
+fn trailing_project_session_border_changes_its_rendered_width(cx: &mut TestAppContext) {
+    for width in [1600., 480.] {
+        let (handle, _) = open_board_sized(
+            cx,
+            four(),
+            StatusCache::default(),
+            Arc::new(demo::DemoSource),
+            options(),
+            width,
+        );
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let before = window.find(("header-cell", Column::Session as usize)).bounds();
+            // The final grip sits in the lane's right padding, clear of the native window-resize border.
+            let from = gpui_kit::point(before.right() - px(12.), before.center().y);
+            window.drag(from, gpui_kit::point(from.x - px(32.), from.y), cx);
+            window.render_frame(cx);
+            assert_eq!(
+                window
+                    .find(("header-cell", Column::Session as usize))
+                    .bounds()
+                    .size
+                    .width,
+                before.size.width - px(32.)
+            );
+            let after = window.find(("header-cell", Column::Session as usize)).bounds();
+            for ix in 0usize..4 {
+                let cell = window.find(("session-cell", ix)).bounds();
+                assert_eq!(cell.left(), after.left());
+                assert_eq!(cell.size.width, after.size.width);
+                assert!(window.find(("refresh", ix)).bounds().right() <= gpui_kit::px(width));
+            }
+        })
+        .unwrap();
+    }
+}
+
+#[gpui_kit::test]
+fn trailing_project_widths_restore_reset_and_keep_fleet_and_sort_preferences(cx: &mut TestAppContext) {
+    let dir = std::env::temp_dir().join(format!("trailing-project-widths-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut columns = ColumnWidths::default();
+    columns.set(Column::FleetChecked, 12.);
+    columns.set(Column::FleetWork, 28.);
+    let (handle, view) = open_board_sized(
+        cx,
+        four(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        Options {
+            columns,
+            ui_state_dir: Some(dir.clone()),
+            ..options()
+        },
+        1600.,
+    );
+    let sort = cx.update(|cx| view.read(cx).sort());
+    drag_border(cx, handle, Column::Activity, 32.);
+    drag_border(cx, handle, Column::Session, -32.);
+    let saved = dashboard_core::ui_state::UiState::load(&dir).columns;
+    assert_eq!(saved, cx.update(|cx| view.read(cx).columns()));
+    for column in Column::FLEET {
+        assert_eq!(saved.get(column), columns.get(column));
+    }
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), sort);
+    for path in four() {
+        assert!(!cx.update(|cx| view.read(cx).is_expanded(&path)));
+    }
+    let (restarted, restored) = open_board_sized(
+        cx,
+        four(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        Options {
+            columns: saved,
+            ui_state_dir: Some(dir.clone()),
+            ..options()
+        },
+        1600.,
+    );
+    assert_eq!(cx.update(|cx| restored.read(cx).columns()), saved);
+    for column in [Column::Activity, Column::Session] {
+        assert_eq!(
+            width_of(cx, restarted, ("header-cell", column as usize)),
+            px(saved.get(column) * 16.)
+        );
+        drag_border(cx, restarted, column, -2000.);
+        assert_eq!(
+            cx.update(|cx| restored.read(cx).columns()).get(column),
+            column.min_width()
+        );
+        cx.update_window(restarted, |_, window, cx| {
+            window.render_frame(cx);
+            window.double_click(("resize", column as usize), cx);
+        })
+        .unwrap();
+        assert_eq!(
+            cx.update(|cx| restored.read(cx).columns()).get(column),
+            column.default_width()
+        );
+    }
+    assert_eq!(dashboard_core::ui_state::UiState::load(&dir).columns, columns);
+    assert!(
+        width_of(cx, restarted, ("header-cell", Column::Activity as usize)) > px(24.),
+        "reset restores automatic activity sizing"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[gpui_kit::test]
+fn trailing_session_width_is_bounded_by_the_viewport_and_a_drag_starts_from_its_drawn_edge(cx: &mut TestAppContext) {
+    let mut columns = ColumnWidths::default();
+    columns.set(Column::Session, 60.);
+    let (handle, view) = open_board_sized(
+        cx,
+        four(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        Options { columns, ..options() },
+        480.,
+    );
+    assert_eq!(
+        width_of(cx, handle, ("header-cell", Column::Session as usize)),
+        px(360.)
+    );
+    drag_border(cx, handle, Column::Session, -32.);
+    assert_eq!(
+        width_of(cx, handle, ("header-cell", Column::Session as usize)),
+        px(328.)
+    );
+    assert_eq!(cx.update(|cx| view.read(cx).columns()).get(Column::Session), 20.5);
+}
+
 /// The center of a column's resize handle, in window coordinates.
 fn handle_center(
     cx: &mut TestAppContext,

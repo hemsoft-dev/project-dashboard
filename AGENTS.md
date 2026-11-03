@@ -62,6 +62,7 @@ cargo run -p dashboard-app                                    # open the dashboa
 cargo fmt --all --check                                       # format
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked                               # unit tests and headless UI tests
+cargo deny --locked check advisories                          # needs cargo install cargo-deny --version 0.20.2 --locked
 CAPTURE_DIR=$PWD/captures cargo test -p dashboard-app captures -- --ignored   # PNGs (Linux or macOS; absolute path)
 ```
 
@@ -75,6 +76,9 @@ Every change passes these before merge; CI runs them on `ubuntu-latest` and `win
 1. **Format**: `cargo fmt --all --check` clean.
 2. **Lint**: `cargo clippy --workspace --all-targets --locked -- -D warnings` clean.
 3. **Tests**: `cargo test --workspace --locked` all green.
+4. **Advisories**: `cargo deny --locked check advisories` clean. CI's `advisories` job runs it once, on `ubuntu-latest`,
+   because it covers every target. Patch a vulnerability, never accept it. `deny.toml` accepts only unmaintained crates
+   that arrive through GPUI, each by ID with its reason. The job reads the lockfile and uploads no source.
 
 UI changes include screenshots in the pull request. Render them with the headless capture test on Linux or macOS, so
 no window opens on anyone's desktop.

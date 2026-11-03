@@ -1,0 +1,23 @@
+# cargo-deny policy: `cargo deny --locked check advisories` (AGENTS.md, Quality gates; CI's `advisories` job).
+# It checks every target's dependencies, so one operating system's run covers all of them.
+
+[graph]
+all-features = true
+
+[advisories]
+unmaintained = "all"
+unsound = "all"
+# An accept for a crate that has left the lock fails the check, so this list can't go stale.
+unused-ignored-advisory = "deny"
+# Only unmaintained crates that arrive through GPUI belong here, each with its own reason. Never list a vulnerability:
+# patch it. These leave when gpui-kit does, and gpui-kit moves together with CodexBar (AGENTS.md).
+ignore = [
+    { id = "RUSTSEC-2024-0384", reason = "instant 0.1.13, from gpui-base and gpui-component. On native targets it only re-exports std::time, so it has no logic of its own to go wrong." },
+    { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15, from gpui-component and pulp. A proc macro that runs at compile time on our locked source; none of it ships in the executable." },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile 2.2.0, in the lock but not in any build: gpui-kit-assets takes gpui-pre-reqwest only on wasm, which in turn takes rustls-pemfile only off wasm. cargo tree finds it on no Windows, Linux, macOS or wasm target." },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser 0.25.1, from fontdb under cosmic-text and usvg. GPUI uses it to read fonts already on the machine; the dashboard loads no fonts of its own and takes none from pmd." },
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz 0.20.1, from usvg under resvg and gpui-pre. It shapes text for GPUI's SVG rendering; the dashboard renders no SVG of its own and takes none from pmd." },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant 5.15.0, Linux only, from zbus 5 and the accessibility and portal crates on it. Folded into zbus 6 rather than abandoned; leaving needs GPUI's dependencies on zbus 6." },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names 4.3.4, Linux only, from zbus 5 and atspi-common. Folded into zbus 6 rather than abandoned; leaving needs GPUI's dependencies on zbus 6." },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive 5.15.0, Linux only, a compile-time proc macro for zvariant. Folded into zbus 6 rather than abandoned; leaving needs GPUI's dependencies on zbus 6." },
+]

@@ -15,6 +15,26 @@ permissions:
   contents: read
 
 jobs:
+  # Fails on any RustSec advisory in Cargo.lock that deny.toml doesn't accept. It reads the lockfile and fetches the
+  # public advisory database and crate index; it uploads nothing. Once is enough: the check covers every target.
+  advisories:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # This commit of the action is v2.1.1, whose Dockerfile pins cargo-deny 0.20.2.
+      - name: Advisories (cargo-deny 0.20.2)
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+          command-arguments: advisories
+          arguments: --locked
+          rust-version: stable
+
   rust:
     strategy:
       fail-fast: false

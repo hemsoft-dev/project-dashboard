@@ -792,8 +792,9 @@ async fn automatic_activity_reserves_readable_text_and_scrolls_beside_pinned_con
             })
             .unwrap();
             cx.run_until_parked();
-            assert!(
-                cx.opened_url().is_some(),
+            assert_eq!(
+                cx.opened_url(),
+                Some(fixtures::document(CLEAN).workflow_runs[0].url.clone()),
                 "scrolled activity is clickable at {width}/{level}"
             );
             assert_eq!(cx.update(|cx| view.read(cx).columns()), ColumnWidths::default());
@@ -1752,6 +1753,12 @@ async fn the_repository_column_defaults_to_a_name_sized_width(cx: &mut TestAppCo
 #[gpui_kit::test]
 async fn dragging_a_column_border_resizes_the_header_and_every_row(cx: &mut TestAppContext) {
     let (handle, view) = twelve(cx).await;
+    // Test preferred widths on a window wide enough that automatic activity need not shrink Repository.
+    cx.update_window(handle, |_, window, cx| {
+        window.resize(size(px(1680.), px(760.)));
+        window.render_frame(cx);
+    })
+    .unwrap();
     drag_border(cx, handle, Column::Repository, -80.);
     let columns = cx.update(|cx| view.read(cx).columns());
     assert_eq!(columns.get(Column::Repository), 13.0);
@@ -1773,6 +1780,12 @@ async fn dragging_a_column_border_resizes_the_header_and_every_row(cx: &mut Test
 #[gpui_kit::test]
 async fn a_column_stops_at_its_minimum_and_a_double_click_restores_its_default(cx: &mut TestAppContext) {
     let (handle, view) = twelve(cx).await;
+    // Test preferred widths on a window wide enough that automatic activity need not shrink Repository.
+    cx.update_window(handle, |_, window, cx| {
+        window.resize(size(px(1680.), px(760.)));
+        window.render_frame(cx);
+    })
+    .unwrap();
     drag_border(cx, handle, Column::Repository, -1000.);
     assert_eq!(
         cx.update(|cx| view.read(cx).columns()).get(Column::Repository),
@@ -1834,12 +1847,13 @@ async fn resized_columns_are_saved_and_restored_on_the_next_start(cx: &mut TestA
         ui_state_dir: Some(dir.clone()),
         ..options()
     };
-    let (handle, view) = open_board(
+    let (handle, view) = open_board_sized(
         cx,
         demo::checkouts(),
         StatusCache::default(),
         Arc::new(demo::DemoSource),
         saving,
+        1680.,
     );
     cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
     settle(cx, handle, &view).await;
@@ -1852,12 +1866,13 @@ async fn resized_columns_are_saved_and_restored_on_the_next_start(cx: &mut TestA
         columns: saved.columns,
         ..options()
     };
-    let (handle, view) = open_board(
+    let (handle, view) = open_board_sized(
         cx,
         demo::checkouts(),
         StatusCache::default(),
         Arc::new(demo::DemoSource),
         restored,
+        1680.,
     );
     cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
     settle(cx, handle, &view).await;

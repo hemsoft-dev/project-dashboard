@@ -11,6 +11,13 @@ impl WebUrl {
         if !(scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"))
             || raw.chars().any(|c| c.is_whitespace() || c.is_control() || c == '\\')
             || rest.split(['/', '?', '#']).next()?.is_empty()
+            || raw.as_bytes().iter().enumerate().any(|(i, b)| {
+                *b == b'%'
+                    && !raw
+                        .as_bytes()
+                        .get(i + 1..i + 3)
+                        .is_some_and(|escape| escape.iter().all(u8::is_ascii_hexdigit))
+            })
         {
             return None;
         }
@@ -63,6 +70,8 @@ mod tests {
             " https://example.com",
             "https://exa mple.com",
             "https://example.com/\n",
+            "https://example.com/%",
+            "https://example.com/%zz",
             r"https://example.com\x",
         ] {
             assert!(WebUrl::parse(raw).is_none(), "{raw:?}");

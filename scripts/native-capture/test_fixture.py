@@ -22,6 +22,8 @@ class FixtureContract(unittest.TestCase):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 text=True,
+                # Keep the loopback helper windowless on Windows as well as hosted runners.
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             try:
                 deadline = time.monotonic() + 15

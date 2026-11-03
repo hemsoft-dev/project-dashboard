@@ -54,7 +54,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Check native fixture retention and OCR assertions without a window
-        if: github.event_name == 'pull_request' && github.event.pull_request.number == 32 && github.run_attempt == 1
+        # These regressions use loopback HTTP, saved text and simulated OCR; safe on every run, including reruns.
         timeout-minutes: 1
         shell: pwsh
         run: |

@@ -378,3 +378,29 @@ fn invalid_acl_application_fails_without_replacement_and_cleans_temporary() {
     assert_eq!(read_config_acl(&dir.path()).unwrap(), None);
     dir.assert_clean();
 }
+
+#[test]
+fn compatibility_in_place_helper_preserves_existing_file_and_write_errors() {
+    let dir = Directory::new();
+    Config::default().save(&dir.0).unwrap();
+    #[cfg(windows)]
+    let security = windows_security(&dir.path());
+    #[cfg(target_os = "linux")]
+    let metadata = std::fs::metadata(dir.path()).unwrap();
+    write_config_in_place(&dir.path(), b"view = 'fleet'\n").unwrap();
+    assert_eq!(Config::load(&dir.0).unwrap().view, View::Fleet);
+    #[cfg(windows)]
+    assert_eq!(windows_security(&dir.path()), security);
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let after = std::fs::metadata(dir.path()).unwrap();
+        assert_eq!(
+            (after.ino(), after.mode(), after.uid(), after.gid()),
+            (metadata.ino(), metadata.mode(), metadata.uid(), metadata.gid())
+        );
+    }
+    let invalid = dir.path().join("missing");
+    assert!(matches!(write_config_in_place(&invalid, b"new"), Err(ConfigError::Write(path, _)) if path == invalid));
+    dir.assert_clean();
+}

@@ -437,13 +437,28 @@ mod view_tests {
     }
 }
 
-/// Write beside the destination and close the handle before replacement, including on Windows.
-/// Never remove the destination first: a failed rename must leave its bytes intact.
+/// Linux and Windows write beside the destination, then close the handle before atomic replacement.
+/// Other Unix targets retain the legacy in-place write for compatibility: they still have the known
+/// partial-write risk. Native macOS/BSD ACL preservation is outside this Windows/Linux maintenance fix.
 fn replace_config(path: &Path, bytes: &[u8]) -> Result<(), ConfigError> {
-    use std::io::Write as _;
-    replace_config_with(path, bytes, |file, bytes| file.write_all(bytes))
+    #[cfg(any(windows, target_os = "linux"))]
+    {
+        use std::io::Write as _;
+        replace_config_with(path, bytes, |file, bytes| file.write_all(bytes))
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        write_config_in_place(path, bytes)
+    }
 }
 
+#[cfg(any(test, all(unix, not(target_os = "linux"))))]
+fn write_config_in_place(path: &Path, bytes: &[u8]) -> Result<(), ConfigError> {
+    std::fs::write(path, bytes).map_err(|err| ConfigError::Write(path.to_owned(), err))
+}
+
+// Never remove the destination first: failed metadata application or rename leaves its bytes intact.
+#[cfg(any(windows, target_os = "linux"))]
 fn replace_config_with(
     path: &Path,
     bytes: &[u8],
@@ -477,17 +492,17 @@ fn replace_config_with(
     result.map_err(|err| ConfigError::Write(path.to_owned(), err))
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(windows, target_os = "linux")))]
 #[path = "config_atomic_73.rs"]
 mod config_atomic_73;
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 struct ConfigSecurity {
     metadata: Option<std::fs::Metadata>,
     acl: Option<Vec<u8>>,
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 impl ConfigSecurity {
     fn read(path: &Path) -> std::io::Result<Self> {
         match std::fs::metadata(path) {
@@ -562,22 +577,6 @@ fn apply_config_acl(file: &std::fs::File, acl: Option<&[u8]>) -> std::io::Result
         }
     }
     Ok(())
-}
-
-#[cfg(all(unix, not(target_os = "linux")))]
-fn read_config_acl(_path: &Path) -> std::io::Result<Option<Vec<u8>>> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "config ACL preservation is supported on Linux and Windows",
-    ))
-}
-
-#[cfg(all(unix, not(target_os = "linux")))]
-fn apply_config_acl(_file: &std::fs::File, _acl: Option<&[u8]>) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "config ACL preservation is supported on Linux and Windows",
-    ))
 }
 
 #[cfg(windows)]

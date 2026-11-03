@@ -188,3 +188,193 @@ fn windows_deny_delete_handle_makes_every_save_fail_without_touching_original() 
     assert!(poll.changed().is_none());
     dir.assert_clean();
 }
+
+#[test]
+fn adding_view_preserves_crlf_style() {
+    let dir = Directory::new();
+    let text = "# keep\r\nrepositories = ['a']\r\n";
+    std::fs::write(dir.path(), text).unwrap();
+    Config::save_view(&dir.0, View::Fleet).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path()).unwrap(),
+        format!("view = \"fleet\"\r\n{text}")
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn saves_preserve_restricted_windows_dacl_and_new_files_are_owner_only() {
+    let dir = Directory::new();
+    crate::write::store_token(&dir.path(), "fixture-token").unwrap();
+    std::fs::write(dir.path(), "view = 'project'").unwrap();
+    let original = crate::write::token_file_sddl(&dir.path()).unwrap();
+    let original_security = windows_security(&dir.path());
+    for result in [
+        Config::save_view(&dir.0, View::Fleet),
+        Config::add_repository(&dir.0, Path::new("a")).map(|_| ()),
+        Config::default().save(&dir.0),
+    ] {
+        result.unwrap();
+        assert_eq!(crate::write::token_file_sddl(&dir.path()).unwrap(), original);
+        assert_eq!(windows_security(&dir.path()), original_security);
+        dir.assert_clean();
+    }
+    let new_dir = Directory::new();
+    Config::default().save(&new_dir.0).unwrap();
+    assert_eq!(crate::write::token_file_sddl(&new_dir.path()).unwrap(), original);
+}
+
+#[cfg(unix)]
+#[test]
+fn saves_preserve_unix_mode_and_owner_and_new_files_are_private() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let dir = Directory::new();
+    Config::default().save(&dir.0).unwrap();
+    assert_eq!(std::fs::metadata(dir.path()).unwrap().mode() & 0o777, 0o600);
+    for mode in [0o600, 0o640] {
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(mode)).unwrap();
+        let old = std::fs::metadata(dir.path()).unwrap();
+        Config::save_view(&dir.0, View::Fleet).unwrap();
+        let new = std::fs::metadata(dir.path()).unwrap();
+        assert_eq!((new.mode(), new.uid(), new.gid()), (old.mode(), old.uid(), old.gid()));
+    }
+}
+
+#[cfg(windows)]
+fn windows_security(path: &Path) -> String {
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::ptr::null_mut;
+    use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+    };
+    let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let information = OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+    let mut descriptor = null_mut();
+    // SAFETY: terminated path and valid output; LocalFree releases the descriptor below.
+    let status = unsafe {
+        GetNamedSecurityInfoW(
+            path.as_ptr(),
+            SE_FILE_OBJECT,
+            information,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            &mut descriptor,
+        )
+    };
+    assert_eq!(status, ERROR_SUCCESS);
+    let mut text = null_mut();
+    let mut len = 0;
+    // SAFETY: valid descriptor and output pointers; LocalFree releases the returned text.
+    let result = unsafe {
+        ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            descriptor,
+            SDDL_REVISION_1,
+            information,
+            &mut text,
+            &mut len,
+        )
+    };
+    let error = std::io::Error::last_os_error();
+    let value = if result != 0 {
+        // SAFETY: API returned len UTF-16 units, including the terminator.
+        Some(String::from_utf16_lossy(unsafe {
+            std::slice::from_raw_parts(text, len as usize - 1)
+        }))
+    } else {
+        None
+    };
+    // SAFETY: both pointers were allocated by the security APIs above; LocalFree accepts null.
+    unsafe {
+        LocalFree(text as _);
+        LocalFree(descriptor as _);
+    }
+    value.unwrap_or_else(|| panic!("security descriptor conversion failed: {error}"))
+}
+
+#[cfg(target_os = "linux")]
+fn named_acl(uid: u32, named_permissions: u16) -> Vec<u8> {
+    // Linux POSIX ACL xattr format: version, then tag/permissions/id entries.
+    let mut acl = 2u32.to_le_bytes().to_vec();
+    for (tag, permissions, id) in [
+        (1u16, 6u16, u32::MAX),
+        (2, named_permissions, uid),
+        (4, 4, u32::MAX),
+        (16, 6, u32::MAX),
+        (32, 0, u32::MAX),
+    ] {
+        acl.extend(tag.to_le_bytes());
+        acl.extend(permissions.to_le_bytes());
+        acl.extend(id.to_le_bytes());
+    }
+    acl
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_named_acl_is_preserved_and_parent_acl_does_not_broaden_new_files() {
+    use rustix::fs::{XattrFlags, setxattr};
+    use std::os::unix::fs::MetadataExt as _;
+    let dir = Directory::new();
+    let uid = std::fs::metadata(&dir.0).unwrap().uid();
+    let named_uid = if uid == 65534 { 65533 } else { 65534 };
+    let original_acl = named_acl(named_uid, 0);
+    // The parent would grant that same named user read/write access to newly created files.
+    setxattr(
+        &dir.0,
+        "system.posix_acl_default",
+        &named_acl(named_uid, 6),
+        XattrFlags::empty(),
+    )
+    .unwrap();
+    Config::default().save(&dir.0).unwrap();
+    assert_eq!(read_config_acl(&dir.path()).unwrap(), None);
+    assert_eq!(std::fs::metadata(dir.path()).unwrap().mode() & 0o777, 0o600);
+    setxattr(dir.path(), CONFIG_ACL, &original_acl, XattrFlags::empty()).unwrap();
+    let before = std::fs::metadata(dir.path()).unwrap();
+    // Negative control: the old default-permission temporary-and-rename drops the named deny entry.
+    let legacy = dir.0.join("legacy.tmp");
+    std::fs::write(&legacy, Config::default().to_toml()).unwrap();
+    std::fs::rename(&legacy, dir.path()).unwrap();
+    assert_ne!(read_config_acl(&dir.path()).unwrap().unwrap(), original_acl);
+    setxattr(dir.path(), CONFIG_ACL, &original_acl, XattrFlags::empty()).unwrap();
+    for result in [
+        Config::save_view(&dir.0, View::Fleet),
+        Config::add_repository(&dir.0, Path::new("a")).map(|_| ()),
+        Config::default().save(&dir.0),
+    ] {
+        result.unwrap();
+        let after = std::fs::metadata(dir.path()).unwrap();
+        assert_eq!(
+            (after.mode(), after.uid(), after.gid()),
+            (before.mode(), before.uid(), before.gid())
+        );
+        assert_eq!(read_config_acl(&dir.path()).unwrap().unwrap(), original_acl);
+        dir.assert_clean();
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn invalid_acl_application_fails_without_replacement_and_cleans_temporary() {
+    let dir = Directory::new();
+    Config::default().save(&dir.0).unwrap();
+    let original = std::fs::read(dir.path()).unwrap();
+    let original_metadata = std::fs::metadata(dir.path()).unwrap();
+    let result = replace_config_with(&dir.path(), b"new", |file, _| {
+        ConfigSecurity {
+            metadata: Some(original_metadata),
+            acl: Some(vec![255]),
+        }
+        .apply(file)
+    });
+    assert!(matches!(result, Err(ConfigError::Write(_, _))));
+    assert_eq!(std::fs::read(dir.path()).unwrap(), original);
+    assert_eq!(read_config_acl(&dir.path()).unwrap(), None);
+    dir.assert_clean();
+}

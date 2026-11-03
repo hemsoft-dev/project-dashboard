@@ -1254,6 +1254,7 @@ dependencies = [
  "dirs 6.0.0",
  "reqwest",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "toml 1.1.6+spec-1.1.0",

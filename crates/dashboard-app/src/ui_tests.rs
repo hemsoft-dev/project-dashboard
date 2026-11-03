@@ -61,6 +61,17 @@ fn open_board_sized(
     options: Options,
     width: f32,
 ) -> (AnyWindowHandle, Entity<BoardView>) {
+    open_board_dimensions(cx, checkouts, cache, source, options, size(px(width), px(900.)))
+}
+
+fn open_board_dimensions(
+    cx: &mut TestAppContext,
+    checkouts: Vec<PathBuf>,
+    cache: StatusCache,
+    source: Arc<dyn StatusSource>,
+    options: Options,
+    dimensions: gpui_kit::Size<gpui_kit::Pixels>,
+) -> (AnyWindowHandle, Entity<BoardView>) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         theme::init(cx);
@@ -69,7 +80,7 @@ fn open_board_sized(
         crate::zoom::init_if_absent(cx, None);
     });
     let mut view = None;
-    let handle = cx.open_window(size(px(width), px(900.)), |window, cx| {
+    let handle = cx.open_window(dimensions, |window, cx| {
         let board = cx.new(|cx| BoardView::new(&checkouts, cache, source, options, window, cx));
         view = Some(board.clone());
         Root::new(board, window, cx)
@@ -738,20 +749,23 @@ async fn clicking_the_last_activity_opens_it_without_expanding_the_row(cx: &mut 
 #[gpui_kit::test]
 async fn automatic_activity_reserves_readable_text_and_scrolls_beside_pinned_controls(cx: &mut TestAppContext) {
     for level in [1.0, 1.3] {
-        for width in [480., 760., 1100., 1680.] {
-            let (handle, view) = open_board_sized(
+        for width in [1100., 480., 760., 1680.] {
+            let url = format!(
+                "https://github.com/hemsoft-dev/project-dashboard/actions/runs/{}",
+                (width * level as f32) as u32
+            );
+            let (handle, view) = open_board_dimensions(
                 cx,
                 vec!["/demo/short-label".into(), "/demo/long-label".into()],
                 StatusCache::default(),
-                Arc::new(ActivityLayoutSource),
+                Arc::new(ActivityCaseSource { url: url.clone() }),
                 options(),
-                width,
+                size(px(width), px(760.)),
             );
             cx.update(|cx| zoom::set_level(level, cx));
-            cx.update_window(handle, |_, window, _| window.resize(size(px(width), px(760.))))
-                .unwrap();
             cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
             settle(cx, handle, &view).await;
+            assert_ne!(cx.opened_url(), Some(url.clone()), "negative control before each click");
             cx.update_window(handle, |_, window, cx| {
                 window.render_frame(cx);
                 let scale = level as f32;
@@ -794,11 +808,45 @@ async fn automatic_activity_reserves_readable_text_and_scrolls_beside_pinned_con
             cx.run_until_parked();
             assert_eq!(
                 cx.opened_url(),
-                Some(fixtures::document(CLEAN).workflow_runs[0].url.clone()),
+                Some(url),
                 "scrolled activity is clickable at {width}/{level}"
             );
             assert_eq!(cx.update(|cx| view.read(cx).columns()), ColumnWidths::default());
         }
+    }
+}
+
+#[gpui_kit::test]
+fn saved_narrow_activity_does_not_reserve_the_automatic_description_budget(cx: &mut TestAppContext) {
+    for width in [480., 760., 1100.] {
+        let mut columns = ColumnWidths::default();
+        columns.set(Column::Activity, 1.5);
+        let (handle, _) = open_board_sized(
+            cx,
+            four(),
+            StatusCache::default(),
+            Arc::new(demo::DemoSource),
+            Options { columns, ..options() },
+            width,
+        );
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let header = window.find(("row", 0usize)).bounds();
+            let activity = window.find(("activity-cell", 0usize)).bounds();
+            assert_eq!(activity.size.width, px(24.));
+            let viewport = window.find(("row-scroll", 0usize)).bounds();
+            let scrollable_tail = (header.right() - viewport.right()).min(header.right() - activity.right());
+            println!(
+                "saved activity at {width}px: cell={}px, scrollable tail={}px",
+                f32::from(activity.size.width),
+                f32::from(scrollable_tail)
+            );
+            assert!(
+                scrollable_tail <= px(9.),
+                "saved width leaves no scrollable automatic tail: {header:?} {activity:?}"
+            );
+        })
+        .unwrap();
     }
 }
 
@@ -1752,13 +1800,17 @@ async fn the_repository_column_defaults_to_a_name_sized_width(cx: &mut TestAppCo
 
 #[gpui_kit::test]
 async fn dragging_a_column_border_resizes_the_header_and_every_row(cx: &mut TestAppContext) {
-    let (handle, view) = twelve(cx).await;
-    // Test preferred widths on a window wide enough that automatic activity need not shrink Repository.
-    cx.update_window(handle, |_, window, cx| {
-        window.resize(size(px(1680.), px(760.)));
-        window.render_frame(cx);
-    })
-    .unwrap();
+    // Give the stored preferences room; default-window compression has its own regression above.
+    let (handle, view) = open_board_sized(
+        cx,
+        demo::checkouts(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        options(),
+        1680.,
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
     drag_border(cx, handle, Column::Repository, -80.);
     let columns = cx.update(|cx| view.read(cx).columns());
     assert_eq!(columns.get(Column::Repository), 13.0);
@@ -1779,13 +1831,17 @@ async fn dragging_a_column_border_resizes_the_header_and_every_row(cx: &mut Test
 
 #[gpui_kit::test]
 async fn a_column_stops_at_its_minimum_and_a_double_click_restores_its_default(cx: &mut TestAppContext) {
-    let (handle, view) = twelve(cx).await;
-    // Test preferred widths on a window wide enough that automatic activity need not shrink Repository.
-    cx.update_window(handle, |_, window, cx| {
-        window.resize(size(px(1680.), px(760.)));
-        window.render_frame(cx);
-    })
-    .unwrap();
+    // Give the stored preferences room; default-window compression has its own regression above.
+    let (handle, view) = open_board_sized(
+        cx,
+        demo::checkouts(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        options(),
+        1680.,
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
     drag_border(cx, handle, Column::Repository, -1000.);
     assert_eq!(
         cx.update(|cx| view.read(cx).columns()).get(Column::Repository),
@@ -2695,6 +2751,17 @@ async fn unavailable_rows_survive_even_without_diagnostic_text(cx: &mut TestAppC
         assert_eq!(window.find("heading-Open PRs").label(), Some("Open PRs (6)"));
     })
     .unwrap();
+}
+
+struct ActivityCaseSource {
+    url: String,
+}
+impl StatusSource for ActivityCaseSource {
+    fn fetch(&self, checkout: &Path, force: bool) -> Result<StatusDocument, FetchError> {
+        let mut document = ActivityLayoutSource.fetch(checkout, force)?;
+        document.workflow_runs[0].url = self.url.clone();
+        Ok(document)
+    }
 }
 
 /// Synthetic long/short labels expose the activity split without changing production data.

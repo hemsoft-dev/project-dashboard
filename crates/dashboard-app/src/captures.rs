@@ -699,7 +699,7 @@ fn activity_width_captures() {
             fill(&mut cx, &view.unwrap(), &crate::ui_tests::ActivityLayoutSource);
             // At zoomed/narrow sizes reveal the trailing data column while T3 stays pinned.
             if width < 1100. || level > 1.0 {
-                cx.update_window(window, |_, window, cx| {
+                cx.update_window(window.into(), |_, window, cx| {
                     window.scroll(
                         "table",
                         gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-3000.), px(0.))),

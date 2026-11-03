@@ -1211,6 +1211,420 @@ async fn at_200_percent_in_the_narrowest_window_the_title_bar_keeps_its_refresh_
 
 // Resizable columns (#14).
 
+#[gpui_kit::test]
+fn automatic_activity_first_pixel_drags_follow_the_pointer_and_survive_restart(cx: &mut TestAppContext) {
+    use gpui_kit::test::TestEventExt as _;
+    use gpui_kit::{MouseButton, ScrollDelta, point};
+    for width in [20000., 2560., 1600., 1000., 480.] {
+        for delta in [-1., 1.] {
+            let dir = std::env::temp_dir().join(format!("activity-first-pixel-{}-{width}-{delta}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let (handle, view) = open_board_sized(
+                cx,
+                four(),
+                StatusCache::default(),
+                Arc::new(demo::DemoSource),
+                Options {
+                    ui_state_dir: Some(dir.clone()),
+                    ..options()
+                },
+                width,
+            );
+            let original = cx
+                .update_window(handle, |_, window, cx| {
+                    window.scroll("table", ScrollDelta::Pixels(point(px(-10000.), px(0.))), cx);
+                    window.render_frame(cx);
+                    let before = window.find(("header-cell", Column::Activity as usize)).bounds();
+                    if width == 2560. {
+                        assert!(
+                            before.size.width > px(dashboard_core::columns::MAX_WIDTH * 16.),
+                            "exercise an automatic width beyond the ordinary column limit"
+                        );
+                    }
+                    let from = window.find(("resize", Column::Activity as usize)).bounds().center();
+                    window.pointer_move(from, None, cx);
+                    window.pointer_down(from, MouseButton::Left, cx);
+                    window.pointer_move(point(from.x + px(delta), from.y), Some(MouseButton::Left), cx);
+                    let after = window.find(("header-cell", Column::Activity as usize)).bounds();
+                    let expected = (before.size.width + px(delta)).clamp(
+                        px(Column::Activity.min_width() * 16.),
+                        px(Column::Activity.max_width() * 16.),
+                    );
+                    assert!(
+                        f32::from(after.size.width - expected).abs() <= 0.2,
+                        "{width}px first {delta}px drag: before {:?}, after {:?}, expected {expected:?}",
+                        before.size.width,
+                        after.size.width
+                    );
+                    let grip = window.find(("resize", Column::Activity as usize)).bounds().center();
+                    assert!(
+                        f32::from(grip.x - from.x - (expected - before.size.width)).abs() <= 0.2,
+                        "{width}px first {delta}px drag: grip {from:?} -> {grip:?}, column {before:?} -> {after:?}"
+                    );
+                    assert_eq!(
+                        after.size.width,
+                        window.find(("activity-cell", 0usize)).bounds().size.width
+                    );
+                    window.pointer_up(point(from.x + px(delta), from.y), MouseButton::Left, cx);
+                    before.size.width
+                })
+                .unwrap();
+            let saved = dashboard_core::ui_state::UiState::load(&dir).columns;
+            assert_eq!(saved, cx.update(|cx| view.read(cx).columns()));
+            let (restarted, restored) = open_board_sized(
+                cx,
+                four(),
+                StatusCache::default(),
+                Arc::new(demo::DemoSource),
+                Options {
+                    columns: saved,
+                    ui_state_dir: Some(dir.clone()),
+                    ..options()
+                },
+                width,
+            );
+            assert!(
+                f32::from(
+                    width_of(cx, restarted, ("header-cell", Column::Activity as usize))
+                        - (original + px(delta)).clamp(px(24.), px(Column::Activity.max_width() * 16.))
+                )
+                .abs()
+                    <= 0.2
+            );
+            cx.update_window(restarted, |_, window, cx| {
+                window.scroll("table", ScrollDelta::Pixels(point(px(-10000.), px(0.))), cx);
+                window.double_click(("resize", Column::Activity as usize), cx);
+            })
+            .unwrap();
+            assert_eq!(cx.update(|cx| restored.read(cx).columns()).activity_width(), None);
+            assert_eq!(
+                dashboard_core::ui_state::UiState::load(&dir).columns.activity_width(),
+                None
+            );
+            assert_eq!(
+                width_of(cx, restarted, ("header-cell", Column::Activity as usize)),
+                original
+            );
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn pinned_session_gestures_follow_the_movable_boundary_inside_the_window(cx: &mut TestAppContext) {
+    use gpui_kit::test::TestEventExt as _;
+    use gpui_kit::{MouseButton, point};
+    for width in [2560., 1600., 480.] {
+        for delta in [-64.0_f32, 32.] {
+            let (handle, _) = open_board_sized(
+                cx,
+                four(),
+                StatusCache::default(),
+                Arc::new(demo::DemoSource),
+                options(),
+                width,
+            );
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                let before = window.find(("header-cell", Column::Session as usize)).bounds();
+                assert_eq!(before.right(), px(width), "screen-edge window");
+                let from = window.find(("resize", Column::Session as usize)).bounds().center();
+                window.pointer_move(from, None, cx);
+                window.pointer_down(from, MouseButton::Left, cx);
+                for dx in [delta.signum(), delta] {
+                    let to = point(from.x + px(dx), from.y);
+                    assert!(to.x >= px(0.) && to.x < px(width), "gesture stays inside the window");
+                    window.pointer_move(to, Some(MouseButton::Left), cx);
+                    let after = window.find(("header-cell", Column::Session as usize)).bounds();
+                    assert!(
+                        f32::from(after.left() - before.left() - px(dx)).abs() <= 0.2,
+                        "{width}px session boundary follows {dx}px: before {before:?}, after {after:?}"
+                    );
+                    assert!(f32::from(after.size.width - before.size.width + px(dx)).abs() <= 0.2);
+                    assert_eq!(after.right(), before.right(), "lane stays pinned");
+                    assert!(
+                        f32::from(window.find(("resize", Column::Session as usize)).bounds().center().x - to.x).abs()
+                            <= 0.2,
+                        "grip follows pointer"
+                    );
+                    for ix in 0usize..4 {
+                        let body = window.find(("session-cell", ix)).bounds();
+                        assert_eq!(body.left(), after.left());
+                        assert_eq!(body.size.width, after.size.width);
+                    }
+                }
+                window.pointer_up(point(from.x + px(delta), from.y), MouseButton::Left, cx);
+                assert!(
+                    from.x - before.left() <= px(8.),
+                    "grip lies on the movable left boundary"
+                );
+            })
+            .unwrap();
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn trailing_existing_handles_accept_drags_at_the_horizontal_scroll_end(cx: &mut TestAppContext) {
+    for width in [1600., 480.] {
+        let (handle, view) = open_board_sized(
+            cx,
+            four(),
+            StatusCache::default(),
+            Arc::new(demo::DemoSource),
+            options(),
+            width,
+        );
+        cx.update_window(handle, |_, window, cx| {
+            window.scroll(
+                "table",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-5000.), px(0.))),
+                cx,
+            );
+        })
+        .unwrap();
+        drag_border(cx, handle, Column::Updated, 32.);
+        assert_eq!(
+            cx.update(|cx| view.read(cx).columns()).get(Column::Updated),
+            Column::Updated.default_width() + 2.
+        );
+        cx.update(|cx| {
+            view.update(cx, |v, cx| {
+                v.selected_view = dashboard_core::config::View::Fleet;
+                v.fleet_status = fleet_status_fixture();
+                cx.notify();
+            })
+        });
+        for column in [Column::FleetChecked, Column::FleetWork] {
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                window.scroll(
+                    "fleet-scroll",
+                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-5000.), px(0.))),
+                    cx,
+                );
+                window.render_frame(cx);
+                let from = window.find(("resize", column as usize)).bounds().center();
+                let viewport = window.find("fleet-scroll").bounds();
+                assert!(
+                    from.x >= viewport.left() && from.x <= viewport.right(),
+                    "{column:?} reachable at {width}"
+                );
+                window.drag(from, gpui_kit::point(from.x - px(32.), from.y), cx);
+            })
+            .unwrap();
+            assert_eq!(
+                cx.update(|cx| view.read(cx).columns()).get(column),
+                column.default_width() - 2.,
+                "{column:?} at {width}"
+            );
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn trailing_project_activity_border_changes_its_rendered_width(cx: &mut TestAppContext) {
+    for width in [1600., 480.] {
+        let (handle, _) = open_board_sized(
+            cx,
+            four(),
+            StatusCache::default(),
+            Arc::new(demo::DemoSource),
+            options(),
+            width,
+        );
+        cx.update_window(handle, |_, window, cx| {
+            window.scroll(
+                "table",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-5000.), px(0.))),
+                cx,
+            );
+            window.render_frame(cx);
+            let before = window.find(("header-cell", Column::Activity as usize)).bounds();
+            let from = gpui_kit::point(before.right() - px(2.), before.center().y);
+            window.drag(from, gpui_kit::point(from.x + px(32.), from.y), cx);
+            window.render_frame(cx);
+            let after = window.find(("header-cell", Column::Activity as usize)).bounds();
+            assert_eq!(
+                after.size.width,
+                before.size.width + px(32.),
+                "activity border at {width}px"
+            );
+            assert_eq!(
+                after.size.width,
+                window.find(("activity-cell", 0usize)).bounds().size.width
+            );
+        })
+        .unwrap();
+    }
+}
+
+#[gpui_kit::test]
+fn trailing_project_session_border_changes_its_rendered_width(cx: &mut TestAppContext) {
+    for width in [1600., 480.] {
+        let (handle, _) = open_board_sized(
+            cx,
+            four(),
+            StatusCache::default(),
+            Arc::new(demo::DemoSource),
+            options(),
+            width,
+        );
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let before = window.find(("header-cell", Column::Session as usize)).bounds();
+            let from = gpui_kit::point(before.left() + px(4.), before.center().y);
+            window.drag(from, gpui_kit::point(from.x + px(32.), from.y), cx);
+            window.render_frame(cx);
+            assert_eq!(
+                window
+                    .find(("header-cell", Column::Session as usize))
+                    .bounds()
+                    .size
+                    .width,
+                before.size.width - px(32.)
+            );
+            let after = window.find(("header-cell", Column::Session as usize)).bounds();
+            for ix in 0usize..4 {
+                let cell = window.find(("session-cell", ix)).bounds();
+                assert_eq!(cell.left(), after.left());
+                assert_eq!(cell.size.width, after.size.width);
+                assert!(window.find(("refresh", ix)).bounds().right() <= gpui_kit::px(width));
+            }
+        })
+        .unwrap();
+    }
+}
+
+#[gpui_kit::test]
+fn trailing_project_widths_restore_reset_and_keep_fleet_and_sort_preferences(cx: &mut TestAppContext) {
+    let dir = std::env::temp_dir().join(format!("trailing-project-widths-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut columns = ColumnWidths::default();
+    columns.set(Column::FleetChecked, 12.);
+    columns.set(Column::FleetWork, 28.);
+    let (handle, view) = open_board_sized(
+        cx,
+        four(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        Options {
+            columns,
+            ui_state_dir: Some(dir.clone()),
+            ..options()
+        },
+        1600.,
+    );
+    let sort = cx.update(|cx| view.read(cx).sort());
+    let expanded = four()[0].clone();
+    cx.update(|cx| view.update(cx, |view, cx| view.toggle_expanded(&expanded, cx)));
+    drag_border(cx, handle, Column::Activity, 32.);
+    drag_border(cx, handle, Column::Session, 32.);
+    let saved = dashboard_core::ui_state::UiState::load(&dir).columns;
+    assert_eq!(saved, cx.update(|cx| view.read(cx).columns()));
+    for column in Column::FLEET {
+        assert_eq!(saved.get(column), columns.get(column));
+    }
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), sort);
+    for path in four() {
+        assert_eq!(cx.update(|cx| view.read(cx).is_expanded(&path)), path == expanded);
+    }
+    let (restarted, restored) = open_board_sized(
+        cx,
+        four(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        Options {
+            columns: saved,
+            ui_state_dir: Some(dir.clone()),
+            ..options()
+        },
+        1600.,
+    );
+    assert_eq!(cx.update(|cx| restored.read(cx).columns()), saved);
+    for column in [Column::Activity, Column::Session] {
+        assert_eq!(
+            width_of(cx, restarted, ("header-cell", column as usize)),
+            px(saved.get(column) * 16.)
+        );
+        drag_border(
+            cx,
+            restarted,
+            column,
+            if column == Column::Session { 64. } else { -2000. },
+        );
+        assert_eq!(
+            cx.update(|cx| restored.read(cx).columns()).get(column),
+            column.min_width()
+        );
+        cx.update_window(restarted, |_, window, cx| {
+            window.render_frame(cx);
+            window.double_click(("resize", column as usize), cx);
+        })
+        .unwrap();
+        assert_eq!(
+            cx.update(|cx| restored.read(cx).columns()).get(column),
+            column.default_width()
+        );
+    }
+    assert_eq!(dashboard_core::ui_state::UiState::load(&dir).columns, columns);
+    assert!(
+        width_of(cx, restarted, ("header-cell", Column::Activity as usize)) > px(24.),
+        "reset restores automatic activity sizing"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[gpui_kit::test]
+fn trailing_session_width_is_bounded_by_the_viewport_and_a_drag_starts_from_its_drawn_edge(cx: &mut TestAppContext) {
+    let mut columns = ColumnWidths::default();
+    columns.set(Column::Session, 60.);
+    let (handle, view) = open_board_sized(
+        cx,
+        four(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        Options { columns, ..options() },
+        480.,
+    );
+    assert_eq!(
+        width_of(cx, handle, ("header-cell", Column::Session as usize)),
+        px(360.)
+    );
+    // Widening at the cap saves the visible bound, without an invisible overshoot.
+    drag_border(cx, handle, Column::Session, -32.);
+    assert_eq!(cx.update(|cx| view.read(cx).columns()).get(Column::Session), 22.5);
+    assert_eq!(
+        width_of(cx, handle, ("header-cell", Column::Session as usize)),
+        px(360.)
+    );
+    cx.update_window(handle, |_, window, _| {
+        let header = window.find(("header-cell", Column::Session as usize)).bounds();
+        for ix in 0usize..4 {
+            let body = window.find(("session-cell", ix)).bounds();
+            assert_eq!(header.left(), body.left());
+            assert_eq!(header.size.width, body.size.width);
+        }
+    })
+    .unwrap();
+    drag_border(cx, handle, Column::Session, 32.);
+    assert_eq!(
+        width_of(cx, handle, ("header-cell", Column::Session as usize)),
+        px(328.)
+    );
+    assert_eq!(cx.update(|cx| view.read(cx).columns()).get(Column::Session), 20.5);
+    cx.update_window(handle, |_, window, _| {
+        let header = window.find(("header-cell", Column::Session as usize)).bounds();
+        for ix in 0usize..4 {
+            let body = window.find(("session-cell", ix)).bounds();
+            assert_eq!(header.left(), body.left());
+            assert_eq!(header.size.width, body.size.width);
+            assert!(window.find(("refresh", ix)).bounds().right() <= px(480.));
+        }
+    })
+    .unwrap();
+}
+
 /// The center of a column's resize handle, in window coordinates.
 fn handle_center(
     cx: &mut TestAppContext,

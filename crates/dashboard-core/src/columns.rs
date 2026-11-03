@@ -1,13 +1,15 @@
 //! Resizable table columns (#14): each resizable column's default and least width, and the widths a user dragged to.
 //!
-//! Widths are in rems, so they scale with the zoom like the rest of the table. The last activity column isn't
-//! listed: it takes whatever width the others leave.
+//! Widths are in rems, so they scale with the zoom like the rest of the table. Last activity uses the remaining
+//! width until dragged; resetting it restores that automatic sizing.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The widest any column can be dragged, in rems.
+/// The widest ordinary column can be dragged, in rems.
 pub const MAX_WIDTH: f32 = 60.0;
+/// Activity can fill a wide display before its first drag. Bound both its automatic and saved layout alike.
+pub const MAX_ACTIVITY_WIDTH: f32 = 1024.0;
 
 /// A table column whose right border can be dragged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -19,6 +21,8 @@ pub enum Column {
     Merged24h,
     Merged7d,
     Updated,
+    Activity,
+    Session,
     FleetMachine,
     FleetConnectivity,
     FleetServer,
@@ -31,7 +35,7 @@ pub enum Column {
 }
 
 impl Column {
-    pub const ALL: [Column; 7] = [
+    pub const ALL: [Column; 9] = [
         Self::Repository,
         Self::Priority,
         Self::PullRequests,
@@ -39,6 +43,8 @@ impl Column {
         Self::Merged24h,
         Self::Merged7d,
         Self::Updated,
+        Self::Activity,
+        Self::Session,
     ];
 
     pub const FLEET: [Column; 9] = [
@@ -61,6 +67,8 @@ impl Column {
             Self::PullRequests | Self::Issues => 3.25,
             Self::Merged24h | Self::Merged7d => 6.5,
             Self::Updated => 4.5,
+            Self::Activity => 1.5,
+            Self::Session => 11.0,
             Self::FleetMachine => 9.0,
             Self::FleetConnectivity => 8.0,
             Self::FleetServer => 13.0,
@@ -82,6 +90,8 @@ impl Column {
             Self::Issues => 2.25,
             Self::Merged24h | Self::Merged7d => 4.5,
             Self::Updated => 3.5,
+            Self::Activity => 1.5,
+            Self::Session => 7.0,
             Self::FleetMachine => 6.0,
             Self::FleetConnectivity => 7.0,
             Self::FleetServer => 8.0,
@@ -104,6 +114,8 @@ impl Column {
             Self::Merged24h => "merged24h",
             Self::Merged7d => "merged7d",
             Self::Updated => "updated",
+            Self::Activity => "activity",
+            Self::Session => "session",
             Self::FleetMachine => "fleetMachine",
             Self::FleetConnectivity => "fleetConnectivity",
             Self::FleetServer => "fleetServer",
@@ -116,13 +128,21 @@ impl Column {
         }
     }
 
-    /// `width` kept between this column's minimum and [`MAX_WIDTH`], on a hundredth of a rem; anything that isn't a
+    pub fn max_width(self) -> f32 {
+        if self == Self::Activity {
+            MAX_ACTIVITY_WIDTH
+        } else {
+            MAX_WIDTH
+        }
+    }
+
+    /// `width` kept between this column's minimum and maximum, on a hundredth of a rem; anything that isn't a
     /// finite number is the default.
     pub fn clamp(self, width: f32) -> f32 {
         if !width.is_finite() {
             return self.default_width();
         }
-        (width.clamp(self.min_width(), MAX_WIDTH) * 100.0).round() / 100.0
+        (width.clamp(self.min_width(), self.max_width()) * 100.0).round() / 100.0
     }
 }
 
@@ -139,6 +159,11 @@ pub struct ColumnWidths {
     #[serde(default = "merge_width")]
     merged_7d: f32,
     updated: f32,
+    /// None keeps the original automatic layout, including when loading older preferences.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    activity: Option<f32>,
+    #[serde(default = "session_width")]
+    session: f32,
     #[serde(default)]
     fleet: [f32; 9],
 }
@@ -153,6 +178,8 @@ impl Default for ColumnWidths {
             merged_24h: merge_width(),
             merged_7d: merge_width(),
             updated: Column::Updated.default_width(),
+            activity: None,
+            session: session_width(),
             fleet: Column::FLEET.map(Column::default_width),
         }
     }
@@ -168,6 +195,8 @@ impl ColumnWidths {
             Column::Merged24h => self.merged_24h,
             Column::Merged7d => self.merged_7d,
             Column::Updated => self.updated,
+            Column::Activity => self.activity.unwrap_or(Column::Activity.default_width()),
+            Column::Session => self.session,
             Column::FleetMachine => self.fleet[0],
             Column::FleetConnectivity => self.fleet[1],
             Column::FleetServer => self.fleet[2],
@@ -191,6 +220,8 @@ impl ColumnWidths {
             Column::Merged24h => self.merged_24h = width,
             Column::Merged7d => self.merged_7d = width,
             Column::Updated => self.updated = width,
+            Column::Activity => self.activity = Some(width),
+            Column::Session => self.session = width,
             Column::FleetMachine => self.fleet[0] = width,
             Column::FleetConnectivity => self.fleet[1] = width,
             Column::FleetServer => self.fleet[2] = width,
@@ -204,7 +235,15 @@ impl ColumnWidths {
     }
 
     pub fn reset(&mut self, column: Column) {
-        self.set(column, column.default_width());
+        if column == Column::Activity {
+            self.activity = None;
+        } else {
+            self.set(column, column.default_width());
+        }
+    }
+
+    pub fn activity_width(&self) -> Option<f32> {
+        self.activity
     }
 
     /// The widths saved in `value`, one column at a time: a missing, non-numeric or out-of-range width falls back to
@@ -214,7 +253,8 @@ impl ColumnWidths {
         for column in Column::ALL.into_iter().chain(Column::FLEET) {
             if let Some(width) = value.and_then(|value| value.get(column.key())).and_then(Value::as_f64) {
                 // Bounded before the cast, so a huge saved width clamps to the maximum instead of becoming infinite.
-                let width = width.clamp(f64::from(-MAX_WIDTH), f64::from(MAX_WIDTH));
+                let limit = f64::from(column.max_width());
+                let width = width.clamp(-limit, limit);
                 widths.set(column, width as f32);
             }
         }
@@ -228,12 +268,20 @@ impl ColumnWidths {
         widths
     }
 
-    /// The sum of every resizable column's width, in rems.
+    /// The scrolling data columns' width, in rems. The session lane stays pinned.
     pub fn total(&self) -> f32 {
-        Column::ALL.iter().map(|&column| self.get(column)).sum()
+        Column::ALL
+            .iter()
+            .filter(|&&column| column != Column::Session)
+            .map(|&column| self.get(column))
+            .sum()
     }
 }
 
 fn merge_width() -> f32 {
     6.5
+}
+
+fn session_width() -> f32 {
+    Column::Session.default_width()
 }

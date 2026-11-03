@@ -135,6 +135,8 @@ pub struct BoardView {
     resizing: Option<Resize>,
     /// The repository column's width as last laid out, which a narrow window can make less than its setting.
     repository_laid_out: Rc<Cell<Option<Pixels>>>,
+    activity_laid_out: Rc<Cell<Option<Pixels>>>,
+    session_laid_out: Rc<Cell<Option<Pixels>>>,
     /// Each checkout's T3 thread, once looked up.
     threads: HashMap<PathBuf, Lookup>,
     finding_threads: bool,
@@ -213,6 +215,8 @@ impl BoardView {
             columns,
             resizing: None,
             repository_laid_out: Rc::new(Cell::new(None)),
+            activity_laid_out: Rc::new(Cell::new(None)),
+            session_laid_out: Rc::new(Cell::new(None)),
             threads: HashMap::new(),
             finding_threads: false,
             priorities_loaded: false,
@@ -340,7 +344,7 @@ impl BoardView {
         self.columns
     }
 
-    /// Starts dragging `column`'s right border, or restores its default width on a double-click.
+    /// Starts dragging a column's movable border, or restores its default width on a double-click.
     fn start_resize(&mut self, column: Column, event: &MouseDownEvent, window: &Window, cx: &mut Context<Self>) {
         if event.click_count >= 2 {
             self.resizing = None;
@@ -356,6 +360,16 @@ impl BoardView {
             && let Some(laid_out) = self.repository_laid_out.get()
         {
             start_width = start_width.min(laid_out / window.rem_size());
+        }
+        if column == Column::Activity
+            && let Some(laid_out) = self.activity_laid_out.get()
+        {
+            start_width = laid_out / window.rem_size();
+        }
+        if column == Column::Session
+            && let Some(laid_out) = self.session_laid_out.get()
+        {
+            start_width = laid_out / window.rem_size();
         }
         self.resizing = Some(Resize {
             column,
@@ -375,7 +389,13 @@ impl BoardView {
             return;
         }
         let delta = (event.position.x - resize.start_x) / window.rem_size();
-        self.columns.set(resize.column, resize.start_width + delta);
+        let width = if resize.column == Column::Session {
+            // This lane's right edge is pinned. Drag its left edge left to widen it, within the viewport cap.
+            (resize.start_width - delta).min(window.viewport_size().width / window.rem_size() * 0.75)
+        } else {
+            resize.start_width + delta
+        };
+        self.columns.set(resize.column, width);
         cx.notify();
     }
 
@@ -396,8 +416,8 @@ impl BoardView {
         }
     }
 
-    /// The handle on `column`'s right border: it spans the gap to the next column, so it never covers a header's own
-    /// click target.
+    /// Scrolling columns resize at their right edge. The pinned session lane resizes at its movable left edge,
+    /// leaving enough pointer travel to widen it without crossing the window edge.
     pub(crate) fn resize_handle(&self, column: Column, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = cx.theme();
         let (line, active) = (theme.border, theme.primary);
@@ -409,7 +429,10 @@ impl BoardView {
             .absolute()
             .top_0()
             .bottom_0()
-            .right(-GAP)
+            .when(column == Column::Session, |this| this.left_0())
+            .when(column != Column::Session, |this| {
+                this.right(if column == Column::Activity { rems(0.) } else { -GAP })
+            })
             .w(GAP)
             .flex()
             .justify_center()
@@ -433,12 +456,19 @@ impl BoardView {
 
     /// A header cell for a resizable column, with the handle on its right border.
     fn header_cell(&self, column: Column, cell: impl IntoElement, cx: &mut Context<Self>) -> impl IntoElement {
-        let laid_out = (column == Column::Repository).then(|| Rc::clone(&self.repository_laid_out));
+        let laid_out = match column {
+            Column::Repository => Some(Rc::clone(&self.repository_laid_out)),
+            Column::Activity => Some(Rc::clone(&self.activity_laid_out)),
+            Column::Session => Some(Rc::clone(&self.session_laid_out)),
+            _ => None,
+        };
         column_cell(column, &self.columns)
+            .id(("header-cell", column as usize))
+            .test_support()
             .relative()
             .child(cell)
             .child(self.resize_handle(column, cx))
-            // Records the width the layout gave the column, for a drag that starts on a narrow window.
+            // Begin a drag from the drawn width, including automatic activity sizing and a capped session lane.
             .when_some(laid_out, |this, laid_out| {
                 this.child(
                     canvas(
@@ -1198,10 +1228,16 @@ impl BoardView {
                     cx,
                 ),
             )
-            .child(div().flex_1().min_w(ACTIVITY_MIN).truncate().child("Last activity"))
+            .child(self.header_cell(Column::Activity, div().truncate().child("Last activity"), cx))
     }
 
-    fn render_row(&self, ix: usize, card: &Card, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_row(
+        &self,
+        ix: usize,
+        card: &Card,
+        table_width: gpui_kit::Rems,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = cx.theme();
         let expanded = self.is_expanded(&card.checkout);
         let overall = card.overall();
@@ -1506,14 +1542,11 @@ impl BoardView {
                     .child(text)
             }))
             .child(column_cell(Column::Updated, &self.columns).truncate().child(updated))
-            // Takes the width the other columns leave, and shrinks first on a narrow window, so the refresh button
-            // stays in view.
+            // Automatic until dragged, then uses the same saved width as its header.
             .child(
-                div()
+                column_cell(Column::Activity, &self.columns)
                     .id(("activity-cell", ix))
                     .test_support()
-                    .flex_1()
-                    .min_w(ACTIVITY_MIN)
                     .child(activity),
             );
         let row = h_flex()
@@ -1526,11 +1559,14 @@ impl BoardView {
                     .min_w_0()
                     .overflow_x_scroll()
                     .track_scroll(&self.table_scroll)
-                    .child(row.min_w(table_min(&self.columns))),
+                    .child(row.min_w(table_width)),
             )
             .child(
-                h_flex()
-                    .w(ACTIONS)
+                column_cell(Column::Session, &self.columns)
+                    .flex()
+                    .items_center()
+                    .id(("session-cell", ix))
+                    .test_support()
                     .px_2()
                     .gap_1()
                     .flex_none()
@@ -1822,8 +1858,6 @@ impl BoardView {
 // Table column widths, in rems so they follow the text size. The resizable columns' widths are in `ColumnWidths`.
 const CHEVRON: gpui_kit::Rems = rems(1.75);
 const STATE: gpui_kit::Rems = rems(0.75);
-/// Fixed session lane, outside the data columns’ horizontal scroll area.
-const ACTIONS: gpui_kit::Rems = rems(11.);
 /// The space between columns.
 const GAP: gpui_kit::Rems = rems(0.5);
 /// Extra space before the update time, so it doesn't read as part of the right-aligned issue count before it.
@@ -1847,6 +1881,15 @@ fn column_cell(column: Column, widths: &ColumnWidths) -> gpui_kit::Div {
             .flex_shrink(1.)
             .min_w(rems(column.min_width())),
         Column::Updated => cell.ml(UPDATED_LEAD).w(width(column, widths)).flex_none(),
+        Column::Activity => match widths.activity_width() {
+            Some(saved) => cell.w(rems(saved)).flex_none(),
+            None => cell.flex_1().min_w(ACTIVITY_MIN).max_w(rems(column.max_width())),
+        },
+        // Keep some data visible even when a saved session width exceeds a narrow window.
+        Column::Session => cell
+            .w(width(column, widths))
+            .max_w(gpui_kit::relative(0.75))
+            .flex_none(),
         _ => cell.w(width(column, widths)).flex_none(),
     }
 }
@@ -1860,6 +1903,8 @@ fn column_title(column: Column) -> &'static str {
         Column::Merged24h => "Merged 24h",
         Column::Merged7d => "Merged 7d",
         Column::Updated => "Updated",
+        Column::Activity => "Last activity",
+        Column::Session => "T3 session",
         Column::FleetMachine => "Machine",
         Column::FleetConnectivity => "Connectivity",
         Column::FleetServer => "T3 server",
@@ -1873,13 +1918,28 @@ fn column_title(column: Column) -> &'static str {
 }
 
 /// Data columns keep their saved widths and scroll together, independently of the fixed session lane.
-fn table_min(widths: &ColumnWidths) -> gpui_kit::Rems {
-    let resizable = widths.total() - widths.get(Column::Repository) + Column::Repository.min_width();
-    rems(1.75 + 0.75 + resizable + 0.75 + 1.5 + 10. * 0.5 + 2. * 0.5)
+fn table_min(widths: &ColumnWidths, viewport_rems: f32) -> gpui_kit::Rems {
+    let others = widths.total() - widths.get(Column::Repository);
+    // Chevron, state, Updated's leading space, nine gaps and the row's horizontal padding.
+    let spacing = 1.75 + 0.75 + 0.75 + 9. * 0.5 + 2. * 0.5;
+    if widths.activity_width().is_some() {
+        let data_viewport = viewport_rems - widths.get(Column::Session).min(viewport_rems * 0.75);
+        let without_activity = others - widths.get(Column::Activity);
+        let automatic_min =
+            Column::Repository.min_width() + without_activity + Column::Activity.min_width() + spacing + 0.5;
+        let automatic_repository =
+            (data_viewport.max(automatic_min) - without_activity - Column::Activity.min_width() - spacing)
+                .clamp(Column::Repository.min_width(), widths.get(Column::Repository));
+        // Preserve the repository width that automatic Activity would leave at this viewport. Otherwise growing
+        // Activity shrinks Repository instead, keeping the dragged boundary still as the pointer moves.
+        rems(automatic_repository + others + spacing)
+    } else {
+        rems(Column::Repository.min_width() + others + spacing + 0.5)
+    }
 }
 
 impl Render for BoardView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut content = v_flex().id("board").flex_1().min_h_0();
         content = content.child(
             h_flex()
@@ -1933,11 +1993,12 @@ impl Render for BoardView {
             content = content.child(self.render_empty(cx));
         } else {
             let cards = self.board.cards().to_vec();
+            let table_width = table_min(&self.columns, window.viewport_size().width / window.rem_size());
             let rows: Vec<AnyElement> = self
                 .board
                 .order(self.sort)
                 .into_iter()
-                .map(|ix| self.render_row(ix, &cards[ix], cx).into_any_element())
+                .map(|ix| self.render_row(ix, &cards[ix], table_width, cx).into_any_element())
                 .collect();
             content = content.child(
                 v_flex()
@@ -1953,9 +2014,9 @@ impl Render for BoardView {
                                     .min_w_0()
                                     .overflow_x_scroll()
                                     .track_scroll(&self.table_scroll)
-                                    .child(self.render_header(cx).min_w(table_min(&self.columns))),
+                                    .child(self.render_header(cx).min_w(table_width)),
                             )
-                            .child(div().w(ACTIONS).flex_none().px_2().text_xs().child("T3 session")),
+                            .child(self.header_cell(Column::Session, div().px_2().text_xs().child("T3 session"), cx)),
                     )
                     .child(
                         v_flex()

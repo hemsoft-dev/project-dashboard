@@ -128,6 +128,53 @@ fn column_widths_survive_a_save_and_load_beside_the_zoom() {
 }
 
 #[test]
+fn trailing_project_preferences_preserve_automatic_activity_and_independent_fleet_widths() {
+    let scratch = Scratch::new("trailing-columns");
+    // Old preference files retain the adaptive activity layout and the original pinned lane.
+    let old = ColumnWidths::from_value(Some(&serde_json::json!({"updated": 7, "fleetChecked": 12})));
+    assert_eq!(old.activity_width(), None);
+    assert_eq!(old.get(Column::Session), 11.);
+    UiState::update(&scratch.0, |state| {
+        state.columns = old;
+        state.columns.set(Column::Activity, 18.5);
+        state.columns.set(Column::Session, 13.);
+    })
+    .unwrap();
+    let saved = UiState::load(&scratch.0).columns;
+    assert_eq!(saved.activity_width(), Some(18.5));
+    assert_eq!(saved.get(Column::Session), 13.);
+    assert_eq!(saved.get(Column::Updated), 7.);
+    assert_eq!(saved.get(Column::FleetChecked), 12.);
+    UiState::update(&scratch.0, |state| {
+        state.columns.reset(Column::Activity);
+        state.columns.reset(Column::Session);
+    })
+    .unwrap();
+    let reset = UiState::load(&scratch.0).columns;
+    assert_eq!(reset.activity_width(), None);
+    assert_eq!(reset.get(Column::Session), 11.);
+    assert_eq!(reset.get(Column::FleetChecked), 12.);
+    assert_eq!(reset.get(Column::Updated), 7.);
+    let malformed = ColumnWidths::from_value(Some(&serde_json::json!({"activity": "wide", "session": -4})));
+    assert_eq!(malformed.activity_width(), None);
+    assert_eq!(malformed.get(Column::Session), Column::Session.min_width());
+}
+
+#[test]
+fn wide_activity_preferences_survive_the_ordinary_limit_and_still_bound_malformed_values() {
+    use dashboard_core::columns::MAX_ACTIVITY_WIDTH;
+    let scratch = Scratch::new("wide-activity");
+    UiState::update(&scratch.0, |state| state.columns.set(Column::Activity, 93.75)).unwrap();
+    assert_eq!(UiState::load(&scratch.0).columns.activity_width(), Some(93.75));
+    let huge = ColumnWidths::from_value(Some(&serde_json::json!({"activity": 1e39, "updated": 1e39})));
+    assert_eq!(huge.get(Column::Activity), MAX_ACTIVITY_WIDTH);
+    assert_eq!(huge.get(Column::Updated), MAX_WIDTH);
+    let mut reset = huge;
+    reset.reset(Column::Activity);
+    assert_eq!(reset.activity_width(), None);
+}
+
+#[test]
 fn saving_over_an_existing_state_file_replaces_it() {
     let scratch = Scratch::new("replace");
     let path = scratch.0.join(STATE_FILE);

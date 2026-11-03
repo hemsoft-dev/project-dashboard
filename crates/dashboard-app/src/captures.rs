@@ -1283,6 +1283,14 @@ fn captures_trailing_columns() {
             };
             for (index, column) in columns.into_iter().enumerate() {
                 let step = if fleet || column == Column::Session { -4. } else { 4. };
+                let header = if fleet {
+                    ("fleet-header", index + 7)
+                } else {
+                    ("header-cell", column as usize)
+                };
+                let before = cx
+                    .update_window(window, |_, window, _| window.find(header).bounds().size.width)
+                    .unwrap();
                 let from = cx
                     .update_window(window, |_, window, cx| {
                         window.render_frame(cx);
@@ -1307,6 +1315,25 @@ fn captures_trailing_columns() {
                 })
                 .unwrap();
                 save(&mut cx, window, &out, &format!("{name}-after-{index}"));
+                cx.update_window(window, |_, window, _| {
+                    let after = window.find(header).bounds();
+                    assert_eq!(
+                        after.size.width,
+                        before + px(step * 15.),
+                        "{name}: {column:?} drag changes the rendered width"
+                    );
+                    let body = if fleet {
+                        ("fleet-body", index + 7)
+                    } else if column == Column::Activity {
+                        ("activity-cell", 0)
+                    } else {
+                        ("session-cell", 0)
+                    };
+                    let body = window.find(body).bounds();
+                    assert_eq!(after.left(), body.left(), "{name}: {column:?} aligned");
+                    assert_eq!(after.size.width, body.size.width, "{name}: {column:?} equal widths");
+                })
+                .unwrap();
             }
         }
     }

@@ -1364,6 +1364,8 @@ fn trailing_project_widths_restore_reset_and_keep_fleet_and_sort_preferences(cx:
         1600.,
     );
     let sort = cx.update(|cx| view.read(cx).sort());
+    let expanded = four()[0].clone();
+    cx.update(|cx| view.update(cx, |view, cx| view.toggle_expanded(&expanded, cx)));
     drag_border(cx, handle, Column::Activity, 32.);
     drag_border(cx, handle, Column::Session, -32.);
     let saved = dashboard_core::ui_state::UiState::load(&dir).columns;
@@ -1373,7 +1375,7 @@ fn trailing_project_widths_restore_reset_and_keep_fleet_and_sort_preferences(cx:
     }
     assert_eq!(cx.update(|cx| view.read(cx).sort()), sort);
     for path in four() {
-        assert!(!cx.update(|cx| view.read(cx).is_expanded(&path)));
+        assert_eq!(cx.update(|cx| view.read(cx).is_expanded(&path)), path == expanded);
     }
     let (restarted, restored) = open_board_sized(
         cx,

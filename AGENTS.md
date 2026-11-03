@@ -80,6 +80,24 @@ Every change passes these before merge; CI runs them on `ubuntu-latest` and `win
    because it covers every target. Patch a vulnerability, never accept it. `deny.toml` accepts only unmaintained crates
    that arrive through GPUI, each by ID with its reason. The job reads the lockfile and uploads no source.
 
+5. **Standalone core**: on both Ubuntu and Windows, CI runs
+   cargo check -p dashboard-core --locked and cargo test -p dashboard-core --locked with separate clean target directories.
+
+The [main ruleset](https://github.com/hemsoft-dev/project-dashboard/rules/26477626) requires a pull request and
+these exact GitHub Actions check names: advisories, core (ubuntu-latest), core (windows-latest),
+rust (ubuntu-latest), and rust (windows-latest). The required source is GitHub Actions app 15368.
+The branch must be up to date with main; all code-review conversations must be resolved.
+There are no bypass actors, including administrators and apps. Force pushes and deletion of main are blocked.
+The existing policy still requires a clean current-head AI review; the GitHub formal approval count is 0.
+
+Check-name changes must be coordinated with the ruleset or PRs remain blocked on the old names. Strict freshness
+can require another existing CI run after main advances. No release job is added to the required checks:
+release.yml is path-filtered for PRs and publishes only on a tag. Release tags are outside this branch ruleset.
+
+These rules trust the PR's workflow under the required names; app-source pinning does not authenticate workflow
+contents. Administrators can edit or disable rules through settings. Neither ability is a configured bypass.
+See [issue 68 qualification](docs/main-gates.md) for reproducible reads and the explicit unexecuted checks.
+
 UI changes include screenshots in the pull request. Render them with the headless capture test on Linux or macOS, so
 no window opens on anyone's desktop.
 

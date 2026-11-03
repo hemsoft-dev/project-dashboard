@@ -22,6 +22,7 @@ pub mod source;
 pub mod status;
 pub mod t3;
 pub mod ui_state;
+pub mod web_url;
 pub mod work;
 pub mod write;
 pub mod zoom;

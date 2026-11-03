@@ -1,4 +1,5 @@
 use crate::board_view::BoardView;
+use dashboard_core::web_url::WebUrl;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _, h_flex, tag::Tag, tooltip::Tooltip, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -56,7 +57,7 @@ impl BoardView {
                         .child(row.group.title()),
                 );
             }
-            let url = row.url().to_owned();
+            let url = WebUrl::parse(row.url());
             let title = format!("{} · {} · {}", row.project, row.priority_label(), row.work_label());
             let holder = row.workers.join(" / ");
             let detail = if row.reason.is_empty() {
@@ -82,10 +83,12 @@ impl BoardView {
                 .gap_2()
                 .border_b_1()
                 .border_color(cx.theme().border)
-                .cursor_pointer()
-                .hover(|s| s.bg(cx.theme().muted))
+                .when_some(url, |line, url| {
+                    line.cursor_pointer()
+                        .hover(|s| s.bg(cx.theme().muted))
+                        .on_click(move |_, _, cx| cx.open_url(url.as_str()))
+                })
                 .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-                .on_click(move |_, _, cx| cx.open_url(&url))
                 .child(
                     div()
                         .id(("backlog-work", ix))

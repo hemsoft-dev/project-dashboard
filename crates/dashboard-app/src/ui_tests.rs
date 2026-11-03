@@ -4378,3 +4378,137 @@ fn fleet_borders_resize_persist_and_leave_project_widths_and_sort_unchanged(cx: 
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Simulates an older cache with unrestricted string URLs, without changing its schema.
+pub(crate) fn refused_link_document() -> StatusDocument {
+    let doc = demo::HostedSource.fetch(Path::new("/demo/codexbar"), false).unwrap();
+    let mut value = serde_json::to_value(doc).unwrap();
+    fn replace(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, value) in map {
+                    if key == "url" {
+                        *value = serde_json::Value::String("file:///C:/refused-link.exe".into());
+                    } else {
+                        replace(value);
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(replace),
+            _ => {}
+        }
+    }
+    replace(&mut value);
+    serde_json::from_value(value).unwrap()
+}
+
+#[gpui_kit::test]
+fn legacy_cached_refused_links_remain_visible_and_do_not_open(cx: &mut TestAppContext) {
+    let checkout = PathBuf::from("/demo/codexbar");
+    let mut cache = StatusCache::default();
+    cache.insert(checkout.clone(), refused_link_document());
+    // Serialize and reload through the public cache boundary used by production startup.
+    let dir = std::env::temp_dir().join(format!("dashboard-refused-links-{}", std::process::id()));
+    cache.save(&dir).unwrap();
+    let cache = StatusCache::load(&dir);
+    std::fs::remove_file(dir.join(dashboard_core::cache::FILE_NAME)).unwrap();
+    std::fs::remove_dir(&dir).unwrap();
+    let (handle, view) = open_board(
+        cx,
+        vec![checkout.clone()],
+        cache,
+        Arc::new(demo::HostedSource),
+        options(),
+    );
+    cx.update(|cx| view.update(cx, |v, cx| v.toggle_expanded(&checkout, cx)));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        for id in [
+            "pr-0-232",
+            "issue-0-231",
+            "run-0-18312000002",
+            "work-0-fixture-stable-id",
+        ] {
+            assert!(window.try_find(id).is_some(), "refused data remains visible: {id}");
+            window.click(id, cx);
+        }
+        window.click(("activity", 0usize), cx);
+    })
+    .unwrap();
+    assert_eq!(cx.opened_url(), None);
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.selected_view = dashboard_core::config::View::Backlog;
+            cx.notify();
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("backlog-row", 0usize)).is_some());
+        window.click(("backlog-row", 0usize), cx);
+    })
+    .unwrap();
+    assert_eq!(cx.opened_url(), None);
+}
+
+struct SuppliedThread(&'static str);
+impl dashboard_core::t3::ThreadFinder for SuppliedThread {
+    fn find(&self, checkouts: &[PathBuf]) -> Vec<dashboard_core::t3::Lookup> {
+        checkouts
+            .iter()
+            .map(|_| {
+                Ok(dashboard_core::t3::ThreadLink {
+                    title: "Supplied session".into(),
+                    url: self.0.into(),
+                    running: false,
+                })
+            })
+            .collect()
+    }
+}
+
+#[gpui_kit::test]
+async fn supplied_t3_urls_only_offer_web_actions(cx: &mut TestAppContext) {
+    for (raw, expected) in [
+        ("ms-settings:display", None),
+        ("https:///example.com", None),
+        (
+            "HtTp://127.0.0.1:3773/thread/abc",
+            Some("http://127.0.0.1:3773/thread/abc"),
+        ),
+    ] {
+        let mut opts = options();
+        opts.threads = Arc::new(SuppliedThread(raw));
+        let (handle, view) = open_board(
+            cx,
+            vec![PathBuf::from("/demo/codexbar")],
+            StatusCache::default(),
+            Arc::new(demo::HostedSource),
+            opts,
+        );
+        settle(cx, handle, &view).await;
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(("t3", 0usize), cx);
+        })
+        .unwrap();
+        assert_eq!(cx.opened_url().as_deref(), expected);
+    }
+}
+
+#[gpui_kit::test]
+fn refused_waiting_url_has_no_browser_action(cx: &mut TestAppContext) {
+    let checkout = PathBuf::from("/demo/held");
+    let mut doc = ReadinessSource.fetch(&checkout, false).unwrap();
+    doc.hosted.as_mut().unwrap().work[0].url = "javascript:alert(1)".into();
+    let mut cache = StatusCache::default();
+    cache.insert(checkout.clone(), doc);
+    let (handle, _) = open_board(cx, vec![checkout], cache, Arc::new(ReadinessSource), options());
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(("waiting-age", 0usize)).label(), Some("Waiting 6d"));
+        window.click(("waiting-age", 0usize), cx);
+    })
+    .unwrap();
+    assert_eq!(cx.opened_url(), None);
+}

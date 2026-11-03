@@ -144,7 +144,8 @@ Hover the dot for every signal behind it. A status's age never greys a dot.
   A repository without a known tier shows `—`. Failed reads retain the last good priorities from the same pmd
   service; a successful response replaces them, including an unknown tier. Its request runs separately, with a
   two-second timeout, independently of status workers. Priority refreshes at startup and with every refresh.
-- **Resize** a column by dragging the border to the right of its header, including Last activity and T3 session.
+- **Resize** a column by dragging the border to the right of its header, including Last activity.
+  The pinned T3 session lane resizes at its left border: drag left to widen it or right to narrow it.
   Last activity takes the remaining space until resized. Double-click a border to restore its default, including
   automatic sizing for Last activity. The session lane stays pinned and leaves room for scrolling data. Widths are remembered in
   `ui-state.json`, next to `config.toml`, and scale with the zoom. On a window too narrow for them, the repository

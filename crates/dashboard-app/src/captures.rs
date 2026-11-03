@@ -1254,7 +1254,7 @@ fn captures_trailing_columns() {
     let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").unwrap());
     std::fs::create_dir_all(&out).unwrap();
     let mut cx = headless();
-    for width in [1600., 480.] {
+    for width in [2560., 1600., 480.] {
         for fleet in [false, true] {
             let name = format!("trailing-{}-{}", if fleet { "fleet" } else { "project" }, width as u32);
             let (window, view) = open_sized(&mut cx, demo::checkouts(), width, 760.);
@@ -1277,12 +1277,13 @@ fn captures_trailing_columns() {
             .unwrap();
             save(&mut cx, window, &out, &format!("{name}-before"));
             let columns = if fleet {
-                [Column::FleetChecked, Column::FleetWork]
+                vec![Column::FleetChecked, Column::FleetWork]
             } else {
-                [Column::Activity, Column::Session]
+                vec![Column::Activity, Column::Session, Column::Session]
             };
             for (index, column) in columns.into_iter().enumerate() {
-                let step = if fleet || column == Column::Session { -4. } else { 4. };
+                let step = if fleet || index == 1 { -4. } else { 4. };
+                let direction = if column == Column::Session { -1. } else { 1. };
                 let header = if fleet {
                     ("fleet-header", index + 7)
                 } else {
@@ -1319,7 +1320,7 @@ fn captures_trailing_columns() {
                     let after = window.find(header).bounds();
                     assert_eq!(
                         after.size.width,
-                        before + px(step * 15.),
+                        before + px(direction * step * 15.),
                         "{name}: {column:?} drag changes the rendered width"
                     );
                     let body = if fleet {

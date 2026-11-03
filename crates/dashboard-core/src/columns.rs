@@ -6,8 +6,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The widest any column can be dragged, in rems.
+/// The widest ordinary column can be dragged, in rems.
 pub const MAX_WIDTH: f32 = 60.0;
+/// Activity can fill a wide display before its first drag. Bound both its automatic and saved layout alike.
+pub const MAX_ACTIVITY_WIDTH: f32 = 1024.0;
 
 /// A table column whose right border can be dragged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -126,13 +128,21 @@ impl Column {
         }
     }
 
-    /// `width` kept between this column's minimum and [`MAX_WIDTH`], on a hundredth of a rem; anything that isn't a
+    pub fn max_width(self) -> f32 {
+        if self == Self::Activity {
+            MAX_ACTIVITY_WIDTH
+        } else {
+            MAX_WIDTH
+        }
+    }
+
+    /// `width` kept between this column's minimum and maximum, on a hundredth of a rem; anything that isn't a
     /// finite number is the default.
     pub fn clamp(self, width: f32) -> f32 {
         if !width.is_finite() {
             return self.default_width();
         }
-        (width.clamp(self.min_width(), MAX_WIDTH) * 100.0).round() / 100.0
+        (width.clamp(self.min_width(), self.max_width()) * 100.0).round() / 100.0
     }
 }
 
@@ -243,7 +253,8 @@ impl ColumnWidths {
         for column in Column::ALL.into_iter().chain(Column::FLEET) {
             if let Some(width) = value.and_then(|value| value.get(column.key())).and_then(Value::as_f64) {
                 // Bounded before the cast, so a huge saved width clamps to the maximum instead of becoming infinite.
-                let width = width.clamp(f64::from(-MAX_WIDTH), f64::from(MAX_WIDTH));
+                let limit = f64::from(column.max_width());
+                let width = width.clamp(-limit, limit);
                 widths.set(column, width as f32);
             }
         }

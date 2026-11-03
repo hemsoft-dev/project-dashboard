@@ -1397,12 +1397,40 @@ fn captures_fleet_runtime_ages() {
                     cx.notify();
                 })
             });
+            // Expose Active; at 480 px capture Running work in a second scroll position.
+            cx.update_window(window, |_, window, cx| {
+                window.scroll(
+                    "fleet-scroll",
+                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(5000.), px(0.))),
+                    cx,
+                );
+                window.render_frame(cx);
+                window.scroll(
+                    "fleet-scroll",
+                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-1056.), px(0.))),
+                    cx,
+                );
+                window.render_frame(cx);
+            })
+            .unwrap();
             save(
                 &mut cx,
                 window,
                 &out,
                 &format!("fleet-runtime-{state}-{}", width as u32),
             );
+            if width == 480. {
+                cx.update_window(window, |_, window, cx| {
+                    window.scroll(
+                        "fleet-scroll",
+                        gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-5000.), px(0.))),
+                        cx,
+                    );
+                    window.render_frame(cx);
+                })
+                .unwrap();
+                save(&mut cx, window, &out, &format!("fleet-runtime-{state}-work-480"));
+            }
         }
     }
 }

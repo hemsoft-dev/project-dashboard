@@ -4515,3 +4515,209 @@ fn refused_waiting_url_has_no_browser_action(cx: &mut TestAppContext) {
     .unwrap();
     assert_eq!(cx.opened_url(), None);
 }
+
+/// Loopback reads plus GPUI's virtual timer exercise the production refresh path.
+#[gpui_kit::test]
+fn fleet_timer_is_independent_selected_only_and_retains_real_ages(cx: &mut TestAppContext) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let mode = Arc::new(AtomicUsize::new(0));
+    let response_mode = mode.clone();
+    let stamp = chrono::Utc::now();
+    let server = pmd_http::Server::with_auth(move |path, token| {
+        let body = match path {
+            "/v1/assignments?limit=500&state=running" => serde_json::json!({"assignments":[],"truncated":false}),
+            "/v1/machines" => serde_json::json!({"machines":[{"name":"mini","os":"linux","maxSessions":3}]}),
+            "/v1/capacity" => serde_json::json!({"machines":[]}),
+            "/v1/fleet/status" => serde_json::json!({"schema":1,"machines":[]}),
+            "/v1/fleet/activity" => {
+                let mode = response_mode.load(Ordering::SeqCst);
+                if mode == 2 {
+                    return pmd_http::Reply {
+                        code: 503,
+                        body: "{}".into(),
+                    };
+                }
+                let observed = if mode == 1 {
+                    stamp - chrono::Duration::seconds(91)
+                } else {
+                    chrono::Utc::now()
+                };
+                serde_json::json!({"schema":1,"observedAt":observed,"machines":[{"name":"mini","observedAt":observed,"state":"ok","activeCount":1,"chiefActive":false,"sessions":[{"environment":"","threadId":"timer","title":"Timer work","project":"dashboard","runtimeStatus":"working","role":"primary"}]}]})
+            }
+            _ => return pmd_response(path, token),
+        };
+        pmd_http::Reply {
+            code: 200,
+            body: body.to_string(),
+        }
+    });
+    let mut live = LivePmd::new(cx, &server, "fleet-independent-timer");
+    for minutes in [0, 5] {
+        live.config.refresh_minutes = minutes;
+        live.reload(cx);
+        live.wait(cx);
+        server.requests.lock().unwrap().clear();
+        cx.executor().advance_clock(Duration::from_secs(30));
+        cx.run_until_parked();
+        assert!(
+            server.requests.lock().unwrap().is_empty(),
+            "hidden Fleet must not fetch"
+        );
+        cx.update_window(live.handle, |_, window, cx| window.click("Fleet", cx))
+            .unwrap();
+        until(cx, |cx| cx.update(|cx| !live.view.read(cx).fleet_loading));
+        for _ in 0..4 {
+            server.requests.lock().unwrap().clear();
+            cx.executor().advance_clock(Duration::from_secs(30));
+            cx.run_until_parked();
+            until(cx, |cx| cx.update(|cx| !live.view.read(cx).fleet_loading));
+            let requests = server.requests.lock().unwrap();
+            assert_eq!(requests.iter().filter(|p| *p == "/v1/fleet/activity").count(), 1);
+            assert!(
+                !requests.iter().any(|p| p.starts_with("/v1/projects")),
+                "Fleet must not start Project workers"
+            );
+            cx.update(|cx| {
+                assert_eq!(
+                    live.view.read(cx).fleet_activity.machines[0].count_label(chrono::Utc::now()),
+                    "1 active"
+                )
+            });
+        }
+        cx.update_window(live.handle, |_, window, cx| window.click("Project", cx))
+            .unwrap();
+    }
+    cx.update_window(live.handle, |_, window, cx| window.click("Fleet", cx))
+        .unwrap();
+    until(cx, |cx| cx.update(|cx| !live.view.read(cx).fleet_loading));
+    mode.store(1, Ordering::SeqCst);
+    cx.executor().advance_clock(Duration::from_secs(30));
+    cx.run_until_parked();
+    until(cx, |cx| cx.update(|cx| !live.view.read(cx).fleet_loading));
+    let observed = cx.update(|cx| live.view.read(cx).fleet_activity.observed_at);
+    cx.update_window(live.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .find(("fleet-body", 5usize))
+                .label()
+                .unwrap()
+                .starts_with("Stale")
+        );
+    })
+    .unwrap();
+    mode.store(2, Ordering::SeqCst);
+    cx.executor().advance_clock(Duration::from_secs(30));
+    cx.run_until_parked();
+    until(cx, |cx| {
+        cx.update(|cx| live.view.read(cx).fleet_activity_error.is_some())
+    });
+    cx.update(|cx| assert_eq!(live.view.read(cx).fleet_activity.observed_at, observed));
+    cx.update_window(live.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .find(("fleet-body", 5usize))
+                .label()
+                .unwrap()
+                .starts_with("Unavailable")
+        );
+        assert!(
+            window
+                .find(("fleet-body", 8usize))
+                .label()
+                .unwrap()
+                .starts_with("Last known")
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn fleet_inflight_read_never_overlaps_and_source_changes_reject_old_results(cx: &mut TestAppContext) {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    let entered = Arc::new(AtomicBool::new(false));
+    let seen = entered.clone();
+    let (release, wait) = mpsc::channel();
+    let wait = Mutex::new(wait);
+    let server = pmd_http::Server::with_auth(move |path, token| {
+        if path == "/v1/fleet/activity" && token == OLD_TOKEN {
+            seen.store(true, Ordering::SeqCst);
+            let _ = wait.lock().unwrap().recv_timeout(Duration::from_secs(5));
+            return pmd_http::Reply {
+                code: 200,
+                body: serde_json::json!({"schema":1,"machines":[{"name":"old-source","state":"ok","activeCount":1,"chiefActive":false,"sessions":[]}]}).to_string(),
+            };
+        }
+        match path {
+            "/v1/fleet/status" => pmd_http::Reply {
+                code: 200,
+                body: serde_json::json!({"schema":1,"machines":[]}).to_string(),
+            },
+            "/v1/machines" | "/v1/capacity" => pmd_http::Reply {
+                code: 200,
+                body: serde_json::json!({"machines":[]}).to_string(),
+            },
+            "/v1/assignments?limit=500&state=running" => pmd_http::Reply {
+                code: 200,
+                body: serde_json::json!({"assignments":[],"truncated":false}).to_string(),
+            },
+            _ => pmd_response(path, token),
+        }
+    });
+    let mut live = LivePmd::new(cx, &server, "fleet-inflight-invalidation");
+    cx.update_window(live.handle, |_, window, cx| window.click("Fleet", cx))
+        .unwrap();
+    until(cx, |_| entered.load(Ordering::SeqCst));
+    for _ in 0..4 {
+        cx.executor().advance_clock(Duration::from_secs(30));
+        cx.run_until_parked();
+    }
+    assert_eq!(
+        server
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|p| *p == "/v1/fleet/activity")
+            .count(),
+        1
+    );
+    live.config.pmd_token_path = "new-token".into();
+    live.config.view = dashboard_core::config::View::Project;
+    live.reload(cx);
+    release.send(()).unwrap();
+    until(cx, |cx| cx.update(|cx| !live.view.read(cx).fleet_loading));
+    cx.update(|cx| assert!(live.view.read(cx).fleet_activity.machines.is_empty()));
+    assert_eq!(
+        server
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|p| *p == "/v1/fleet/activity")
+            .count(),
+        1,
+        "superseded read must not restart hidden Fleet"
+    );
+    cx.update_window(live.handle, |_, window, cx| window.click("Fleet", cx))
+        .unwrap();
+    until(cx, |cx| cx.update(|cx| !live.view.read(cx).fleet_loading));
+    cx.update(|cx| assert!(live.view.read(cx).fleet_activity.machines.is_empty()));
+    cx.update(|cx| {
+        live.view.update(cx, |view, _| {
+            view.fleet_activity = fleet_activity_fixture();
+            view.fleet_status = fleet_status_fixture();
+        })
+    });
+    live.config.pmd_url = "http://127.0.0.1:1".into();
+    live.config.view = dashboard_core::config::View::Fleet;
+    live.reload(cx);
+    cx.update(|cx| assert!(live.view.read(cx).fleet_activity.machines.is_empty()));
+    until(cx, |cx| cx.update(|cx| !live.view.read(cx).fleet_loading));
+    cx.update(|cx| assert!(live.view.read(cx).fleet_activity_error.is_some()));
+}

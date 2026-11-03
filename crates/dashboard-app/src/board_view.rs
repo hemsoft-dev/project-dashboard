@@ -120,7 +120,8 @@ pub struct BoardView {
     pub(crate) fleet_error: Option<String>,
     pub(crate) fleet_activity: dashboard_core::fleet_activity::Snapshot,
     pub(crate) fleet_activity_error: Option<String>,
-    fleet_loading: bool,
+    pub(crate) fleet_loading: bool,
+    fleet_generation: u64,
     /// Caps every refresh, together, at `parallelism` HTTP reads.
     limiter: Arc<scheduler::Limited>,
     /// The cards on the board, shared with running refreshes so they skip removed checkouts.
@@ -206,6 +207,7 @@ impl BoardView {
             fleet_activity_error: None,
             fleet_error: None,
             fleet_loading: false,
+            fleet_generation: 0,
             limiter,
             wanted,
             auto_schedule: 0,
@@ -244,7 +246,12 @@ impl BoardView {
             loop {
                 cx.background_executor().timer(Duration::from_secs(30)).await;
                 let Ok(()) = this.update(cx, |view, cx| {
-                    if view.last_refresh.is_some() || view.board.cards().iter().any(|card| card.document.is_some()) {
+                    if view.selected_view == dashboard_core::config::View::Fleet {
+                        view.refresh_fleet(cx);
+                        cx.notify();
+                    } else if view.last_refresh.is_some()
+                        || view.board.cards().iter().any(|card| card.document.is_some())
+                    {
                         cx.notify();
                     }
                 }) else {
@@ -646,6 +653,7 @@ impl BoardView {
             let pmd = Pmd::from_config(&config, dir);
             if self.options.pmd.as_ref() != Some(&pmd) {
                 self.priority_generation += 1;
+                self.fleet_generation += 1;
                 self.options.priorities = Arc::new(pmd.clone());
                 self.limiter.set_source(Arc::new(pmd.clone()));
                 self.board.replace_pmd_source(&pmd.url, &mut self.cache);
@@ -710,13 +718,14 @@ impl BoardView {
 
     /// Fleet reads are independent of project workers, and start when Fleet is selected.
     fn refresh_fleet(&mut self, cx: &mut Context<Self>) {
-        if self.fleet_loading {
+        if self.fleet_loading || self.selected_view != dashboard_core::config::View::Fleet {
             return;
         }
         let Some(pmd) = self.options.pmd.clone() else {
             return;
         };
         self.fleet_loading = true;
+        let generation = self.fleet_generation;
         let (send, receive) = std::sync::mpsc::channel();
         let requested = pmd.clone();
         std::thread::spawn(move || {
@@ -737,7 +746,7 @@ impl BoardView {
                 };
                 let _ = this.update(cx, |view, cx| {
                     view.fleet_loading = false;
-                    if view.options.pmd.as_ref() == Some(&pmd) {
+                    if view.fleet_generation == generation && view.options.pmd.as_ref() == Some(&pmd) {
                         match result.0 {
                             Ok(snapshot) => {
                                 view.fleet_status = snapshot;

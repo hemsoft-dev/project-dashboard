@@ -360,6 +360,12 @@ unless measured separately. Session load comes from capacity's own T3 source
 freshness and is independent of host connectivity. A failed API refresh preserves
 the last successful table and original ages, with an error and F5 recovery.
 
+While Fleet is selected, it reads pmd every 30 seconds independently of the Project
+refresh interval, including when automatic refresh is off. Fleet reads never overlap
+or start Project status workers. Switching away stops these extra reads. Freshness
+uses pmd's original `observed_at`, so unchanged observations still become stale after
+90 seconds. A failed read retains the last observations and their ages with the error.
+
 Fleet requires pmd's read-scoped `/v1/fleet/status` endpoint, alongside existing
 `/v1/machines`, `/v1/capacity` and `/v1/assignments`. An older pmd returns a visible
 refresh error. No subprocess, machine updates/restarts or dispatch activation is

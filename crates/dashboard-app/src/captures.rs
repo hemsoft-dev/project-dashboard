@@ -1339,3 +1339,33 @@ fn captures_trailing_columns() {
         }
     }
 }
+
+#[test]
+#[ignore = "writes issue 67 refused-link state offscreen"]
+fn captures_refused_links() {
+    let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").expect("CAPTURE_DIR"));
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cx = headless();
+    let checkout = PathBuf::from("/demo/codexbar");
+    let (window, view) = open_sized(&mut cx, vec![checkout.clone()], 1100., 1000.);
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.apply(
+                Outcome {
+                    checkout: checkout.clone(),
+                    result: Ok(crate::ui_tests::refused_link_document()),
+                },
+                cx,
+            );
+            v.toggle_expanded(&checkout, cx);
+        })
+    });
+    save(&mut cx, window, &out, "refused-links-project");
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.selected_view = dashboard_core::config::View::Backlog;
+            cx.notify();
+        })
+    });
+    save(&mut cx, window, &out, "refused-links-backlog");
+}

@@ -10,6 +10,7 @@
 //! Expanding a row shows pmd's hosted status and Board/work items. Local health is explicitly unavailable.
 //! Items open in the browser.
 
+use dashboard_core::web_url::WebUrl;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -1308,7 +1309,7 @@ impl BoardView {
                 .child(error.to_string())
                 .into_any_element(),
             (Some(activity), None) => {
-                let url = activity.url.clone();
+                let url = WebUrl::parse(&activity.url);
                 h_flex()
                     .id(("activity", ix))
                     .test_support()
@@ -1318,12 +1319,14 @@ impl BoardView {
                         move |window, cx| gpui_kit::component::tooltip::Tooltip::new(text.clone()).build(window, cx)
                     })
                     .min_w_0()
-                    .cursor_pointer()
-                    .hover(|style| style.underline())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(move |_, _, cx| {
-                        cx.stop_propagation();
-                        cx.open_url(&url);
+                    .when_some(url, |this, url| {
+                        this.cursor_pointer()
+                            .hover(|style| style.underline())
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                cx.open_url(url.as_str());
+                            })
                     })
                     // Workflow names can be longer than their titles. Let the label use its natural width up to
                     // a third of this cell. At its minimum, keep a label prefix instead of two bare ellipses.
@@ -1636,7 +1639,7 @@ impl BoardView {
         if hosted.is_some_and(|h| h.work_error.is_some()) {
             waiting_detail.push_str("\nWork source unavailable; showing last known item");
         }
-        let url = waiting.map(|(item, _)| item.url.clone()).filter(|url| !url.is_empty());
+        let url = waiting.and_then(|(item, _)| WebUrl::parse(&item.url));
         h_flex()
             .min_w_0()
             .gap_2()
@@ -1673,7 +1676,7 @@ impl BoardView {
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(move |_, _, cx| {
                                 cx.stop_propagation();
-                                cx.open_url(&url);
+                                cx.open_url(url.as_str());
                             })
                     }),
             )
@@ -1746,10 +1749,13 @@ impl BoardView {
     /// Opens the checkout's T3 Code thread; disabled, with the reason as its tooltip, when there is none to open.
     fn thread_button(&self, ix: usize, checkout: &Path) -> impl IntoElement + use<> {
         let lookup = self.threads.get(checkout);
-        let tooltip = lookup.map_or_else(|| "Looking for this checkout's T3 Code thread…".to_owned(), t3::tooltip);
+        let mut tooltip = lookup.map_or_else(|| "Looking for this checkout's T3 Code thread…".to_owned(), t3::tooltip);
         let url = lookup
             .and_then(|lookup| lookup.as_ref().ok())
-            .map(|link| link.url.clone());
+            .and_then(|link| WebUrl::parse(&link.url));
+        if lookup.is_some_and(|l| l.is_ok()) && url.is_none() {
+            tooltip.push_str("\nCannot open: expected a well-formed HTTP or HTTPS URL.");
+        }
         Button::new(("t3", ix))
             .ghost()
             .xsmall()
@@ -1764,12 +1770,15 @@ impl BoardView {
                         .to_owned(),
                 ),
             )
-            .tooltip(url.as_ref().map_or(tooltip.clone(), |url| format!("{tooltip}\n{url}")))
+            .tooltip(
+                url.as_ref()
+                    .map_or(tooltip.clone(), |url| format!("{tooltip}\n{}", url.as_str())),
+            )
             .disabled(url.is_none())
             .on_click(move |_, _, cx| {
                 cx.stop_propagation();
                 if let Some(url) = &url {
-                    cx.open_url(url);
+                    cx.open_url(url.as_str());
                 }
             })
     }
@@ -2331,7 +2340,7 @@ fn table(
 
 /// A row that opens `url` in the default browser.
 fn link_row(id: SharedString, url: &str, cells: Vec<AnyElement>, cx: &App) -> AnyElement {
-    let url = url.to_owned();
+    let url = WebUrl::parse(url);
     let hover = cx.theme().list_hover;
     h_flex()
         .id(id)
@@ -2340,10 +2349,10 @@ fn link_row(id: SharedString, url: &str, cells: Vec<AnyElement>, cx: &App) -> An
         .px_1()
         .text_sm()
         .rounded_sm()
-        .when(!url.is_empty(), |this| {
+        .when_some(url, |this, url| {
             this.cursor_pointer()
                 .hover(move |style| style.bg(hover))
-                .on_click(move |_, _, cx| cx.open_url(&url))
+                .on_click(move |_, _, cx| cx.open_url(url.as_str()))
         })
         .children(cells)
         .into_any_element()

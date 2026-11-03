@@ -125,24 +125,21 @@ impl Config {
             View::Backlog => "backlog",
             View::Fleet => "fleet",
         };
-        let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
-        let top = lines
-            .iter()
-            .position(|s| s.trim_start().starts_with('['))
-            .unwrap_or(lines.len());
-        if let Some(i) = lines[..top]
-            .iter()
-            .position(|s| s.split_once('=').is_some_and(|(k, _)| k.trim() == "view"))
-        {
-            lines[i] = format!("view = \"{name}\"");
+        // Use TOML value spans so quoted keys, multiline strings and inline comments survive.
+        let values: std::collections::BTreeMap<String, toml::Spanned<toml::Value>> =
+            toml::from_str(&text).map_err(|e| ConfigError::Parse(path.clone(), e.to_string()))?;
+        let mut edited = text.clone();
+        let value = format!("\"{name}\"");
+        if let Some(old) = values.get("view") {
+            edited.replace_range(old.span(), &value);
         } else {
-            lines.insert(0, format!("view = \"{name}\""));
+            let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+            edited.insert_str(0, &format!("view = {value}{newline}"));
         }
-        let edited = lines.join("\n") + "\n";
         if Self::parse(&edited, &path)? != expected {
             return Err(ConfigError::Parse(path, "view could not be saved safely".into()));
         }
-        std::fs::write(&path, edited).map_err(|e| ConfigError::Write(path, e))
+        replace_config(&path, edited.as_bytes())
     }
 
     pub fn parse(text: &str, path: &Path) -> Result<Self, ConfigError> {
@@ -177,7 +174,7 @@ impl Config {
                     "its repositories list couldn't be edited safely; add the folder to it by hand".to_owned(),
                 )
             })?;
-        std::fs::write(&path, edited).map_err(|err| ConfigError::Write(path, err))?;
+        replace_config(&path, edited.as_bytes())?;
         Ok(true)
     }
 
@@ -216,7 +213,7 @@ impl Config {
     pub fn save(&self, dir: &Path) -> Result<(), ConfigError> {
         let path = dir.join(FILE_NAME);
         std::fs::create_dir_all(dir).map_err(|err| ConfigError::Write(path.clone(), err))?;
-        std::fs::write(&path, self.to_toml()).map_err(|err| ConfigError::Write(path, err))
+        replace_config(&path, self.to_toml().as_bytes())
     }
 
     pub fn refresh_interval(&self) -> Option<std::time::Duration> {
@@ -437,5 +434,256 @@ mod view_tests {
             Config::parse(&config.to_toml(), Path::new("config.toml")).unwrap().view,
             View::Backlog
         );
+    }
+}
+
+/// Linux and Windows write beside the destination, then close the handle before atomic replacement.
+/// Other Unix targets retain the legacy in-place write for compatibility: they still have the known
+/// partial-write risk. Native macOS/BSD ACL preservation is outside this Windows/Linux maintenance fix.
+fn replace_config(path: &Path, bytes: &[u8]) -> Result<(), ConfigError> {
+    #[cfg(any(windows, target_os = "linux"))]
+    {
+        use std::io::Write as _;
+        replace_config_with(path, bytes, |file, bytes| file.write_all(bytes))
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        write_config_in_place(path, bytes)
+    }
+}
+
+#[cfg(any(test, all(unix, not(target_os = "linux"))))]
+fn write_config_in_place(path: &Path, bytes: &[u8]) -> Result<(), ConfigError> {
+    std::fs::write(path, bytes).map_err(|err| ConfigError::Write(path.to_owned(), err))
+}
+
+// Never remove the destination first: failed metadata application or rename leaves its bytes intact.
+#[cfg(any(windows, target_os = "linux"))]
+fn replace_config_with(
+    path: &Path,
+    bytes: &[u8],
+    write: impl FnOnce(&mut std::fs::File, &[u8]) -> std::io::Result<()>,
+) -> Result<(), ConfigError> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let security = ConfigSecurity::read(path).map_err(|err| ConfigError::Write(path.to_owned(), err))?;
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let (temporary, mut file) = loop {
+        let temporary = parent.join(format!(
+            ".config.toml.{}.{}.tmp",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match security.create(&temporary) {
+            Ok(file) => break (temporary, file),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(ConfigError::Write(path.to_owned(), err)),
+        }
+    };
+    let result = security
+        .apply(&file)
+        .and_then(|()| write(&mut file, bytes))
+        .and_then(|()| file.sync_all());
+    drop(file);
+    let result = result.and_then(|()| std::fs::rename(&temporary, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result.map_err(|err| ConfigError::Write(path.to_owned(), err))
+}
+
+#[cfg(all(test, any(windows, target_os = "linux")))]
+#[path = "config_atomic_73.rs"]
+mod config_atomic_73;
+
+#[cfg(target_os = "linux")]
+struct ConfigSecurity {
+    metadata: Option<std::fs::Metadata>,
+    acl: Option<Vec<u8>>,
+}
+
+#[cfg(target_os = "linux")]
+impl ConfigSecurity {
+    fn read(path: &Path) -> std::io::Result<Self> {
+        match std::fs::metadata(path) {
+            Ok(metadata) => Ok(Self {
+                metadata: Some(metadata),
+                acl: read_config_acl(path)?,
+            }),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self {
+                metadata: None,
+                acl: None,
+            }),
+            Err(err) => Err(err),
+        }
+    }
+
+    fn create(&self, path: &Path) -> std::io::Result<std::fs::File> {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+    }
+
+    fn apply(&self, file: &std::fs::File) -> std::io::Result<()> {
+        use std::os::unix::fs::MetadataExt as _;
+        if let Some(old) = &self.metadata {
+            let new = file.metadata()?;
+            if (old.uid(), old.gid()) != (new.uid(), new.gid()) {
+                std::os::unix::fs::fchown(file, Some(old.uid()), Some(old.gid()))?;
+            }
+        }
+        apply_config_acl(file, None)?;
+        use std::os::unix::fs::PermissionsExt as _;
+        file.set_permissions(self.metadata.as_ref().map_or_else(
+            || std::fs::Permissions::from_mode(0o600),
+            std::fs::Metadata::permissions,
+        ))?;
+        if self.acl.is_some() {
+            apply_config_acl(file, self.acl.as_deref())?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+const CONFIG_ACL: &str = "system.posix_acl_access";
+
+#[cfg(target_os = "linux")]
+fn read_config_acl(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
+    match rustix::fs::getxattr(path, CONFIG_ACL, &mut [] as &mut [u8]) {
+        Ok(size) => {
+            let mut acl = vec![0; size];
+            let read = rustix::fs::getxattr(path, CONFIG_ACL, acl.as_mut_slice())?;
+            acl.truncate(read);
+            Ok(Some(acl))
+        }
+        Err(rustix::io::Errno::NODATA | rustix::io::Errno::NOTSUP) => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn apply_config_acl(file: &std::fs::File, acl: Option<&[u8]>) -> std::io::Result<()> {
+    if let Some(acl) = acl {
+        rustix::fs::fsetxattr(file, CONFIG_ACL, acl, rustix::fs::XattrFlags::empty())?;
+    } else {
+        // A default ACL on the parent can be inherited even by a mode-600 temporary.
+        match rustix::fs::fremovexattr(file, CONFIG_ACL) {
+            Ok(()) | Err(rustix::io::Errno::NODATA | rustix::io::Errno::NOTSUP) => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+use config_security_windows::ConfigSecurity;
+
+#[cfg(windows)]
+mod config_security_windows {
+    use std::os::windows::{ffi::OsStrExt as _, io::FromRawHandle as _};
+    use std::path::Path;
+    use std::ptr::null_mut;
+    use windows_sys::Win32::Foundation::{
+        ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree,
+    };
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, SetSecurityDescriptorControl,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL};
+
+    // Own the snapshot until CreateFileW has copied it. Never create a readable temporary and tighten it later.
+    pub(super) struct ConfigSecurity(PSECURITY_DESCRIPTOR);
+
+    impl ConfigSecurity {
+        pub(super) fn read(path: &Path) -> std::io::Result<Self> {
+            let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            let mut descriptor = null_mut();
+            // SAFETY: path is terminated, all unused output pointers are null. On success LocalFree owns the result.
+            let status = unsafe {
+                GetNamedSecurityInfoW(
+                    path.as_ptr(),
+                    SE_FILE_OBJECT,
+                    OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                    null_mut(),
+                    null_mut(),
+                    null_mut(),
+                    null_mut(),
+                    &mut descriptor,
+                )
+            };
+            if status == ERROR_FILE_NOT_FOUND {
+                let sddl: Vec<u16> = super::super::write::OWNER_ONLY_SDDL
+                    .encode_utf16()
+                    .chain(Some(0))
+                    .collect();
+                // SAFETY: terminated SDDL, valid output pointer. The descriptor is released by Drop.
+                if unsafe {
+                    ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                        sddl.as_ptr(),
+                        SDDL_REVISION_1,
+                        &mut descriptor,
+                        null_mut(),
+                    )
+                } == 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+            } else if status != ERROR_SUCCESS {
+                return Err(std::io::Error::from_raw_os_error(status as i32));
+            }
+            let security = Self(descriptor);
+            // Freeze the existing access rules: inheriting new parent ACEs could broaden access on replacement.
+            // SAFETY: descriptor was returned by the security API and remains owned by security.
+            if unsafe { SetSecurityDescriptorControl(security.0, SE_DACL_PROTECTED, SE_DACL_PROTECTED) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(security)
+        }
+
+        pub(super) fn create(&self, path: &Path) -> std::io::Result<std::fs::File> {
+            let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            let attributes = SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: self.0,
+                bInheritHandle: 0,
+            };
+            // SAFETY: path and security descriptor remain valid for the call. CREATE_NEW never opens another file.
+            let handle = unsafe {
+                CreateFileW(
+                    path.as_ptr(),
+                    GENERIC_WRITE,
+                    0,
+                    &attributes,
+                    CREATE_NEW,
+                    FILE_ATTRIBUTE_NORMAL,
+                    null_mut(),
+                )
+            };
+            if handle == INVALID_HANDLE_VALUE {
+                Err(std::io::Error::last_os_error())
+            } else {
+                // SAFETY: the valid handle has no other owner. File closes it.
+                Ok(unsafe { std::fs::File::from_raw_handle(handle as _) })
+            }
+        }
+
+        pub(super) fn apply(&self, _file: &std::fs::File) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Drop for ConfigSecurity {
+        fn drop(&mut self) {
+            // SAFETY: allocated by GetNamedSecurityInfoW or ConvertStringSecurityDescriptorToSecurityDescriptorW.
+            unsafe { LocalFree(self.0 as _) };
+        }
     }
 }

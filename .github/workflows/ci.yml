@@ -35,6 +35,30 @@ jobs:
           arguments: --locked
           rust-version: stable
 
+  # No workspace build or target cache: core must declare every feature it uses itself.
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        shell: bash
+        run: rustup show active-toolchain || rustup toolchain install
+
+      # Each command starts with its own clean target, without GPUI feature unification.
+      - name: Standalone core check
+        run: cargo check -p dashboard-core --locked --target-dir target/standalone-core-check
+
+      - name: Standalone core test
+        run: cargo test -p dashboard-core --locked --target-dir target/standalone-core-test
+
   rust:
     strategy:
       fail-fast: false

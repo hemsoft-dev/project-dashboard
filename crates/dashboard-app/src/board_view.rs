@@ -110,6 +110,7 @@ struct Resize {
     column: Column,
     start_x: Pixels,
     start_width: f32,
+    automatic_activity: bool,
 }
 
 pub struct BoardView {
@@ -383,6 +384,7 @@ impl BoardView {
             column,
             start_x: event.position.x,
             start_width,
+            automatic_activity: column == Column::Activity && self.columns.activity_width().is_none(),
         });
     }
 
@@ -1169,6 +1171,12 @@ impl BoardView {
         h_flex()
             .id("table-header")
             .px_2()
+            .pr(rems(
+                0.5 + activity_tail(
+                    &self.columns,
+                    self.resizing.is_some_and(|resize| resize.automatic_activity),
+                ),
+            ))
             .py_1()
             .gap(GAP)
             .items_center()
@@ -1390,6 +1398,12 @@ impl BoardView {
             .id(("row", ix))
             .test_support()
             .px_2()
+            .pr(rems(
+                0.5 + activity_tail(
+                    &self.columns,
+                    self.resizing.is_some_and(|resize| resize.automatic_activity),
+                ),
+            ))
             .py_1p5()
             .gap(GAP)
             .items_center()
@@ -1880,16 +1894,17 @@ const STATE: gpui_kit::Rems = rems(0.75);
 const GAP: gpui_kit::Rems = rems(0.5);
 /// Extra space before the update time, so it doesn't read as part of the right-aligned issue count before it.
 const UPDATED_LEAD: gpui_kit::Rems = rems(0.75);
-/// Last activity takes whatever width is left, down to this: on the narrowest window it is little more than an
-/// ellipsis, so the names and buttons keep their room.
+/// Minimum label prefix when an explicitly saved activity width is very narrow.
 const ACTIVITY_MIN: gpui_kit::Rems = rems(1.5);
+/// Automatic activity keeps a label plus at least 8 rem of description. Narrow data panes scroll.
+const AUTO_ACTIVITY_MIN: f32 = 12.;
 
 fn width(column: Column, widths: &ColumnWidths) -> gpui_kit::Rems {
     rems(widths.get(column))
 }
 
 /// A resizable column's cell. The repository column gives way on a narrow window, down to its minimum, after last
-/// activity has; the others keep the width they were given.
+/// activity reaches its readable minimum; the others keep the width they were given.
 fn column_cell(column: Column, widths: &ColumnWidths) -> gpui_kit::Div {
     let cell = div().min_w_0();
     match column {
@@ -1901,7 +1916,10 @@ fn column_cell(column: Column, widths: &ColumnWidths) -> gpui_kit::Div {
         Column::Updated => cell.ml(UPDATED_LEAD).w(width(column, widths)).flex_none(),
         Column::Activity => match widths.activity_width() {
             Some(saved) => cell.w(rems(saved)).flex_none(),
-            None => cell.flex_1().min_w(ACTIVITY_MIN).max_w(rems(column.max_width())),
+            None => cell
+                .flex_1()
+                .min_w(rems(AUTO_ACTIVITY_MIN))
+                .max_w(rems(column.max_width())),
         },
         // Keep some data visible even when a saved session width exceeds a narrow window.
         Column::Session => cell
@@ -1935,24 +1953,34 @@ fn column_title(column: Column) -> &'static str {
     }
 }
 
+/// Keep the automatic column's space after a smaller saved activity cell. This prevents scroll-offset clamping
+/// from cancelling the first leftward pixel of a drag at the trailing edge of a narrow data pane.
+fn activity_tail(widths: &ColumnWidths, automatic_drag: bool) -> f32 {
+    if !automatic_drag {
+        return 0.;
+    }
+    widths
+        .activity_width()
+        .map_or(0., |saved| (AUTO_ACTIVITY_MIN - saved).max(0.))
+}
+
 /// Data columns keep their saved widths and scroll together, independently of the fixed session lane.
-fn table_min(widths: &ColumnWidths, viewport_rems: f32) -> gpui_kit::Rems {
+fn table_min(widths: &ColumnWidths, viewport_rems: f32, automatic_drag: bool) -> gpui_kit::Rems {
     let others = widths.total() - widths.get(Column::Repository);
     // Chevron, state, Updated's leading space, nine gaps and the row's horizontal padding.
     let spacing = 1.75 + 0.75 + 0.75 + 9. * 0.5 + 2. * 0.5;
     if widths.activity_width().is_some() {
         let data_viewport = viewport_rems - widths.get(Column::Session).min(viewport_rems * 0.75);
         let without_activity = others - widths.get(Column::Activity);
-        let automatic_min =
-            Column::Repository.min_width() + without_activity + Column::Activity.min_width() + spacing + 0.5;
-        let automatic_repository =
-            (data_viewport.max(automatic_min) - without_activity - Column::Activity.min_width() - spacing)
-                .clamp(Column::Repository.min_width(), widths.get(Column::Repository));
-        // Preserve the repository width that automatic Activity would leave at this viewport. Otherwise growing
-        // Activity shrinks Repository instead, keeping the dragged boundary still as the pointer moves.
-        rems(automatic_repository + others + spacing)
+        let activity_min = AUTO_ACTIVITY_MIN;
+        let automatic_min = Column::Repository.min_width() + without_activity + activity_min + spacing + 0.5;
+        let automatic_repository = (data_viewport.max(automatic_min) - without_activity - activity_min - spacing)
+            .clamp(Column::Repository.min_width(), widths.get(Column::Repository));
+        // Preserve the repository width automatic Activity would leave, so its border follows the pointer.
+        // This is a row minimum, not a reserved tail after an explicitly saved Activity cell.
+        rems(automatic_repository + others + spacing + activity_tail(widths, automatic_drag))
     } else {
-        rems(Column::Repository.min_width() + others + spacing + 0.5)
+        rems(Column::Repository.min_width() + others - widths.get(Column::Activity) + AUTO_ACTIVITY_MIN + spacing + 0.5)
     }
 }
 
@@ -2011,7 +2039,11 @@ impl Render for BoardView {
             content = content.child(self.render_empty(cx));
         } else {
             let cards = self.board.cards().to_vec();
-            let table_width = table_min(&self.columns, window.viewport_size().width / window.rem_size());
+            let table_width = table_min(
+                &self.columns,
+                window.viewport_size().width / window.rem_size(),
+                self.resizing.is_some_and(|resize| resize.automatic_activity),
+            );
             let rows: Vec<AnyElement> = self
                 .board
                 .order(self.sort)

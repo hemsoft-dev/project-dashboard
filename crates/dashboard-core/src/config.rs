@@ -125,24 +125,20 @@ impl Config {
             View::Backlog => "backlog",
             View::Fleet => "fleet",
         };
-        let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
-        let top = lines
-            .iter()
-            .position(|s| s.trim_start().starts_with('['))
-            .unwrap_or(lines.len());
-        if let Some(i) = lines[..top]
-            .iter()
-            .position(|s| s.split_once('=').is_some_and(|(k, _)| k.trim() == "view"))
-        {
-            lines[i] = format!("view = \"{name}\"");
+        // Use TOML value spans so quoted keys, multiline strings and inline comments survive.
+        let values: std::collections::BTreeMap<String, toml::Spanned<toml::Value>> =
+            toml::from_str(&text).map_err(|e| ConfigError::Parse(path.clone(), e.to_string()))?;
+        let mut edited = text.clone();
+        let value = format!("\"{name}\"");
+        if let Some(old) = values.get("view") {
+            edited.replace_range(old.span(), &value);
         } else {
-            lines.insert(0, format!("view = \"{name}\""));
+            edited.insert_str(0, &format!("view = {value}\n"));
         }
-        let edited = lines.join("\n") + "\n";
         if Self::parse(&edited, &path)? != expected {
             return Err(ConfigError::Parse(path, "view could not be saved safely".into()));
         }
-        std::fs::write(&path, edited).map_err(|e| ConfigError::Write(path, e))
+        replace_config(&path, edited.as_bytes())
     }
 
     pub fn parse(text: &str, path: &Path) -> Result<Self, ConfigError> {
@@ -177,7 +173,7 @@ impl Config {
                     "its repositories list couldn't be edited safely; add the folder to it by hand".to_owned(),
                 )
             })?;
-        std::fs::write(&path, edited).map_err(|err| ConfigError::Write(path, err))?;
+        replace_config(&path, edited.as_bytes())?;
         Ok(true)
     }
 
@@ -216,7 +212,7 @@ impl Config {
     pub fn save(&self, dir: &Path) -> Result<(), ConfigError> {
         let path = dir.join(FILE_NAME);
         std::fs::create_dir_all(dir).map_err(|err| ConfigError::Write(path.clone(), err))?;
-        std::fs::write(&path, self.to_toml()).map_err(|err| ConfigError::Write(path, err))
+        replace_config(&path, self.to_toml().as_bytes())
     }
 
     pub fn refresh_interval(&self) -> Option<std::time::Duration> {
@@ -439,3 +435,47 @@ mod view_tests {
         );
     }
 }
+
+/// Write beside the destination and close the handle before replacement, including on Windows.
+/// Never remove the destination first: a failed rename must leave its bytes intact.
+fn replace_config(path: &Path, bytes: &[u8]) -> Result<(), ConfigError> {
+    use std::io::Write as _;
+    replace_config_with(path, bytes, |file, bytes| file.write_all(bytes))
+}
+
+fn replace_config_with(
+    path: &Path,
+    bytes: &[u8],
+    write: impl FnOnce(&mut std::fs::File, &[u8]) -> std::io::Result<()>,
+) -> Result<(), ConfigError> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let (temporary, mut file) = loop {
+        let temporary = parent.join(format!(
+            ".config.toml.{}.{}.tmp",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => break (temporary, file),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(ConfigError::Write(path.to_owned(), err)),
+        }
+    };
+    let result = write(&mut file, bytes).and_then(|()| file.sync_all());
+    drop(file);
+    let result = result.and_then(|()| std::fs::rename(&temporary, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result.map_err(|err| ConfigError::Write(path.to_owned(), err))
+}
+
+#[cfg(test)]
+#[path = "config_atomic_73.rs"]
+mod config_atomic_73;

@@ -1369,3 +1369,40 @@ fn captures_refused_links() {
     });
     save(&mut cx, window, &out, "refused-links-backlog");
 }
+
+#[test]
+#[ignore = "writes issue 70 runtime freshness states offscreen"]
+fn captures_fleet_runtime_ages() {
+    let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").unwrap());
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cx = headless();
+    for width in [1100., 480.] {
+        let (window, view) = open_sized(&mut cx, vec![], width, 760.);
+        for (state, age, failed) in [
+            ("current", 0, false),
+            ("stale", 91, false),
+            ("retained-failure", 121, true),
+        ] {
+            cx.update(|cx| {
+                view.update(cx, |v, cx| {
+                    v.selected_view = dashboard_core::config::View::Fleet;
+                    v.fleet_status = crate::ui_tests::fleet_status_fixture();
+                    v.fleet_activity = crate::ui_tests::fleet_activity_fixture();
+                    let observed = chrono::Utc::now() - chrono::Duration::seconds(age);
+                    v.fleet_activity.observed_at = Some(observed);
+                    for machine in &mut v.fleet_activity.machines {
+                        machine.observed_at = Some(observed);
+                    }
+                    v.fleet_activity_error = failed.then(|| "pmd request failed (HTTP 503).".into());
+                    cx.notify();
+                })
+            });
+            save(
+                &mut cx,
+                window,
+                &out,
+                &format!("fleet-runtime-{state}-{}", width as u32),
+            );
+        }
+    }
+}

@@ -146,7 +146,8 @@ Hover the dot for every signal behind it. A status's age never greys a dot.
   two-second timeout, independently of status workers. Priority refreshes at startup and with every refresh.
 - **Resize** a column by dragging the border to the right of its header, including Last activity.
   The pinned T3 session lane resizes at its left border: drag left to widen it or right to narrow it.
-  Last activity takes the remaining space until resized. Double-click a border to restore its default, including
+  Last activity takes the remaining space until resized, reserving 12 rem for its label and description.
+  Repository shrinks first; narrower or zoomed data panes scroll horizontally beside the pinned session lane. Double-click a border to restore its default, including
   automatic sizing for Last activity. The session lane stays pinned and leaves room for scrolling data. Widths are remembered in
   `ui-state.json`, next to `config.toml`, and scale with the zoom. On a window too narrow for them, the repository
   column gives way first, then the table scrolls sideways.

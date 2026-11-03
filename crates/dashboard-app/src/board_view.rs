@@ -1880,16 +1880,17 @@ const STATE: gpui_kit::Rems = rems(0.75);
 const GAP: gpui_kit::Rems = rems(0.5);
 /// Extra space before the update time, so it doesn't read as part of the right-aligned issue count before it.
 const UPDATED_LEAD: gpui_kit::Rems = rems(0.75);
-/// Last activity takes whatever width is left, down to this: on the narrowest window it is little more than an
-/// ellipsis, so the names and buttons keep their room.
+/// Minimum label prefix when an explicitly saved activity width is very narrow.
 const ACTIVITY_MIN: gpui_kit::Rems = rems(1.5);
+/// Automatic activity keeps a label plus at least 8 rem of description. Narrow data panes scroll.
+const AUTO_ACTIVITY_MIN: f32 = 12.;
 
 fn width(column: Column, widths: &ColumnWidths) -> gpui_kit::Rems {
     rems(widths.get(column))
 }
 
 /// A resizable column's cell. The repository column gives way on a narrow window, down to its minimum, after last
-/// activity has; the others keep the width they were given.
+/// activity reaches its readable minimum; the others keep the width they were given.
 fn column_cell(column: Column, widths: &ColumnWidths) -> gpui_kit::Div {
     let cell = div().min_w_0();
     match column {
@@ -1901,7 +1902,10 @@ fn column_cell(column: Column, widths: &ColumnWidths) -> gpui_kit::Div {
         Column::Updated => cell.ml(UPDATED_LEAD).w(width(column, widths)).flex_none(),
         Column::Activity => match widths.activity_width() {
             Some(saved) => cell.w(rems(saved)).flex_none(),
-            None => cell.flex_1().min_w(ACTIVITY_MIN).max_w(rems(column.max_width())),
+            None => cell
+                .flex_1()
+                .min_w(rems(AUTO_ACTIVITY_MIN))
+                .max_w(rems(column.max_width())),
         },
         // Keep some data visible even when a saved session width exceeds a narrow window.
         Column::Session => cell
@@ -1943,16 +1947,14 @@ fn table_min(widths: &ColumnWidths, viewport_rems: f32) -> gpui_kit::Rems {
     if widths.activity_width().is_some() {
         let data_viewport = viewport_rems - widths.get(Column::Session).min(viewport_rems * 0.75);
         let without_activity = others - widths.get(Column::Activity);
-        let automatic_min =
-            Column::Repository.min_width() + without_activity + Column::Activity.min_width() + spacing + 0.5;
-        let automatic_repository =
-            (data_viewport.max(automatic_min) - without_activity - Column::Activity.min_width() - spacing)
-                .clamp(Column::Repository.min_width(), widths.get(Column::Repository));
+        let automatic_min = Column::Repository.min_width() + without_activity + AUTO_ACTIVITY_MIN + spacing + 0.5;
+        let automatic_repository = (data_viewport.max(automatic_min) - without_activity - AUTO_ACTIVITY_MIN - spacing)
+            .clamp(Column::Repository.min_width(), widths.get(Column::Repository));
         // Preserve the repository width that automatic Activity would leave at this viewport. Otherwise growing
         // Activity shrinks Repository instead, keeping the dragged boundary still as the pointer moves.
         rems(automatic_repository + others + spacing)
     } else {
-        rems(Column::Repository.min_width() + others + spacing + 0.5)
+        rems(Column::Repository.min_width() + others - widths.get(Column::Activity) + AUTO_ACTIVITY_MIN + spacing + 0.5)
     }
 }
 

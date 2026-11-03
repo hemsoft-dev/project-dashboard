@@ -671,20 +671,17 @@ fn activity_width_captures() {
     };
     std::fs::create_dir_all(&out).unwrap();
     let mut cx = headless();
-    for (level, repository) in [(1.0, 18.0), (1.3, 20.88)] {
+    for level in [1.0, 1.3] {
         cx.update(|cx| {
             crate::zoom::set_level(level, cx);
             crate::zoom::hide_toast(cx);
         });
-        for width in [760., 1100., 1680.] {
+        for width in [480., 760., 1100., 1680.] {
             let checkouts = vec!["/demo/short-label".into(), "/demo/long-label".into()];
             let mut view = None;
             let window = cx
-                .open_window(size(px(width), px(400.)), |window, cx| {
-                    let mut options = options();
-                    options
-                        .columns
-                        .set(dashboard_core::columns::Column::Repository, repository);
+                .open_window(size(px(width), px(760.)), |window, cx| {
+                    let options = options();
                     let board = cx.new(|cx| {
                         BoardView::new(
                             &checkouts,
@@ -700,6 +697,19 @@ fn activity_width_captures() {
                 })
                 .unwrap();
             fill(&mut cx, &view.unwrap(), &crate::ui_tests::ActivityLayoutSource);
+            // At zoomed/narrow sizes reveal the trailing data column while T3 stays pinned.
+            if width < 1100. || level > 1.0 {
+                cx.update_window(window, |_, window, cx| {
+                    window.scroll(
+                        "table",
+                        gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-3000.), px(0.))),
+                        cx,
+                    );
+                    window.render_frame(cx);
+                })
+                .unwrap();
+            }
+
             save(
                 &mut cx,
                 window.into(),

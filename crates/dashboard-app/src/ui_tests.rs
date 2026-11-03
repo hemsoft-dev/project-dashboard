@@ -736,6 +736,72 @@ async fn clicking_the_last_activity_opens_it_without_expanding_the_row(cx: &mut 
 }
 
 #[gpui_kit::test]
+async fn automatic_activity_reserves_readable_text_and_scrolls_beside_pinned_controls(cx: &mut TestAppContext) {
+    for level in [1.0, 1.3] {
+        for width in [480., 760., 1100., 1680.] {
+            let (handle, view) = open_board_sized(
+                cx,
+                vec!["/demo/short-label".into(), "/demo/long-label".into()],
+                StatusCache::default(),
+                Arc::new(ActivityLayoutSource),
+                options(),
+                width,
+            );
+            cx.update(|cx| zoom::set_level(level, cx));
+            cx.update_window(handle, |_, window, _| window.resize(size(px(width), px(760.))))
+                .unwrap();
+            cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+            settle(cx, handle, &view).await;
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                let scale = level as f32;
+                let pinned = window.find(("t3", 0usize)).bounds();
+                let header = window.find(("header-cell", Column::Activity as usize)).bounds();
+                for ix in [0usize, 1] {
+                    let cell = window.find(("activity-cell", ix)).bounds();
+                    let label = window.find(("activity-summary", ix)).bounds();
+                    let title = window.find(("activity-title", ix)).bounds();
+                    // 12 rem leaves 4 rem for the label and 8 rem for description, including its 0.5 rem gap.
+                    assert!(label.size.width >= px(24. * scale - 1.));
+                    assert!(
+                        title.size.width >= px(128. * scale - 1.),
+                        "{width}px/{level}: {title:?}"
+                    );
+                    assert_eq!(header.size.width, cell.size.width);
+                    assert_eq!(header.left(), cell.left());
+                    if width >= 1100. && level == 1.0 {
+                        assert!(
+                            title.right() <= pinned.left(),
+                            "default text is visible without scrolling"
+                        );
+                    }
+                    assert!(window.find(("refresh", ix)).bounds().right() <= px(width));
+                }
+                window.scroll(
+                    "table",
+                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-3000.), px(0.))),
+                    cx,
+                );
+                window.render_frame(cx);
+                assert_eq!(window.find(("t3", 0usize)).bounds(), pinned);
+                let title = window.find(("activity-title", 0usize)).bounds();
+                let viewport = window.find(("row-scroll", 0usize)).bounds();
+                assert!(title.right() <= viewport.right());
+                assert!(title.right() > viewport.left());
+                window.click(("activity-title", 0usize), cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            assert!(
+                cx.opened_url().is_some(),
+                "scrolled activity is clickable at {width}/{level}"
+            );
+            assert_eq!(cx.update(|cx| view.read(cx).columns()), ColumnWidths::default());
+        }
+    }
+}
+
+#[gpui_kit::test]
 async fn activity_labels_keep_a_readable_prefix_when_the_cell_is_too_narrow_to_split(cx: &mut TestAppContext) {
     let mut readable = true;
     for (level, repository) in [(1.0_f64, 18.0_f32), (1.3, 20.88)] {
@@ -1659,10 +1725,12 @@ fn width_of(cx: &mut TestAppContext, handle: AnyWindowHandle, id: impl Into<gpui
 async fn the_repository_column_defaults_to_a_name_sized_width(cx: &mut TestAppContext) {
     let (handle, view) = twelve(cx).await;
     assert_eq!(cx.update(|cx| view.read(cx).columns()), ColumnWidths::default());
-    // 18 rem at the 16 px base: no wider than about 20 rem in a 1100 px window, leaving the rest to last activity.
-    assert_eq!(width_of(cx, handle, "header-repository"), px(18. * 16.));
+    // The stored 18 rem preference gives way to readable activity at the default window size.
+    let repository = width_of(cx, handle, "header-repository");
+    assert!(repository >= px(Column::Repository.min_width() * 16.));
+    assert!(repository <= px(18. * 16.));
     for ix in 0..12usize {
-        assert_eq!(width_of(cx, handle, ("name", ix)), px(18. * 16.), "row {ix}");
+        assert_eq!(width_of(cx, handle, ("name", ix)), repository, "row {ix}");
     }
     cx.update_window(handle, |_, window, _| {
         // Every handle shows the resize cursor's purpose to assistive tech too.

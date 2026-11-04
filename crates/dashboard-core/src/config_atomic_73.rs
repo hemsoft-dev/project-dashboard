@@ -637,7 +637,11 @@ mod unassignable_owner {
     /// The descriptor shape read from the reported config: an owner the logged-in user may not hold, inherited ACEs,
     /// and full control for that user.
     fn snapshot(owner: &str, destination: &Path) -> ConfigSecurity {
-        let (user, group) = (user(), primary_group());
+        snapshot_with_group(owner, &primary_group(), destination)
+    }
+
+    fn snapshot_with_group(owner: &str, group: &str, destination: &Path) -> ConfigSecurity {
+        let user = user();
         ConfigSecurity::from_descriptor(
             descriptor(&format!(
                 "O:{owner}G:{group}D:AI(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;{user})"
@@ -688,12 +692,35 @@ mod unassignable_owner {
     }
 
     #[test]
+    fn the_snapshot_group_survives_when_the_owner_cannot() {
+        let dir = Directory::new();
+        std::fs::write(
+            dir.path(),
+            "view = 'project'
+",
+        )
+        .unwrap();
+        let _filtered = Impersonation::begin(&[ADMINISTRATORS], &[]);
+        // SYSTEM is not the token's own primary group, so a dropped group would show.
+        let security = snapshot_with_group("BA", "SY", &dir.path());
+        save(
+            &security,
+            &dir.path(),
+            b"view = 'fleet'
+",
+        )
+        .unwrap();
+        assert!(group_and_dacl(&dir.path()).starts_with("SYD:"));
+    }
+
+    #[test]
     fn an_owner_it_cannot_assign_is_still_refused_without_the_right_to_change_the_dacl() {
         let dir = Directory::new();
         let original = b"view = 'project'\n";
         std::fs::write(dir.path(), original).unwrap();
-        // Read, write and delete, but no WRITE_DAC: OWNER RIGHTS removes the owner's implicit one.
-        set_dacl(&dir.path(), "D:P(A;;0x1301bf;;;OW)");
+        // Read, write and delete, but no WRITE_DAC: OWNER RIGHTS removes the owner's implicit one. An elevated host owns
+        // this file as Administrators, which the filtered token below can't use, so the user needs its own entry.
+        set_dacl(&dir.path(), &format!("D:P(A;;0x1301bf;;;OW)(A;;0x1301bf;;;{})", user()));
         let security_before = windows_security(&dir.path());
 
         let _filtered = Impersonation::begin(&[ADMINISTRATORS], &[]);

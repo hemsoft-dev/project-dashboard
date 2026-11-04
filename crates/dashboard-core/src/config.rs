@@ -464,9 +464,19 @@ fn replace_config_with(
     bytes: &[u8],
     write: impl FnOnce(&mut std::fs::File, &[u8]) -> std::io::Result<()>,
 ) -> Result<(), ConfigError> {
+    let security = ConfigSecurity::read(path).map_err(|err| ConfigError::Write(path.to_owned(), err))?;
+    replace_config_using(&security, path, bytes, write)
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+fn replace_config_using(
+    security: &ConfigSecurity,
+    path: &Path,
+    bytes: &[u8],
+    write: impl FnOnce(&mut std::fs::File, &[u8]) -> std::io::Result<()>,
+) -> Result<(), ConfigError> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let security = ConfigSecurity::read(path).map_err(|err| ConfigError::Write(path.to_owned(), err))?;
     let parent = path.parent().unwrap_or(Path::new("."));
     let (temporary, mut file) = loop {
         let temporary = parent.join(format!(
@@ -639,6 +649,10 @@ mod config_security_windows {
             } else if status != ERROR_SUCCESS {
                 return Err(std::io::Error::from_raw_os_error(status as i32));
             }
+            Self::protected(descriptor)
+        }
+
+        fn protected(descriptor: PSECURITY_DESCRIPTOR) -> std::io::Result<Self> {
             let security = Self(descriptor);
             // Freeze the existing access rules: inheriting new parent ACEs could broaden access on replacement.
             // SAFETY: descriptor was returned by the security API and remains owned by security.
@@ -646,6 +660,13 @@ mod config_security_windows {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(security)
+        }
+
+        /// A snapshot as [`ConfigSecurity::read`] would take it, for an owner a test can't give a real file. Takes
+        /// ownership of a descriptor allocated by the security API.
+        #[cfg(test)]
+        pub(super) fn from_descriptor(descriptor: PSECURITY_DESCRIPTOR, _destination: &Path) -> Self {
+            Self::protected(descriptor).unwrap()
         }
 
         pub(super) fn create(&self, path: &Path) -> std::io::Result<std::fs::File> {

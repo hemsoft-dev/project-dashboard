@@ -656,6 +656,11 @@ mod unassignable_owner {
         security.split_once("G:").unwrap().1.to_owned()
     }
 
+    fn owner(path: &Path) -> String {
+        let security = windows_security(path);
+        security.split_once("G:").unwrap().0.to_owned()
+    }
+
     fn save(security: &ConfigSecurity, path: &Path, bytes: &[u8]) -> Result<(), ConfigError> {
         replace_config_using(security, path, bytes, |file, bytes| file.write_all(bytes))
     }
@@ -684,8 +689,9 @@ mod unassignable_owner {
 
         assert_eq!(std::fs::read(dir.path()).unwrap(), replacement);
         assert_eq!(group_and_dacl(&dir.path()), group_and_dacl(&control.path()));
-        assert!(!windows_security(&dir.path()).starts_with("O:BA"));
-        assert!(windows_security(&control.path()).starts_with(&format!("O:{}", user())));
+        // SDDL prints an alias for some accounts, so compare what Windows reports: the owner ends up as the user.
+        assert_eq!(owner(&dir.path()), owner(&control.path()));
+        assert_ne!(owner(&dir.path()), "O:BA");
         assert!(poll.changed().is_none());
         assert_eq!(poll.changed().unwrap().unwrap().view, View::Fleet);
         dir.assert_clean();

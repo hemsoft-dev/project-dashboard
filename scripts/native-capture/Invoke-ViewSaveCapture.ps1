@@ -167,7 +167,7 @@ try {
     $configPath = Join-Path $root 'config.toml'
     $configText = @"
 # keep this comment
-view = 'project'
+view = "project"
 repositories = ['$(Join-Path $root 'checkout')']
 refresh_minutes = 0
 parallelism = 1
@@ -217,7 +217,7 @@ t3_home = '$root'
     if ($after.GetOwner([Security.Principal.SecurityIdentifier]) -eq $administrators) { $failures.Add('config.toml is still owned by Administrators, so no save replaced it.') }
     if ($after.AccessToString -cne $before.AccessToString) { $failures.Add('The save changed who can access config.toml.') }
     if ($after.Group -ne $before.Group) { $failures.Add('The save changed the group on config.toml.') }
-    # One round trip back to the starting view must leave every byte as it was.
+    # One round trip back to the starting view must leave every byte as it was. Saves write the value in double quotes.
     $saved = [IO.File]::ReadAllText($configPath)
     if ($saved -cne $configText) { $failures.Add("config.toml changed outside its view value: $saved") }
     if ($failures.Count) { throw "Views failed: $($failures -join ' | ')" }

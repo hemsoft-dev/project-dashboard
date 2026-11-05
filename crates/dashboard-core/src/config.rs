@@ -464,19 +464,9 @@ fn replace_config_with(
     bytes: &[u8],
     write: impl FnOnce(&mut std::fs::File, &[u8]) -> std::io::Result<()>,
 ) -> Result<(), ConfigError> {
-    let security = ConfigSecurity::read(path).map_err(|err| ConfigError::Write(path.to_owned(), err))?;
-    replace_config_using(&security, path, bytes, write)
-}
-
-#[cfg(any(windows, target_os = "linux"))]
-fn replace_config_using(
-    security: &ConfigSecurity,
-    path: &Path,
-    bytes: &[u8],
-    write: impl FnOnce(&mut std::fs::File, &[u8]) -> std::io::Result<()>,
-) -> Result<(), ConfigError> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
+    let security = ConfigSecurity::read(path).map_err(|err| ConfigError::Write(path.to_owned(), err))?;
     let parent = path.parent().unwrap_or(Path::new("."));
     let (temporary, mut file) = loop {
         let temporary = parent.join(format!(
@@ -596,32 +586,21 @@ use config_security_windows::ConfigSecurity;
 mod config_security_windows {
     use std::os::windows::{ffi::OsStrExt as _, io::FromRawHandle as _};
     use std::path::Path;
-    use std::ptr::{null, null_mut};
+    use std::ptr::null_mut;
     use windows_sys::Win32::Foundation::{
-        ERROR_FILE_NOT_FOUND, ERROR_INVALID_OWNER, ERROR_SUCCESS, GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree,
+        ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree,
     };
     use windows_sys::Win32::Security::Authorization::{
         ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
     };
     use windows_sys::Win32::Security::{
-        DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetSecurityDescriptorGroup,
-        InitializeSecurityDescriptor, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SE_DACL_PROTECTED,
-        SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SetSecurityDescriptorControl, SetSecurityDescriptorDacl,
-        SetSecurityDescriptorGroup,
+        DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, SetSecurityDescriptorControl,
     };
-    use windows_sys::Win32::Storage::FileSystem::{
-        CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        FILE_WRITE_DATA, OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
-    };
-
-    /// `SECURITY_DESCRIPTOR_REVISION`, which windows-sys keeps behind a feature nothing else here needs.
-    const DESCRIPTOR_REVISION: u32 = 1;
+    use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL};
 
     // Own the snapshot until CreateFileW has copied it. Never create a readable temporary and tighten it later.
-    pub(super) struct ConfigSecurity {
-        descriptor: PSECURITY_DESCRIPTOR,
-        destination: Vec<u16>,
-    }
+    pub(super) struct ConfigSecurity(PSECURITY_DESCRIPTOR);
 
     impl ConfigSecurity {
         pub(super) fn read(path: &Path) -> std::io::Result<Self> {
@@ -660,86 +639,40 @@ mod config_security_windows {
             } else if status != ERROR_SUCCESS {
                 return Err(std::io::Error::from_raw_os_error(status as i32));
             }
-            Self::protected(descriptor, path)
-        }
-
-        fn protected(descriptor: PSECURITY_DESCRIPTOR, destination: Vec<u16>) -> std::io::Result<Self> {
-            let security = Self {
-                descriptor,
-                destination,
-            };
+            let security = Self(descriptor);
             // Freeze the existing access rules: inheriting new parent ACEs could broaden access on replacement.
             // SAFETY: descriptor was returned by the security API and remains owned by security.
-            if unsafe { SetSecurityDescriptorControl(security.descriptor, SE_DACL_PROTECTED, SE_DACL_PROTECTED) } == 0 {
+            if unsafe { SetSecurityDescriptorControl(security.0, SE_DACL_PROTECTED, SE_DACL_PROTECTED) } == 0 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(security)
         }
 
-        /// A snapshot as [`ConfigSecurity::read`] would take it, for an owner a test can't give a real file. Takes
-        /// ownership of a descriptor allocated by the security API.
-        #[cfg(test)]
-        pub(super) fn from_descriptor(descriptor: PSECURITY_DESCRIPTOR, destination: &Path) -> Self {
-            let destination = destination.as_os_str().encode_wide().chain(Some(0)).collect();
-            Self::protected(descriptor, destination).unwrap()
-        }
-
-        /// Windows refuses to create a file with an owner the token can't assign (1307), as with an
-        /// Administrators-owned config under UAC's filtered token. The temporary then keeps the group and DACL and takes
-        /// the token's default owner, but only for a caller already able to rewrite the destination's bytes and DACL,
-        /// which is what owning it would add. Anyone else still gets the 1307.
         pub(super) fn create(&self, path: &Path) -> std::io::Result<std::fs::File> {
             let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-            match create_temporary(&path, self.descriptor) {
-                Err(err) if err.raw_os_error() == Some(ERROR_INVALID_OWNER as i32) && self.caller_can_rewrite() => {
-                    self.create_with_default_owner(&path)
-                }
-                result => result,
-            }
-        }
-
-        /// Whether the destination opens for writing its bytes and its DACL. Opening changes nothing.
-        fn caller_can_rewrite(&self) -> bool {
-            // SAFETY: the destination is terminated and no security attributes or template are passed.
+            let attributes = SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: self.0,
+                bInheritHandle: 0,
+            };
+            // SAFETY: path and security descriptor remain valid for the call. CREATE_NEW never opens another file.
             let handle = unsafe {
                 CreateFileW(
-                    self.destination.as_ptr(),
-                    FILE_WRITE_DATA | READ_CONTROL | WRITE_DAC,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                    null(),
-                    OPEN_EXISTING,
+                    path.as_ptr(),
+                    GENERIC_WRITE,
+                    0,
+                    &attributes,
+                    CREATE_NEW,
                     FILE_ATTRIBUTE_NORMAL,
                     null_mut(),
                 )
             };
             if handle == INVALID_HANDLE_VALUE {
-                return false;
+                Err(std::io::Error::last_os_error())
+            } else {
+                // SAFETY: the valid handle has no other owner. File closes it.
+                Ok(unsafe { std::fs::File::from_raw_handle(handle as _) })
             }
-            // SAFETY: the valid handle has no other owner. File closes it.
-            drop(unsafe { std::fs::File::from_raw_handle(handle as _) });
-            true
-        }
-
-        fn create_with_default_owner(&self, path: &[u16]) -> std::io::Result<std::fs::File> {
-            // SAFETY: all-zero is a valid SECURITY_DESCRIPTOR, and InitializeSecurityDescriptor fills it in below.
-            let mut storage: SECURITY_DESCRIPTOR = unsafe { std::mem::zeroed() };
-            let descriptor: PSECURITY_DESCRIPTOR = (&raw mut storage).cast();
-            let (mut group, mut group_defaulted) = (null_mut(), 0);
-            let (mut dacl_present, mut dacl, mut dacl_defaulted) = (0, null_mut(), 0);
-            // SAFETY: the outputs are valid. The new descriptor only points into self.descriptor, which outlives it.
-            let built = unsafe {
-                InitializeSecurityDescriptor(descriptor, DESCRIPTOR_REVISION) != 0
-                    && GetSecurityDescriptorGroup(self.descriptor, &mut group, &mut group_defaulted) != 0
-                    && SetSecurityDescriptorGroup(descriptor, group, group_defaulted) != 0
-                    && GetSecurityDescriptorDacl(self.descriptor, &mut dacl_present, &mut dacl, &mut dacl_defaulted)
-                        != 0
-                    && SetSecurityDescriptorDacl(descriptor, dacl_present, dacl, dacl_defaulted) != 0
-                    && SetSecurityDescriptorControl(descriptor, SE_DACL_PROTECTED, SE_DACL_PROTECTED) != 0
-            };
-            if !built {
-                return Err(std::io::Error::last_os_error());
-            }
-            create_temporary(path, descriptor)
         }
 
         pub(super) fn apply(&self, _file: &std::fs::File) -> std::io::Result<()> {
@@ -747,36 +680,10 @@ mod config_security_windows {
         }
     }
 
-    fn create_temporary(path: &[u16], descriptor: PSECURITY_DESCRIPTOR) -> std::io::Result<std::fs::File> {
-        let attributes = SECURITY_ATTRIBUTES {
-            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: descriptor,
-            bInheritHandle: 0,
-        };
-        // SAFETY: path and security descriptor remain valid for the call. CREATE_NEW never opens another file.
-        let handle = unsafe {
-            CreateFileW(
-                path.as_ptr(),
-                GENERIC_WRITE,
-                0,
-                &attributes,
-                CREATE_NEW,
-                FILE_ATTRIBUTE_NORMAL,
-                null_mut(),
-            )
-        };
-        if handle == INVALID_HANDLE_VALUE {
-            Err(std::io::Error::last_os_error())
-        } else {
-            // SAFETY: the valid handle has no other owner. File closes it.
-            Ok(unsafe { std::fs::File::from_raw_handle(handle as _) })
-        }
-    }
-
     impl Drop for ConfigSecurity {
         fn drop(&mut self) {
             // SAFETY: allocated by GetNamedSecurityInfoW or ConvertStringSecurityDescriptorToSecurityDescriptorW.
-            unsafe { LocalFree(self.descriptor as _) };
+            unsafe { LocalFree(self.0 as _) };
         }
     }
 }

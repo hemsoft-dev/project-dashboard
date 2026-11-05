@@ -16,6 +16,7 @@ on:
       - crates/dashboard-app/build.rs
       - crates/dashboard-app/src/mark.rs
       - crates/dashboard-app/src/main.rs
+      - crates/dashboard-core/src/config.rs
       - Cargo.toml
       - Cargo.lock
       - crates/*/Cargo.toml
@@ -87,6 +88,23 @@ jobs:
         with:
           name: issue-31-native-windows-${{ github.event.pull_request.head.sha }}
           path: native-captures/
+          retention-days: 14
+
+      # Issue 83: real clicks on the release exe, an Administrators-owned config and a filtered token.
+      - name: Native Windows view-save capture (issue 83)
+        if: github.event_name == 'pull_request'
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          CAPTURE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: ./scripts/native-capture/Invoke-ViewSaveCapture.ps1 -ExpectedHead $env:CAPTURE_HEAD
+
+      - name: Upload view-save evidence
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: view-save-windows-${{ github.event.pull_request.head.sha }}
+          path: view-save-captures/
           retention-days: 14
 
       - name: Upload the package

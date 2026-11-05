@@ -57,6 +57,20 @@ try {
                         if ($uri.Query -match 'cursor=') { $body=@{items=@();nextCursor=$null} }
                         else { $body=@{items=@($item);nextCursor='synthetic-next-page'} }
                     }
+                    # Backlog and Fleet, so the view-save capture shows them populated.
+                    '/v1/dispatch/plan' { $body=@{recommendations=@(@{workItem=@{id=$item.id};reason='SYNTHETIC FIXTURE recommendation'});skipped=@();projects=@()} }
+                    '/v1/portfolio' { $body=@{} }
+                    '/v1/assignments' { $body=@{assignments=@();truncated=$false} }
+                    '/v1/machines' { $body=@{machines=@(@{name='synthetic-windows';os='windows';maxSessions=6},@{name='synthetic-linux';os='linux';maxSessions=3})} }
+                    '/v1/capacity' { $body=@{machines=@(@{name='synthetic-windows';used=0;chiefStarted=0;free=6},@{name='synthetic-linux';used=0;chiefStarted=0;free=3})} }
+                    '/v1/fleet/status' {
+                        $at=[DateTimeOffset]::UtcNow.ToString('o')
+                        $body=@{schema=1;machines=@(@{name='synthetic-windows';online=$true;probeOk=$true;checkedAt=$at},@{name='synthetic-linux';online=$true;probeOk=$true;checkedAt=$at})}
+                    }
+                    '/v1/fleet/activity' {
+                        $at=[DateTimeOffset]::UtcNow.ToString('o')
+                        $body=@{schema=1;observedAt=$at;machines=@(@{name='synthetic-windows';observedAt=$at;state='ok';activeCount=0;sessions=@()},@{name='synthetic-linux';observedAt=$at;state='ok';activeCount=0;sessions=@()})}
+                    }
                     default { $code=404; $body=@{error=@{code='not_found';message='synthetic fixture unknown route'}} }
                 }
             }

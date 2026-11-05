@@ -65,11 +65,11 @@ try {
                     '/v1/capacity' { $body=@{machines=@(@{name='synthetic-windows';used=0;chiefStarted=0;free=6},@{name='synthetic-linux';used=0;chiefStarted=0;free=3})} }
                     '/v1/fleet/status' {
                         $at=[DateTimeOffset]::UtcNow.ToString('o')
-                        $body=@{schema=1;machines=@(@{name='synthetic-windows';online=$true;probeOk=$true;checkedAt=$at},@{name='synthetic-linux';online=$true;probeOk=$true;checkedAt=$at})}
+                        $body=@{schema=1;machines=@(@{name='synthetic-windows';online=$true;probeOk=$true;checkedAt=$at;attemptedAt=$at;serverVersion='0.0.0-fixture';latestVersion='0.0.0-fixture';clientStatus='not_applicable'},@{name='synthetic-linux';online=$true;probeOk=$true;checkedAt=$at;attemptedAt=$at;serverVersion='0.0.0-fixture';latestVersion='0.0.0-fixture';clientStatus='not_applicable'})}
                     }
                     '/v1/fleet/activity' {
                         $at=[DateTimeOffset]::UtcNow.ToString('o')
-                        $body=@{schema=1;observedAt=$at;machines=@(@{name='synthetic-windows';observedAt=$at;state='ok';activeCount=0;sessions=@()},@{name='synthetic-linux';observedAt=$at;state='ok';activeCount=0;sessions=@()})}
+                        $body=@{schema=1;observedAt=$at;machines=@(@{name='synthetic-windows';observedAt=$at;state='ok';activeCount=0;chiefActive=$false;sessions=@()},@{name='synthetic-linux';observedAt=$at;state='ok';activeCount=0;chiefActive=$false;sessions=@()})}
                     }
                     default { $code=404; $body=@{error=@{code='not_found';message='synthetic fixture unknown route'}} }
                 }

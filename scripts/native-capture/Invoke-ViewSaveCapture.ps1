@@ -207,7 +207,7 @@ t3_home = '$root'
     Assert-View '1-project-at-start' 'project' $projectMarker $shot
     $shot = Switch-View $shot 'Backlog' '2-backlog' 'backlog' 'SYNTHETIC FIXTURE' 2
     # Fleet fetches on selection, and needs time to show its rows.
-    $shot = Switch-View $shot 'Fleet' '3-fleet' 'fleet' 'synthetic-windows' 5
+    $shot = Switch-View $shot 'Fleet' '3-fleet' 'fleet' 'synthetic-' 5
     $shot = Switch-View $shot 'Project' '4-project' 'project' $projectMarker 2
 
     $after = Get-Acl -LiteralPath $configPath

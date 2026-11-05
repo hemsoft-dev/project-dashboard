@@ -66,6 +66,10 @@ cargo deny --locked check advisories                          # needs cargo inst
 CAPTURE_DIR=$PWD/captures cargo test -p dashboard-app captures -- --ignored   # PNGs (Linux or macOS; absolute path)
 ```
 
+The Release workflow's PR runs also start the release exe on the hosted Windows desktop under a filtered token, with an
+Administrators-owned `config.toml`, and click Project, Backlog and Fleet (`scripts/native-capture/Invoke-ViewSaveCapture.ps1`,
+#83). Its screenshots are in the `view-save-windows-<head>` artifact.
+
 On Linux, building needs GPUI's headers:
 `sudo apt install libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig-dev libfreetype-dev libxcb1-dev libx11-xcb-dev`.
 

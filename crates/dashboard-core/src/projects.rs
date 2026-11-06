@@ -312,6 +312,10 @@ pub fn error_field(error: &WriteError) -> Option<&'static str> {
 /// Why a checkout couldn't be linked to a project.
 #[derive(Debug)]
 pub enum LinkError {
+    /// The folder isn't a full path. A relative one would resolve against wherever the dashboard was started (#87).
+    Relative,
+    /// The folder doesn't exist or can't be opened.
+    Folder(std::io::Error),
     /// The folder's origin is another repository, or none the dashboard can read.
     Mismatch { found: Option<String> },
     /// `config.toml` couldn't be read or written.
@@ -321,6 +325,11 @@ pub enum LinkError {
 impl std::fmt::Display for LinkError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Relative => f.write_str("Type the checkout's full path, not a relative folder; nothing was written."),
+            Self::Folder(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                f.write_str("That folder doesn't exist; nothing was written.")
+            }
+            Self::Folder(error) => write!(f, "Can't open that folder ({error}); nothing was written."),
             Self::Mismatch { found: Some(found) } => {
                 write!(f, "That folder's origin is {found}; nothing was written.")
             }
@@ -334,12 +343,27 @@ impl std::fmt::Display for LinkError {
 }
 
 /// Adds `checkout` to `repositories` in the `config.toml` in `config_dir`, after checking its origin is `repo` with
-/// the same identity rules the dashboard reads status with, and keeping the file's comments. A checkout already
-/// listed is left as it is.
+/// the same identity rules the dashboard reads status with, and keeping the file's comments.
+///
+/// The folder must be a full path; it is saved as typed (#87). A checkout already listed under any spelling of the
+/// same folder (`..`, another letter case where the file system ignores case, a link) is left as it is and its listed
+/// path returned, so it never gets a second row.
 pub fn link_checkout(config_dir: &Path, checkout: &Path, repo: &str) -> Result<PathBuf, LinkError> {
+    if !checkout.is_absolute() {
+        return Err(LinkError::Relative);
+    }
+    let real = std::fs::canonicalize(checkout).map_err(LinkError::Folder)?;
     let found = crate::pmd::checkout_identity(checkout).ok();
     if !found.as_deref().is_some_and(|found| found.eq_ignore_ascii_case(repo)) {
         return Err(LinkError::Mismatch { found });
+    }
+    let listed = Config::load(config_dir).map_err(LinkError::Config)?.repositories;
+    // Only full paths are compared on disk: a relative entry would resolve against the working folder.
+    if let Some(known) = listed
+        .into_iter()
+        .find(|known| known.is_absolute() && std::fs::canonicalize(known).is_ok_and(|known| known == real))
+    {
+        return Ok(known);
     }
     Config::add_repository(config_dir, checkout).map_err(LinkError::Config)?;
     Ok(checkout.to_path_buf())

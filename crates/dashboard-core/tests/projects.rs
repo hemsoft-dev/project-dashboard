@@ -437,3 +437,89 @@ fn a_checkout_of_another_repo_or_none_is_not_linked_and_nothing_is_written() {
     ));
     assert_eq!(read(&dir), "repositories = []\n");
 }
+
+#[test]
+fn a_relative_or_missing_folder_is_not_linked_and_nothing_is_written() {
+    let folder = Folder::new();
+    folder.checkout("tickdown", Some("https://github.com/hemsoft-dev/tickdown.git"));
+    let dir = folder.config("repositories = []\n");
+    // Refused before anything is read, so the result can't depend on the working folder (#87).
+    let mut relative = vec![PathBuf::from("tickdown"), PathBuf::from("./tickdown")];
+    if cfg!(windows) {
+        relative.extend([PathBuf::from(r"\tickdown"), PathBuf::from("C:tickdown")]);
+    }
+    for path in relative {
+        match projects::link_checkout(&dir, &path, "hemsoft-dev/tickdown") {
+            Err(error @ LinkError::Relative) => assert_eq!(
+                error.to_string(),
+                "Type the checkout's full path, not a relative folder; nothing was written."
+            ),
+            other => panic!("{}: {other:?}", path.display()),
+        }
+    }
+    match projects::link_checkout(&dir, &folder.0.join("missing"), "hemsoft-dev/tickdown") {
+        Err(error @ LinkError::Folder(_)) => {
+            assert_eq!(error.to_string(), "That folder doesn't exist; nothing was written.")
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(read(&dir), "repositories = []\n");
+}
+
+#[test]
+fn another_spelling_of_a_listed_checkout_adds_no_second_row() {
+    let folder = Folder::new();
+    let tickdown = folder.checkout("tickdown", Some("https://github.com/hemsoft-dev/tickdown.git"));
+    std::fs::create_dir_all(folder.0.join("sub")).unwrap();
+    let text = format!(
+        "# My dashboard\nrepositories = [\n    {:?}, # the widget\n]\n",
+        tickdown.to_string_lossy()
+    );
+    let dir = folder.config(&text);
+    let separator = std::path::MAIN_SEPARATOR;
+    let mut spellings = vec![
+        tickdown.clone(),
+        PathBuf::from(format!("{}{separator}", tickdown.display())),
+        folder.0.join("sub").join("..").join("tickdown"),
+    ];
+    if cfg!(windows) {
+        // NTFS ignores letter case.
+        spellings.push(PathBuf::from(tickdown.to_string_lossy().to_uppercase()));
+    }
+    #[cfg(unix)]
+    {
+        let link = folder.0.join("link");
+        std::os::unix::fs::symlink(&tickdown, &link).unwrap();
+        spellings.push(link);
+    }
+    for spelling in spellings {
+        let linked = projects::link_checkout(&dir, &spelling, "hemsoft-dev/tickdown");
+        assert_eq!(linked.unwrap(), tickdown, "{}", spelling.display());
+        assert_eq!(read(&dir), text, "{}", spelling.display());
+    }
+    let config = Config::parse(&read(&dir), &dir.join("config.toml")).unwrap();
+    assert_eq!(config.repositories, [tickdown]);
+}
+
+#[test]
+fn a_new_checkout_is_saved_as_typed_and_found_again_under_another_spelling() {
+    let folder = Folder::new();
+    let tickdown = folder.checkout("tickdown", Some("https://github.com/hemsoft-dev/tickdown.git"));
+    std::fs::create_dir_all(folder.0.join("sub")).unwrap();
+    let dir = folder.config("repositories = []\n");
+    let typed = folder.0.join("sub").join("..").join("tickdown");
+    assert_eq!(
+        projects::link_checkout(&dir, &typed, "hemsoft-dev/tickdown").unwrap(),
+        typed
+    );
+    let after = read(&dir);
+    // The comparison's resolved path never reaches the file: no `\\?\` prefix on Windows.
+    assert!(!after.contains(r"\\?\"), "{after}");
+    let config = Config::parse(&after, &dir.join("config.toml")).unwrap();
+    assert_eq!(config.repositories, std::slice::from_ref(&typed));
+    assert_eq!(
+        projects::link_checkout(&dir, &tickdown, "hemsoft-dev/tickdown").unwrap(),
+        typed
+    );
+    assert_eq!(read(&dir), after);
+}

@@ -576,6 +576,8 @@ fn projects(cx: &mut HeadlessAppContext, out: &Path, suffix: &str) {
     click(cx, handle, "project-row-2");
     click(cx, handle, "project-priority-0");
     save(cx, handle, out, &name("edit-priority"));
+    click(cx, handle, "project-risk-8");
+    save(cx, handle, out, &name("edit-risk"));
     let fork = folder.checkout("fork", "https://github.com/someone/hs-buddy.git");
     set(cx, handle, &manage, "folder", &fork.to_string_lossy());
     // The button can sit below the fold at 150%; press it directly.

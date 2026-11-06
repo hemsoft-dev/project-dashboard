@@ -1,5 +1,5 @@
 //! The Projects dialog (#34): every pmd project, sorted by priority, with an editor that tracks a new repo, sets
-//! P0–P5 or no tier, edits goal, notes and requires, untracks or re-tracks a project, and links a local checkout so
+//! P0–P5 or no tier and a risk level from 0 to 10, edits goal, notes and requires, untracks or re-tracks a project, and links a local checkout so
 //! the dashboard shows it.
 //!
 //! pmd's projects table is the source of truth for priority (option C of project-manager#50), so there is no reset to
@@ -53,7 +53,9 @@ fn upsert(projects: &mut ProjectsDialog, project: Project) {
 
 /// The priority choices: P0 to P5, then no tier (empty).
 const PRIORITY_CHOICES: [&str; 7] = ["0", "1", "2", "3", "4", "5", ""];
-/// The fields typed as text; priority and tracked are chosen.
+/// The risk level choices, 0 to 10. There is no "unset": a row without one keeps it unset until one is picked.
+const RISK_CHOICES: [&str; 11] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"];
+/// The fields typed as text; priority, risk level and tracked are chosen.
 const TEXT_FIELDS: [&str; 5] = ["repo", "slug", "goal", "notes", "requires"];
 
 pub struct ProjectsDialog {
@@ -81,6 +83,7 @@ pub struct ProjectEditor {
     form: Form,
     inputs: Vec<(&'static str, Entity<InputState>)>,
     priorities: Vec<Control>,
+    risks: Vec<Control>,
     folder: Entity<InputState>,
     link: Control,
     /// A checkout link's result: the message, and whether it is an error.
@@ -394,6 +397,7 @@ impl Manage {
             form,
             inputs,
             priorities: controls(PRIORITY_CHOICES.len(), cx),
+            risks: controls(RISK_CHOICES.len(), cx),
             folder,
             link: control(cx),
             link_result: None,
@@ -455,6 +459,19 @@ impl Manage {
         if editor.form.value("tracked") == "false" {
             editor.form.clear_error("tracked");
         }
+        cx.notify();
+    }
+
+    fn set_project_risk(&mut self, risk: &str, cx: &mut Context<Self>) {
+        let writable = self.projects_writable();
+        let Some(editor) = self.open_projects().and_then(|(_, projects)| projects.editor.as_mut()) else {
+            return;
+        };
+        if editor.locked(writable) {
+            return;
+        }
+        // Like priority, picking only edits the form.
+        editor.form.set("riskLevel", risk);
         cx.notify();
     }
 
@@ -834,6 +851,7 @@ impl Manage {
                 .child(div().w(rems(10.)).flex_none().child("Slug"))
                 .child(div().flex_1().min_w_0().child("Repository"))
                 .child(div().w(rems(5.)).flex_none().child("Priority"))
+                .child(div().w(rems(4.)).flex_none().child("Risk"))
                 .child(div().w(rems(6.)).flex_none().child("Tracked"))
                 .child(div().w(rems(6.)).flex_none().child("Checkout")),
         );
@@ -856,10 +874,11 @@ impl Manage {
                     .role(Role::ListBoxOption)
                     .aria_selected(selected)
                     .aria_label(format!(
-                        "{}, {}, {}, {}, checkout {}",
+                        "{}, {}, {}, risk {}, {}, checkout {}",
                         project.slug,
                         project.repo,
                         project.priority_label(),
+                        project.risk_label(),
                         if project.tracked { "tracked" } else { "untracked" },
                         linked
                     ))
@@ -882,6 +901,7 @@ impl Manage {
                     .child(div().w(rems(10.)).flex_none().truncate().child(project.slug.clone()))
                     .child(div().flex_1().min_w_0().truncate().child(project.repo.clone()))
                     .child(div().w(rems(5.)).flex_none().child(project.priority_label()))
+                    .child(div().w(rems(4.)).flex_none().child(project.risk_label()))
                     .child(
                         div()
                             .w(rems(6.))
@@ -1070,6 +1090,43 @@ impl Manage {
                                 )
                             }),
                     )
+                    .into_any_element()
+            } else if field == "riskLevel" {
+                v_flex()
+                    .gap_1()
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .flex_wrap()
+                            .children(RISK_CHOICES.iter().zip(&editor.risks).map(|(risk, control)| {
+                                let risk = *risk;
+                                chip(
+                                    format!("project-risk-{risk}"),
+                                    risk.to_owned(),
+                                    &control.focus,
+                                    form.value("riskLevel") == risk,
+                                    locked,
+                                    move |manage, _, cx| manage.set_project_risk(risk, cx),
+                                    cx,
+                                )
+                            })),
+                    )
+                    .when(form.value("riskLevel").is_empty(), |this| {
+                        let text = if creating {
+                            "Not set: pmd starts a new project at 5."
+                        } else {
+                            "Not set in pmd. Pick one to set it."
+                        };
+                        this.child(
+                            div()
+                                .id("project-risk-unset")
+                                .test_support()
+                                .aria_label(text)
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(text),
+                        )
+                    })
                     .into_any_element()
             } else if field == "tracked" {
                 div()

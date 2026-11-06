@@ -21,17 +21,29 @@ fn project(slug: &str, priority: Option<u8>, tracked: bool, goal: &str) -> Value
            "requires": [], "tracked": tracked, "source": "portfolio", "version": 2})
 }
 
-/// A believable portfolio: tiers P0 to P4, one without a tier, one untracked P5.
+/// A believable portfolio: tiers P0 to P4, one without a tier, one untracked P5, each with a risk level.
 pub(crate) fn sample_projects() -> Vec<Value> {
-    vec![
-        project("set-it-free-loop", Some(1), true, "Ship the pause control"),
-        project("gh-x", Some(3), true, "Maintenance: keep healthy, no new initiatives."),
-        project("chief", None, true, "Run the fleet"),
-        project("project-dashboard", Some(0), true, "Manage pmd from the dashboard"),
-        project("hs-buddy", Some(2), true, "Sign the Windows installer"),
-        project("weather-cli", Some(5), false, "Dormant"),
-        project("tickdown", Some(4), false, "Paused for now"),
+    [
+        (project("set-it-free-loop", Some(1), true, "Ship the pause control"), 6),
+        (
+            project("gh-x", Some(3), true, "Maintenance: keep healthy, no new initiatives."),
+            4,
+        ),
+        (project("chief", None, true, "Run the fleet"), 9),
+        (
+            project("project-dashboard", Some(0), true, "Manage pmd from the dashboard"),
+            3,
+        ),
+        (project("hs-buddy", Some(2), true, "Sign the Windows installer"), 7),
+        (project("weather-cli", Some(5), false, "Dormant"), 2),
+        (project("tickdown", Some(4), false, "Paused for now"), 2),
     ]
+    .into_iter()
+    .map(|(mut row, risk)| {
+        row["riskLevel"] = json!(risk);
+        row
+    })
+    .collect()
 }
 
 type Change = Box<dyn FnOnce(&mut Vec<Value>) + Send>;
@@ -113,6 +125,10 @@ impl WriteBackend for FakeProjects {
                 row["slug"] = json!(slug);
                 row["source"] = json!("api");
                 row["version"] = json!(1);
+                // pmd starts a new project at risk 5 unless the body sets one.
+                if row.get("riskLevel").is_none() {
+                    row["riskLevel"] = json!(5);
+                }
                 rows.push(row.clone());
                 Ok(row)
             }
@@ -299,15 +315,17 @@ async fn the_list_sorts_by_priority_hides_untracked_and_shows_which_have_a_check
     );
     assert_eq!(
         text_of(cx, handle, "project-row-3"),
-        "gh-x, hemsoft-dev/gh-x, P3, tracked, checkout Linked"
+        "gh-x, hemsoft-dev/gh-x, P3, risk 4/10, tracked, checkout Linked"
     );
     assert_eq!(
         text_of(cx, handle, "project-row-4"),
-        "chief, hemsoft-dev/chief, —, tracked, checkout —"
+        "chief, hemsoft-dev/chief, —, risk 9/10, tracked, checkout —"
     );
     click(cx, handle, "projects-show-untracked");
     assert_eq!(visible(cx, &manage).len(), 7);
-    assert!(text_of(cx, handle, "project-row-4").starts_with("tickdown, hemsoft-dev/tickdown, P4, untracked"));
+    assert!(
+        text_of(cx, handle, "project-row-4").starts_with("tickdown, hemsoft-dev/tickdown, P4, risk 2/10, untracked")
+    );
     set_input(cx, handle, &manage, "filter", "PAUSE");
     assert_eq!(
         visible(cx, &manage),
@@ -353,7 +371,7 @@ async fn a_priority_pick_writes_only_on_save_and_the_table_hears_of_it(cx: &mut 
     assert_eq!(
         writes[0].body,
         json!({"repo": "hemsoft-dev/gh-x", "priority": 0, "goal": "Maintenance: keep healthy, no new initiatives.",
-               "notes": "", "requires": [], "tracked": true})
+               "notes": "", "requires": [], "tracked": true, "riskLevel": 4})
     );
     assert_eq!(wrote.get(), 1, "the table reloads its priorities");
     // No tier is null.
@@ -477,6 +495,101 @@ async fn changed_elsewhere_shows_both_values_and_reapplies_on_the_new_version(cx
     settle(cx, handle, &view).await;
     assert_eq!(backend.writes.lock().unwrap()[1].precondition, Precondition::IfMatch(6));
     assert_eq!(backend.row("gh-x")["priority"], json!(1));
+}
+
+#[gpui_kit::test]
+async fn a_risk_level_pick_writes_only_on_save_and_the_list_shows_it(cx: &mut TestAppContext) {
+    let folder = Folder::new();
+    let backend = FakeProjects::new(&["read", "write:projects"]);
+    let (handle, view, manage) = open_with(cx, backend.clone(), &folder);
+    open_dialog(cx, handle, &view).await;
+    edit(cx, handle, &manage, "gh-x");
+    assert_eq!(form_value(cx, &manage, "riskLevel"), "4");
+    assert!(!exists(cx, handle, "project-risk-unset"));
+    click(cx, handle, "project-risk-10");
+    assert_eq!(form_value(cx, &manage, "riskLevel"), "10");
+    assert!(
+        backend.writes.lock().unwrap().is_empty(),
+        "picking alone writes nothing"
+    );
+    press(cx, handle, "ctrl-enter");
+    settle(cx, handle, &view).await;
+    let writes = backend.writes.lock().unwrap().clone();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].precondition, Precondition::IfMatch(2));
+    assert_eq!(writes[0].body["riskLevel"], json!(10));
+    assert_eq!(
+        writes[0].body["priority"],
+        json!(3),
+        "the rest of the row goes as stored"
+    );
+    assert_eq!(backend.row("gh-x")["riskLevel"], json!(10));
+    click(cx, handle, "projects-back");
+    let ix = visible(cx, &manage).iter().position(|s| s == "gh-x").unwrap();
+    assert_eq!(
+        text_of(cx, handle, &format!("project-row-{ix}")),
+        "gh-x, hemsoft-dev/gh-x, P3, risk 10/10, tracked, checkout Linked"
+    );
+}
+
+#[gpui_kit::test]
+async fn a_risk_level_changed_elsewhere_shows_both_values_and_reapplies(cx: &mut TestAppContext) {
+    let folder = Folder::new();
+    let backend = FakeProjects::new(&["read", "write:projects"]);
+    let (handle, view, manage) = open_with(cx, backend.clone(), &folder);
+    open_dialog(cx, handle, &view).await;
+    edit(cx, handle, &manage, "gh-x");
+    click(cx, handle, "project-risk-8");
+    backend.fail_next(WriteError::StaleVersion, |rows| {
+        let row = rows.iter_mut().find(|row| row["slug"] == "gh-x").unwrap();
+        row["riskLevel"] = json!(6);
+        row["version"] = json!(6);
+    });
+    click(cx, handle, "project-save");
+    settle(cx, handle, &view).await;
+    frame(cx, handle);
+    assert_eq!(text_of(cx, handle, "conflict-riskLevel"), "Risk level: yours 8, now 6");
+    assert!(!exists(cx, handle, "conflict-priority"), "only what differs");
+    click(cx, handle, "conflict-reapply");
+    settle(cx, handle, &view).await;
+    assert_eq!(backend.writes.lock().unwrap()[1].precondition, Precondition::IfMatch(6));
+    assert_eq!(backend.row("gh-x")["riskLevel"], json!(8));
+}
+
+#[gpui_kit::test]
+async fn a_project_without_a_risk_level_saves_without_one(cx: &mut TestAppContext) {
+    let folder = Folder::new();
+    let backend = FakeProjects::new(&["read", "write:projects"]);
+    // As an older pmd lists it: no riskLevel at all.
+    for row in backend.rows.lock().unwrap().iter_mut() {
+        row.as_object_mut().unwrap().remove("riskLevel");
+    }
+    let (handle, view, manage) = open_with(cx, backend.clone(), &folder);
+    open_dialog(cx, handle, &view).await;
+    assert_eq!(
+        text_of(cx, handle, "project-row-3"),
+        "gh-x, hemsoft-dev/gh-x, P3, risk —, tracked, checkout Linked"
+    );
+    edit(cx, handle, &manage, "gh-x");
+    assert_eq!(form_value(cx, &manage, "riskLevel"), "");
+    assert_eq!(
+        text_of(cx, handle, "project-risk-unset"),
+        "Not set in pmd. Pick one to set it."
+    );
+    click(cx, handle, "project-priority-1");
+    press(cx, handle, "ctrl-enter");
+    settle(cx, handle, &view).await;
+    let writes = backend.writes.lock().unwrap().clone();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].body["priority"], json!(1));
+    assert!(writes[0].body.get("riskLevel").is_none(), "no bogus risk level is sent");
+    // A new project leaves it to pmd too.
+    click(cx, handle, "projects-back");
+    click(cx, handle, "projects-add");
+    assert_eq!(
+        text_of(cx, handle, "project-risk-unset"),
+        "Not set: pmd starts a new project at 5."
+    );
 }
 
 fn config_text(folder: &Folder) -> String {

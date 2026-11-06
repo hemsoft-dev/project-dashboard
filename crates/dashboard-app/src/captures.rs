@@ -621,6 +621,27 @@ fn projects(cx: &mut HeadlessAppContext, out: &Path, suffix: &str) {
     key(cx, tall, &["ctrl-enter"]);
     save(cx, tall, out, &name("risk-conflict"));
 
+    // #87: a relative folder is refused and a missing one says so. A checkout listed since the dialog opened, typed
+    // with `..`, is found under its listed path and gets no second row.
+    let paths = Folder::new();
+    let (link, link_manage, _) = open_dialog(cx, &["read", "write:projects"], &paths);
+    click(cx, link, "project-row-2");
+    let press_link = |cx: &mut HeadlessAppContext, typed: &Path, state: &str| {
+        set(cx, link, &link_manage, "folder", &typed.to_string_lossy());
+        cx.update(|cx| link_manage.update(cx, |m, cx| m.link_checkout(cx)));
+        settle(cx);
+        save(cx, link, out, &name(state));
+    };
+    press_link(cx, Path::new("hs-buddy"), "link-relative");
+    press_link(cx, &paths.0.join("missing"), "link-missing");
+    let listed = paths.checkout("hs-buddy", "git@github.com:hemsoft-dev/hs-buddy.git");
+    dashboard_core::config::Config::add_repository(&paths.config_dir(), &listed).unwrap();
+    std::fs::create_dir_all(paths.0.join("sub")).unwrap();
+    let config = paths.config_dir().join("config.toml");
+    let before = std::fs::read(&config).unwrap();
+    press_link(cx, &paths.0.join("sub").join("..").join("hs-buddy"), "link-listed");
+    assert_eq!(std::fs::read(&config).unwrap(), before, "no second row");
+
     // Frames for the recording, at 100% only: keyboard alone, adding a project and setting its priority.
     if !suffix.is_empty() {
         return;

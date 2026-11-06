@@ -222,8 +222,8 @@ impl Config {
     }
 }
 
-/// The git checkouts directly under `root`, sorted by path. Only primary checkouts (a `.git` folder) count: a linked
-/// worktree (a `.git` file) is already part of its primary checkout's status.
+/// The git checkouts directly under `root`, sorted by path. Only primary checkouts count: a `.git` folder, or a `.git`
+/// file pointing at a git folder of its own. A linked worktree is already part of its primary checkout's status.
 pub fn discover(root: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
@@ -231,10 +231,39 @@ pub fn discover(root: &Path) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = entries
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| path.is_dir() && path.join(".git").is_dir())
+        .filter(|path| path.is_dir() && is_primary_checkout(path))
         .collect();
     found.sort();
     found
+}
+
+/// The most a `.git` file is read: its one `gitdir:` line, with room for a long path.
+const MAX_GIT_FILE: u64 = 64 * 1024;
+
+/// Whether `checkout`'s `.git` is a folder, or a `gitdir: <path>` file whose git folder is its own, as
+/// `git clone --separate-git-dir` makes (#88). A linked worktree's git folder holds `commondir`, pointing at the
+/// primary's. Anything else, such as an unreadable, oversized or malformed `.git` file, a target that isn't a git
+/// folder, or a `.git` that is neither a folder nor a regular file, is skipped. Nothing here starts git.
+fn is_primary_checkout(checkout: &Path) -> bool {
+    use std::io::Read as _;
+    let marker = checkout.join(".git");
+    let Ok(metadata) = std::fs::metadata(&marker) else {
+        return false;
+    };
+    if metadata.is_dir() {
+        return true;
+    }
+    // A pipe or device could block a read, and a huge file isn't a `.git` file.
+    if !metadata.is_file() || metadata.len() > MAX_GIT_FILE {
+        return false;
+    }
+    let mut pointer = String::new();
+    let read = std::fs::File::open(&marker).and_then(|file| file.take(MAX_GIT_FILE).read_to_string(&mut pointer));
+    let Some(target) = read.ok().and_then(|_| pointer.trim().strip_prefix("gitdir: ")) else {
+        return false;
+    };
+    let git_dir = checkout.join(target.trim());
+    git_dir.join("HEAD").is_file() && !git_dir.join("commondir").exists()
 }
 
 /// Notices edits to `config.toml` while the app runs (#21) by comparing its bytes with the last applied read. The

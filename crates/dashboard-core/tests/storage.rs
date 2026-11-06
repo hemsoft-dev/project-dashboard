@@ -104,6 +104,88 @@ fn first_run_discovers_checkouts_one_level_under_the_root_and_writes_them() {
     assert!(dir.join(config::FILE_NAME).is_file());
 }
 
+/// A git folder for a `.git` file to point at: `HEAD`, plus `commondir` when it belongs to a linked worktree.
+fn git_dir(path: &Path, linked: bool) {
+    std::fs::create_dir_all(path).unwrap();
+    std::fs::write(path.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    if linked {
+        std::fs::write(path.join("commondir"), "../..\n").unwrap();
+    }
+}
+
+fn git_file(root: &Path, name: &str, contents: &[u8]) {
+    std::fs::create_dir_all(root.join(name)).unwrap();
+    std::fs::write(root.join(name).join(".git"), contents).unwrap();
+}
+
+#[test]
+fn first_run_discovers_separate_git_dir_checkouts_but_not_worktrees_or_broken_git_files() {
+    let scratch = Scratch::new("first-run-separate");
+    let root = scratch.path().join("github");
+    let gitdirs = scratch.path().join("gitdirs");
+    std::fs::create_dir_all(root.join("plain/.git")).unwrap();
+    // `git clone --separate-git-dir`: the .git file points at a git folder of its own, absolute or relative.
+    git_dir(&gitdirs.join("sep.git"), false);
+    git_file(
+        &root,
+        "separate",
+        format!("gitdir: {}\n", gitdirs.join("sep.git").display()).as_bytes(),
+    );
+    git_dir(&gitdirs.join("rel.git"), false);
+    git_file(&root, "relative", b"gitdir: ../../gitdirs/rel.git\r\n");
+    // Not checkouts. A linked worktree's git folder has HEAD too; commondir is what tells it apart.
+    let worktree = root.join("plain/.git/worktrees/pr-1");
+    git_dir(&worktree, true);
+    git_file(
+        &root,
+        "plain-pr-1",
+        format!("gitdir: {}", worktree.display()).as_bytes(),
+    );
+    git_file(
+        &root,
+        "missing",
+        format!("gitdir: {}", gitdirs.join("none.git").display()).as_bytes(),
+    );
+    std::fs::create_dir_all(gitdirs.join("no-head.git")).unwrap();
+    git_file(
+        &root,
+        "no-head",
+        format!("gitdir: {}", gitdirs.join("no-head.git").display()).as_bytes(),
+    );
+    git_file(
+        &root,
+        "malformed",
+        format!("{}\n", gitdirs.join("sep.git").display()).as_bytes(),
+    );
+    git_file(&root, "empty", b"");
+    git_file(&root, "not-utf8", b"gitdir: \xff\xfe\n");
+    // A valid first line, but more than a .git file holds: never read.
+    let mut huge = format!("gitdir: {}\n", gitdirs.join("sep.git").display()).into_bytes();
+    huge.resize(70 * 1024, b' ');
+    git_file(&root, "huge", &huge);
+    std::fs::create_dir_all(root.join("group/deep/.git")).unwrap();
+    #[cfg(target_os = "linux")]
+    {
+        // A pipe is never opened: reading one with no writer would block discovery.
+        std::fs::create_dir_all(root.join("pipe")).unwrap();
+        let fifo = rustix::fs::FileType::Fifo;
+        rustix::fs::mknodat(rustix::fs::CWD, root.join("pipe/.git"), fifo, 0o600.into(), 0).unwrap();
+    }
+
+    let expected = [root.join("plain"), root.join("relative"), root.join("separate")];
+    assert_eq!(config::discover(&root), expected);
+    let config = Config::load_or_create_in(&scratch.path().join("config"), root.clone()).unwrap();
+    assert_eq!(config.repositories, expected);
+}
+
+#[test]
+fn discovery_of_a_missing_root_or_a_file_is_empty() {
+    let scratch = Scratch::new("first-run-no-root");
+    assert!(config::discover(&scratch.path().join("absent")).is_empty());
+    std::fs::write(scratch.path().join("file"), "").unwrap();
+    assert!(config::discover(&scratch.path().join("file")).is_empty());
+}
+
 #[test]
 fn cache_round_trips_and_drops_removed_repositories() {
     let scratch = Scratch::new("cache");

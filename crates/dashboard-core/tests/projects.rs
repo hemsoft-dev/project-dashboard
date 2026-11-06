@@ -248,6 +248,84 @@ fn already_exists_unknown_repo_and_stale_versions_reach_the_form() {
     }
 }
 
+#[test]
+fn a_risk_level_reads_edits_and_shows_as_out_of_ten_and_an_older_pmds_row_has_none() {
+    let gh_x = Project::from_json(&project(json!({"riskLevel": 8}))).unwrap();
+    assert_eq!((gh_x.risk_level, gh_x.risk_label()), (Some(8), "8/10".to_owned()));
+    assert_eq!(gh_x.row().values["riskLevel"], "8");
+    for older in [project(json!({})), project(json!({"riskLevel": null}))] {
+        let older = Project::from_json(&older).unwrap();
+        assert_eq!((older.risk_level, older.risk_label()), (None, "—".to_owned()));
+        assert_eq!(older.row().values["riskLevel"], "", "no risk level edits as empty");
+    }
+    let unknown = Project::from_json(&project(json!({"riskLevel": 11}))).unwrap();
+    assert_eq!(unknown.risk_level, None, "a level outside 0-10 reads as unset");
+    assert_eq!(
+        Project::from_json(&project(json!({"riskLevel": "high"}))),
+        Err(WriteError::Malformed)
+    );
+}
+
+#[test]
+fn a_body_sends_a_chosen_risk_level_and_leaves_an_unset_one_out() {
+    let mut chosen = new_project();
+    chosen.insert("riskLevel".into(), "0".into());
+    assert_eq!(projects::body(&chosen).unwrap().1["riskLevel"], json!(0));
+    chosen.insert("riskLevel".into(), "10".into());
+    assert_eq!(projects::body(&chosen).unwrap().1["riskLevel"], json!(10));
+    // Empty: an older pmd's row, or a new project pmd starts at 5. pmd refuses null, so the field isn't sent.
+    for unset in ["", "  "] {
+        let mut row = new_project();
+        row.insert("riskLevel".into(), unset.into());
+        assert!(projects::body(&row).unwrap().1.get("riskLevel").is_none());
+    }
+    assert!(projects::body(&new_project()).unwrap().1.get("riskLevel").is_none());
+    for bad in ["11", "-1", "4.5", "high"] {
+        let mut row = new_project();
+        row.insert("riskLevel".into(), bad.into());
+        let problems = projects::body(&row).unwrap_err();
+        assert_eq!(problems, [("riskLevel", "0 to 10.".to_owned())], "{bad}");
+    }
+    assert_eq!(projects::label("riskLevel"), "Risk level");
+}
+
+#[test]
+fn a_risk_level_changed_elsewhere_is_a_difference_and_pmds_range_error_lands_on_it() {
+    let gh_x = Project::from_json(&project(json!({"riskLevel": 4}))).unwrap();
+    let mut edit = Form::edit(gh_x.row(), &FIELDS);
+    edit.set("riskLevel", "9");
+    assert!(edit.is_dirty());
+    edit.begin_save().unwrap();
+    assert_eq!(edit.failed(&WriteError::StaleVersion), Next::Reread);
+    let theirs = Project::from_json(&project(json!({"riskLevel": 6, "version": 4}))).unwrap();
+    edit.conflict(theirs.row());
+    assert_eq!(edit.conflict_state().unwrap().differences(), [("riskLevel", "9", "6")]);
+    edit.reapply();
+    assert_eq!(edit.version(), Some(4));
+    assert_eq!(edit.value("riskLevel"), "9");
+    // pmd's own check, as its 400 words it.
+    let dir = Dir::new();
+    let stub = Stub::new(|_| Reply::error(400, "bad_request", "riskLevel must be an integer 0-10"));
+    let (slug, body) = projects::body(edit.values()).unwrap();
+    let precondition = edit.begin_save().unwrap();
+    let error = dir
+        .writer(&stub)
+        .write(&WriteRequest {
+            method: Method::Put,
+            path: projects::path(&slug),
+            precondition,
+            body,
+        })
+        .unwrap_err();
+    assert_eq!(projects::error_field(&error), None);
+    assert_eq!(edit.failed(&error), Next::Show);
+    assert!(edit.field_error("riskLevel").is_some(), "{error:?}");
+    assert_eq!(edit.message(), None);
+    let sent: Value = serde_json::from_str(&stub.requests()[0].body).unwrap();
+    assert_eq!(sent["riskLevel"], 9);
+    assert_eq!(stub.requests()[0].header("if-match"), Some("4"));
+}
+
 /// A temporary folder: a config dir and checkouts with a given origin.
 struct Folder(PathBuf);
 impl Folder {

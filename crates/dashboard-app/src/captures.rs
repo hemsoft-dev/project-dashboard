@@ -518,13 +518,13 @@ fn projects(cx: &mut HeadlessAppContext, out: &Path, suffix: &str) {
     use dashboard_core::write::WriteError;
     let name = |state: &str| format!("projects-{state}{suffix}");
     let folder = Folder::new();
-    let open_dialog = |cx: &mut HeadlessAppContext, scopes: &[&str], folder: &Folder| {
+    let open_dialog_sized = |cx: &mut HeadlessAppContext, scopes: &[&str], folder: &Folder, height: f32| {
         let backend = FakeProjects::new(scopes);
         let (handle, view) = open_with(
             cx,
             demo::checkouts(),
             1100.,
-            760.,
+            height,
             Options {
                 write: backend.clone(),
                 config_path: Some(folder.config_dir().join("config.toml")),
@@ -548,6 +548,8 @@ fn projects(cx: &mut HeadlessAppContext, out: &Path, suffix: &str) {
         settle(cx);
         (handle, manage, backend)
     };
+    let open_dialog =
+        |cx: &mut HeadlessAppContext, scopes: &[&str], folder: &Folder| open_dialog_sized(cx, scopes, folder, 760.);
     let click = |cx: &mut HeadlessAppContext, handle: AnyWindowHandle, id: &str| {
         let id = gpui_kit::SharedString::from(id.to_owned());
         cx.update_window(handle, |_, window, cx| window.click(id, cx)).unwrap();
@@ -576,6 +578,8 @@ fn projects(cx: &mut HeadlessAppContext, out: &Path, suffix: &str) {
     click(cx, handle, "project-row-2");
     click(cx, handle, "project-priority-0");
     save(cx, handle, out, &name("edit-priority"));
+    click(cx, handle, "project-risk-8");
+    save(cx, handle, out, &name("edit-risk"));
     let fork = folder.checkout("fork", "https://github.com/someone/hs-buddy.git");
     set(cx, handle, &manage, "folder", &fork.to_string_lossy());
     // The button can sit below the fold at 150%; press it directly.
@@ -603,6 +607,19 @@ fn projects(cx: &mut HeadlessAppContext, out: &Path, suffix: &str) {
 
     let (read_only, _, _) = open_dialog(cx, &["read", "write:work"], &folder);
     save(cx, read_only, out, &name("read-only"));
+
+    // A risk level changed elsewhere, in a window tall enough to show the whole conflict panel. gh-x has a checkout,
+    // so no Link checkout box takes the room.
+    let (tall, _, tall_backend) = open_dialog_sized(cx, &["read", "write:projects"], &folder, 1000.);
+    click(cx, tall, "project-row-3");
+    click(cx, tall, "project-risk-8");
+    tall_backend.fail_next(WriteError::StaleVersion, |rows| {
+        let row = rows.iter_mut().find(|row| row["slug"] == "gh-x").unwrap();
+        row["riskLevel"] = serde_json::json!(6);
+        row["version"] = serde_json::json!(5);
+    });
+    key(cx, tall, &["ctrl-enter"]);
+    save(cx, tall, out, &name("risk-conflict"));
 
     // Frames for the recording, at 100% only: keyboard alone, adding a project and setting its priority.
     if !suffix.is_empty() {

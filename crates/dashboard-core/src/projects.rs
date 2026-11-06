@@ -4,7 +4,8 @@
 //! pmd's `projects` table is the source of truth for project priority (Franz, 2026-10-26, option C of
 //! [project-manager#50](https://github.com/hemsoft-dev/project-manager/issues/50)): a `PUT` sets it and PORTFOLIO.md
 //! is a view generated from pmd, so there is no override to reset. No tier is `priority: null`, and P5 (dormant) must
-//! be untracked. A project is never deleted; untracking keeps its data. See pmd's
+//! be untracked. A risk level, 0 to 10, is optional in a `PUT`: left out, pmd keeps the stored one (5 for a new
+//! project). A project is never deleted; untracking keeps its data. See pmd's
 //! [Project writes](https://github.com/hemsoft-dev/project-manager#project-writes).
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -18,16 +19,27 @@ use crate::work::FieldProblem;
 use crate::write::WriteError;
 
 /// The editor's fields, as pmd names them, so a `400` naming one lands next to it.
-pub const FIELDS: [&str; 7] = ["slug", "repo", "priority", "goal", "notes", "requires", "tracked"];
+pub const FIELDS: [&str; 8] = [
+    "slug",
+    "repo",
+    "priority",
+    "riskLevel",
+    "goal",
+    "notes",
+    "requires",
+    "tracked",
+];
 /// pmd's limits.
 pub const MAX_TEXT: usize = 1000;
 pub const MAX_REQUIRES: usize = 32;
+pub const MAX_RISK: u8 = 10;
 
 pub fn label(field: &str) -> &'static str {
     match field {
         "slug" => "Slug",
         "repo" => "Repository",
         "priority" => "Priority",
+        "riskLevel" => "Risk level",
         "goal" => "Goal",
         "notes" => "Notes",
         "requires" => "Requires",
@@ -44,6 +56,8 @@ pub struct Project {
     pub repo: String,
     /// P0 to P5, or `None` for no tier.
     pub priority: Option<u8>,
+    /// How bad a failure in the project would be, 0 to 10 (project-manager#104), or `None` from a pmd that predates it.
+    pub risk_level: Option<u8>,
     pub goal: String,
     pub notes: String,
     pub requires: Vec<String>,
@@ -66,10 +80,21 @@ impl Project {
                 .ok()
                 .filter(|p: &u8| *p <= 5),
         };
+        // Likewise a risk level outside 0–10: it reads as unset, and a save leaves pmd's value alone.
+        let risk_level = match value.get("riskLevel") {
+            None | Some(Value::Null) => None,
+            Some(number) => number
+                .as_u64()
+                .ok_or(WriteError::Malformed)?
+                .try_into()
+                .ok()
+                .filter(|r: &u8| *r <= MAX_RISK),
+        };
         Ok(Self {
             slug: text("slug").ok_or(WriteError::Malformed)?,
             repo: text("repo").ok_or(WriteError::Malformed)?,
             priority,
+            risk_level,
             goal: text("goal").unwrap_or_default(),
             notes: text("notes").unwrap_or_default(),
             requires: value
@@ -109,12 +134,18 @@ impl Project {
         self.priority.map_or("—".to_owned(), |p| format!("P{p}"))
     }
 
+    /// `0/10` to `10/10`, or `—` when pmd gave none.
+    pub fn risk_label(&self) -> String {
+        self.risk_level.map_or("—".to_owned(), |r| format!("{r}/{MAX_RISK}"))
+    }
+
     /// The editor's starting values.
     pub fn row(&self) -> Row {
         let values = [
             ("slug", self.slug.clone()),
             ("repo", self.repo.clone()),
             ("priority", self.priority.map(|p| p.to_string()).unwrap_or_default()),
+            ("riskLevel", self.risk_level.map(|r| r.to_string()).unwrap_or_default()),
             ("goal", self.goal.clone()),
             ("notes", self.notes.clone()),
             ("requires", self.requires.join(", ")),
@@ -221,6 +252,17 @@ pub fn body(values: &BTreeMap<String, String>) -> Result<(String, Value), Vec<Fi
             }
         },
     };
+    // Empty leaves it out: pmd keeps the stored level (5 for a new project), and an older pmd never sees the field.
+    let risk = match get("riskLevel") {
+        "" => None,
+        text => match text.parse::<u8>() {
+            Ok(n) if n <= MAX_RISK => Some(n),
+            _ => {
+                problems.push(("riskLevel", format!("0 to {MAX_RISK}.")));
+                None
+            }
+        },
+    };
     let tracked = get("tracked") != "false";
     if tracked && priority == json!(5) {
         problems.push((
@@ -248,13 +290,14 @@ pub fn body(values: &BTreeMap<String, String>) -> Result<(String, Value), Vec<Fi
     if !problems.is_empty() {
         return Err(problems);
     }
-    Ok((
-        slug.to_owned(),
-        json!({
-            "repo": repo, "priority": priority, "goal": get("goal"), "notes": get("notes"),
-            "requires": requires, "tracked": tracked
-        }),
-    ))
+    let mut body = json!({
+        "repo": repo, "priority": priority, "goal": get("goal"), "notes": get("notes"),
+        "requires": requires, "tracked": tracked
+    });
+    if let Some(risk) = risk {
+        body["riskLevel"] = risk.into();
+    }
+    Ok((slug.to_owned(), body))
 }
 
 /// The field a project write error belongs to, beyond a `400` whose message names one.

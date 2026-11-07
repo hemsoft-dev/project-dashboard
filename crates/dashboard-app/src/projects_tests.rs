@@ -777,3 +777,168 @@ async fn a_priority_changed_elsewhere_moves_the_row_after_the_conflict(cx: &mut 
         "P0 chief sorts first now: {order:?}"
     );
 }
+
+fn selected(cx: &mut TestAppContext, manage: &Entity<Manage>) -> usize {
+    cx.update(|cx| manage.read(cx).projects().unwrap().selected())
+}
+
+/// The slug of the project the editor shows, if one is open.
+fn editing(cx: &mut TestAppContext, manage: &Entity<Manage>) -> Option<String> {
+    cx.update(|cx| {
+        manage
+            .read(cx)
+            .projects()
+            .unwrap()
+            .editor_form()
+            .map(|form| form.value("slug").to_owned())
+    })
+}
+
+/// The test's one write went to `slug`, at the version it showed.
+fn only_write_is_to(backend: &FakeProjects, slug: &str) {
+    let writes = backend.writes.lock().unwrap().clone();
+    assert_eq!(writes.len(), 1, "{writes:?}");
+    assert_eq!(writes[0].path, format!("v1/projects/{slug}"));
+    assert_eq!(writes[0].precondition, Precondition::IfMatch(2));
+}
+
+/// Down to visible row `ix`, then Enter edits it.
+fn open_row(cx: &mut TestAppContext, handle: AnyWindowHandle, ix: usize) {
+    for _ in 0..ix {
+        press(cx, handle, "down");
+    }
+    press(cx, handle, "enter");
+}
+
+#[gpui_kit::test]
+async fn a_priority_save_that_moves_the_project_keeps_it_selected_after_back(cx: &mut TestAppContext) {
+    let folder = Folder::new();
+    let backend = FakeProjects::new(&["read", "write:projects"]);
+    let (handle, view, manage) = open_with(cx, backend.clone(), &folder);
+    open_dialog(cx, handle, &view).await;
+    open_row(cx, handle, 3);
+    assert_eq!(editing(cx, &manage).as_deref(), Some("gh-x"));
+    click(cx, handle, "project-priority-0");
+    press(cx, handle, "ctrl-enter");
+    settle(cx, handle, &view).await;
+    only_write_is_to(&backend, "gh-x");
+    click(cx, handle, "projects-back");
+    assert!(focused(cx, handle, "projects-list"));
+    assert_eq!(
+        visible(cx, &manage),
+        ["gh-x", "project-dashboard", "set-it-free-loop", "hs-buddy", "chief"],
+        "P0 sorts gh-x first"
+    );
+    assert_eq!(selected(cx, &manage), 0, "the highlight moved with gh-x");
+    press(cx, handle, "enter");
+    assert_eq!(
+        editing(cx, &manage).as_deref(),
+        Some("gh-x"),
+        "Enter reopens the project just saved"
+    );
+}
+
+#[gpui_kit::test]
+async fn a_project_save_that_keeps_the_order_keeps_the_same_row_selected(cx: &mut TestAppContext) {
+    let folder = Folder::new();
+    let backend = FakeProjects::new(&["read", "write:projects"]);
+    let (handle, view, manage) = open_with(cx, backend.clone(), &folder);
+    open_dialog(cx, handle, &view).await;
+    open_row(cx, handle, 3);
+    set_input(cx, handle, &manage, "goal", "Keep it healthy");
+    press(cx, handle, "ctrl-enter");
+    settle(cx, handle, &view).await;
+    only_write_is_to(&backend, "gh-x");
+    click(cx, handle, "projects-back");
+    assert_eq!(visible(cx, &manage)[3], "gh-x");
+    assert_eq!(selected(cx, &manage), 3);
+    press(cx, handle, "enter");
+    assert_eq!(editing(cx, &manage).as_deref(), Some("gh-x"));
+}
+
+#[gpui_kit::test]
+async fn a_priority_changed_elsewhere_keeps_the_project_selected_after_the_conflict(cx: &mut TestAppContext) {
+    let folder = Folder::new();
+    let backend = FakeProjects::new(&["read", "write:projects"]);
+    let (handle, view, manage) = open_with(cx, backend.clone(), &folder);
+    open_dialog(cx, handle, &view).await;
+    open_row(cx, handle, 4);
+    assert_eq!(editing(cx, &manage).as_deref(), Some("chief"));
+    set_input(cx, handle, &manage, "notes", "mine");
+    backend.fail_next(WriteError::StaleVersion, |rows| {
+        let row = rows.iter_mut().find(|row| row["slug"] == "chief").unwrap();
+        row["priority"] = json!(0);
+        row["version"] = json!(7);
+    });
+    click(cx, handle, "project-save");
+    settle(cx, handle, &view).await;
+    click(cx, handle, "conflict-discard");
+    click(cx, handle, "projects-back");
+    assert_eq!(visible(cx, &manage)[0], "chief", "the re-read moved chief first");
+    assert_eq!(selected(cx, &manage), 0);
+    press(cx, handle, "enter");
+    assert_eq!(editing(cx, &manage).as_deref(), Some("chief"));
+    assert_eq!(backend.writes.lock().unwrap().len(), 1, "a conflict is never retried");
+}
+
+#[gpui_kit::test]
+async fn an_untracked_project_hidden_from_the_list_hands_the_selection_to_a_listed_row(cx: &mut TestAppContext) {
+    let folder = Folder::new();
+    let backend = FakeProjects::new(&["read", "write:projects"]);
+    let (handle, view, manage) = open_with(cx, backend.clone(), &folder);
+    open_dialog(cx, handle, &view).await;
+    // chief is the last visible row.
+    open_row(cx, handle, 4);
+    assert_eq!(editing(cx, &manage).as_deref(), Some("chief"));
+    click(cx, handle, "project-untrack");
+    click(cx, handle, "untrack-confirm-button");
+    settle(cx, handle, &view).await;
+    only_write_is_to(&backend, "chief");
+    assert_eq!(backend.row("chief")["tracked"], json!(false));
+    click(cx, handle, "projects-back");
+    assert_eq!(
+        visible(cx, &manage),
+        ["project-dashboard", "set-it-free-loop", "hs-buddy", "gh-x"],
+        "untracked rows are hidden"
+    );
+    assert_eq!(selected(cx, &manage), 3, "the last listed row, not past it");
+    press(cx, handle, "enter");
+    assert_eq!(editing(cx, &manage).as_deref(), Some("gh-x"));
+}
+
+#[gpui_kit::test]
+async fn when_the_last_project_leaves_the_list_enter_opens_nothing(cx: &mut TestAppContext) {
+    let folder = Folder::new();
+    let backend = FakeProjects::new(&["read", "write:projects"]);
+    let (handle, view, manage) = open_with(cx, backend.clone(), &folder);
+    open_dialog(cx, handle, &view).await;
+    set_input(cx, handle, &manage, "filter", "chief");
+    assert_eq!(visible(cx, &manage), ["chief"]);
+    click(cx, handle, "project-row-0");
+    click(cx, handle, "project-untrack");
+    click(cx, handle, "untrack-confirm-button");
+    settle(cx, handle, &view).await;
+    only_write_is_to(&backend, "chief");
+    click(cx, handle, "projects-back");
+    assert!(visible(cx, &manage).is_empty());
+    assert!(exists(cx, handle, "projects-list-empty"));
+    assert_eq!(selected(cx, &manage), 0);
+    press(cx, handle, "enter");
+    assert_eq!(editing(cx, &manage), None, "no row, no editor");
+    assert_eq!(backend.writes.lock().unwrap().len(), 1, "and nothing else is written");
+}
+
+#[gpui_kit::test]
+async fn a_project_filter_change_selects_the_first_row(cx: &mut TestAppContext) {
+    let folder = Folder::new();
+    let backend = FakeProjects::new(&["read", "write:projects"]);
+    let (handle, view, manage) = open_with(cx, backend.clone(), &folder);
+    open_dialog(cx, handle, &view).await;
+    for _ in 0..3 {
+        press(cx, handle, "down");
+    }
+    assert_eq!(selected(cx, &manage), 3);
+    set_input(cx, handle, &manage, "filter", "hemsoft-dev");
+    assert_eq!(visible(cx, &manage)[3], "gh-x", "gh-x is still listed at row 3");
+    assert_eq!(selected(cx, &manage), 0);
+}

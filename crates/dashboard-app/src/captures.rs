@@ -1482,3 +1482,194 @@ fn captures_fleet_runtime_ages() {
         }
     }
 }
+
+fn has_focus(cx: &mut HeadlessAppContext, handle: AnyWindowHandle, id: &'static str) -> bool {
+    cx.update_window(handle, |_, window, _| window.find(id).focused() == Some(true))
+        .unwrap()
+}
+
+/// Presses `step` (Tab or Shift+Tab) until `id` has focus.
+fn tab_to(cx: &mut HeadlessAppContext, handle: AnyWindowHandle, step: &str, id: &'static str) {
+    for _ in 0..40 {
+        if has_focus(cx, handle, id) {
+            return;
+        }
+        key(cx, handle, &[step]);
+    }
+    panic!("{id} never took focus");
+}
+
+/// Opens a Manage dialog on `write` at the default window size and theme.
+fn open_manage_dialog(
+    cx: &mut HeadlessAppContext,
+    write: Arc<dyn dashboard_core::write::WriteBackend>,
+    config_path: Option<PathBuf>,
+    feature: dashboard_core::write::Feature,
+) -> (AnyWindowHandle, Entity<crate::manage::Manage>) {
+    let (handle, view) = open_with(
+        cx,
+        demo::checkouts(),
+        1100.,
+        760.,
+        Options {
+            write,
+            config_path: config_path.or(options().config_path),
+            ..options()
+        },
+    );
+    fill(cx, &view, &demo::DemoSource);
+    let manage = cx.update(|cx| view.read(cx).manage().clone());
+    settle(cx);
+    cx.update_window(handle, |_, window, cx| {
+        manage.update(cx, |m, cx| {
+            m.open_menu(window, cx);
+            m.activate(crate::manage::Entry::Feature(feature), window, cx);
+        })
+    })
+    .unwrap();
+    settle(cx);
+    (handle, manage)
+}
+
+/// Issue 91, Work items: a priority save that moves the item keeps it selected. Keyboard only, from a pmd that lists in
+/// its own order. Each state is saved, then checked, so the old code still writes the state it gets wrong.
+#[test]
+#[ignore = "writes issue 91 Work items selection states offscreen"]
+fn captures_work_selection_after_reorder() {
+    use crate::work_items_tests::{FakeWork, sample_items};
+    use std::sync::atomic::Ordering;
+    let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").expect("CAPTURE_DIR"));
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cx = headless();
+    let backend = FakeWork::new(&["read", "write:work"], sample_items());
+    backend.in_pmd_order.store(true, Ordering::SeqCst);
+    let (handle, manage) = open_manage_dialog(
+        &mut cx,
+        backend.clone(),
+        None,
+        dashboard_core::write::Feature::WorkItems,
+    );
+    let numbers = |cx: &mut HeadlessAppContext| {
+        cx.update(|cx| {
+            let work = manage.read(cx).work_items().unwrap();
+            let numbers: Vec<u64> = work.items().iter().map(|item| item.number).collect();
+            (numbers, work.selected())
+        })
+    };
+    let editing = |cx: &mut HeadlessAppContext| {
+        cx.update(|cx| {
+            manage
+                .read(cx)
+                .work_items()
+                .unwrap()
+                .editor_item()
+                .map(|item| item.number)
+        })
+    };
+
+    // Down to the codexbar PR, #202, fifth in pmd's order.
+    key(&mut cx, handle, &["down", "down", "down", "down"]);
+    save(&mut cx, handle, &out, "selection-work-1-before");
+    assert_eq!(numbers(&mut cx), (vec![203, 205, 200, 201, 202, 204], 4));
+
+    // Enter opens it; Tab to P0, Enter picks it, Ctrl+Enter saves it.
+    key(&mut cx, handle, &["enter"]);
+    assert_eq!(editing(&mut cx), Some(202));
+    tab_to(&mut cx, handle, "tab", "work-priority-0");
+    key(&mut cx, handle, &["enter", "ctrl-enter"]);
+    settle(&mut cx);
+    save(&mut cx, handle, &out, "selection-work-2-saved");
+    let writes = backend.writes.lock().unwrap().clone();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].path, "v1/work/01JBXWORK0002");
+    assert_eq!(writes[0].body, serde_json::json!({"priority": 0}));
+
+    // Tab to Back to list, Enter: the highlight is on #202, now first.
+    tab_to(&mut cx, handle, "tab", "work-back");
+    key(&mut cx, handle, &["enter"]);
+    save(&mut cx, handle, &out, "selection-work-3-after-back");
+    assert!(has_focus(&mut cx, handle, "work-list"));
+    assert_eq!(numbers(&mut cx), (vec![202, 203, 205, 200, 201, 204], 0));
+
+    // Enter reopens #202.
+    key(&mut cx, handle, &["enter"]);
+    save(&mut cx, handle, &out, "selection-work-4-enter");
+    assert_eq!(editing(&mut cx), Some(202));
+}
+
+/// Issue 91, Projects: a priority save that re-sorts the project keeps it selected. Keyboard only; each state is saved,
+/// then checked.
+#[test]
+#[ignore = "writes issue 91 Projects selection states offscreen"]
+fn captures_projects_selection_after_reorder() {
+    use crate::projects_tests::{FakeProjects, Folder};
+    let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").expect("CAPTURE_DIR"));
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cx = headless();
+    let folder = Folder::new();
+    let backend = FakeProjects::new(&["read", "write:projects"]);
+    let (handle, manage) = open_manage_dialog(
+        &mut cx,
+        backend.clone(),
+        Some(folder.config_dir().join("config.toml")),
+        dashboard_core::write::Feature::Projects,
+    );
+    let listed = |cx: &mut HeadlessAppContext| {
+        cx.update(|cx| {
+            let projects = manage.read(cx).projects().unwrap();
+            (projects.visible_slugs(cx), projects.selected())
+        })
+    };
+    let editing = |cx: &mut HeadlessAppContext| {
+        cx.update(|cx| {
+            manage
+                .read(cx)
+                .projects()
+                .unwrap()
+                .editor_form()
+                .map(|form| form.value("slug").to_owned())
+        })
+    };
+    let slugs = |slugs: &[&str]| slugs.iter().map(|slug| (*slug).to_owned()).collect::<Vec<_>>();
+
+    // Down to gh-x, P3.
+    key(&mut cx, handle, &["down", "down", "down"]);
+    save(&mut cx, handle, &out, "selection-projects-1-before");
+    assert_eq!(
+        listed(&mut cx),
+        (
+            slugs(&["project-dashboard", "set-it-free-loop", "hs-buddy", "gh-x", "chief"]),
+            3
+        )
+    );
+
+    // Enter edits it with focus on P3; Shift+Tab to P0, Enter picks it, Ctrl+Enter saves it.
+    key(&mut cx, handle, &["enter"]);
+    assert_eq!(editing(&mut cx).as_deref(), Some("gh-x"));
+    tab_to(&mut cx, handle, "shift-tab", "project-priority-0");
+    key(&mut cx, handle, &["enter", "ctrl-enter"]);
+    settle(&mut cx);
+    save(&mut cx, handle, &out, "selection-projects-2-saved");
+    let writes = backend.writes.lock().unwrap().clone();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].path, "v1/projects/gh-x");
+    assert_eq!(writes[0].body["priority"], serde_json::json!(0));
+
+    // Tab to Back to list, Enter: the highlight is on gh-x, now first.
+    tab_to(&mut cx, handle, "tab", "projects-back");
+    key(&mut cx, handle, &["enter"]);
+    save(&mut cx, handle, &out, "selection-projects-3-after-back");
+    assert!(has_focus(&mut cx, handle, "projects-list"));
+    assert_eq!(
+        listed(&mut cx),
+        (
+            slugs(&["gh-x", "project-dashboard", "set-it-free-loop", "hs-buddy", "chief"]),
+            0
+        )
+    );
+
+    // Enter reopens gh-x.
+    key(&mut cx, handle, &["enter"]);
+    save(&mut cx, handle, &out, "selection-projects-4-enter");
+    assert_eq!(editing(&mut cx).as_deref(), Some("gh-x"));
+}

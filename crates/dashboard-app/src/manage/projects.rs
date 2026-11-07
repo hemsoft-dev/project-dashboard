@@ -13,6 +13,7 @@ use std::sync::Arc;
 use dashboard_core::config::Config;
 use dashboard_core::edit::{Form, Next};
 use dashboard_core::projects::{self, FIELDS, Project};
+use dashboard_core::selection;
 use dashboard_core::write::{CreateCheck, Feature, Method, WriteError, WriteRequest, write_state};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
@@ -41,14 +42,16 @@ enum After {
 }
 
 /// Puts a project pmd returned in the list, in order. A project the list holds at a newer version stays: a late
-/// answer never undoes a later write.
-fn upsert(projects: &mut ProjectsDialog, project: Project) {
-    match projects.rows.iter_mut().find(|row| row.slug == project.slug) {
-        Some(row) if row.version > project.version => {}
-        Some(row) => *row = project,
-        None => projects.rows.push(project),
-    }
-    projects::sort(&mut projects.rows);
+/// answer never undoes a later write. The selection stays on its project.
+fn upsert(projects: &mut ProjectsDialog, project: Project, cx: &gpui_kit::App) {
+    projects.keep_selection(cx, |projects| {
+        match projects.rows.iter_mut().find(|row| row.slug == project.slug) {
+            Some(row) if row.version > project.version => {}
+            Some(row) => *row = project,
+            None => projects.rows.push(project),
+        }
+        projects::sort(&mut projects.rows);
+    });
 }
 
 /// The priority choices: P0 to P5, then no tier (empty).
@@ -120,6 +123,22 @@ impl ProjectsDialog {
             .collect()
     }
 
+    /// Changes the rows and keeps the selection on the same project (#91): where a re-sort moved it or, once it is no
+    /// longer listed (untracked while untracked rows are hidden), on the row at its old position.
+    fn keep_selection(&mut self, cx: &gpui_kit::App, change: impl FnOnce(&mut Self)) {
+        let previous = self
+            .visible(cx)
+            .get(self.selected)
+            .map(|&row| self.rows[row].slug.clone());
+        change(self);
+        let visible = self.visible(cx);
+        self.selected = selection::reselect(
+            previous.as_deref(),
+            self.selected,
+            visible.iter().map(|&row| self.rows[row].slug.as_str()),
+        );
+    }
+
     fn is_linked(&self, project: &Project) -> Option<bool> {
         self.linked
             .as_ref()
@@ -132,6 +151,12 @@ impl ProjectsDialog {
             .into_iter()
             .map(|ix| self.rows[ix].slug.clone())
             .collect()
+    }
+
+    /// The selected row's position among the visible rows.
+    #[cfg(test)]
+    pub fn selected(&self) -> usize {
+        self.selected
     }
 
     #[cfg(test)]
@@ -291,7 +316,7 @@ impl Manage {
                             }
                         }
                         projects::sort(&mut rows);
-                        projects.rows = rows;
+                        projects.keep_selection(cx, |projects| projects.rows = rows);
                         projects.load_error = None;
                     }
                     // The last good list stays beside the error.
@@ -442,6 +467,7 @@ impl Manage {
         if let Some((_, projects)) = self.open_projects() {
             projects.editor = None;
             projects.list.focus(window, cx);
+            projects.scroll.scroll_to_item(projects.selected);
         }
         cx.notify();
     }
@@ -557,7 +583,7 @@ impl Manage {
                     // the dialog closed while it was on its way.
                     cx.emit(ManageEvent::Wrote);
                     if let Some(projects) = manage.projects_of(id) {
-                        upsert(projects, saved.clone());
+                        upsert(projects, saved.clone(), cx);
                     }
                 }
                 let projects = manage.projects_of(id)?;
@@ -619,7 +645,7 @@ impl Manage {
                 };
                 // pmd's current project goes in the list, in order; a created one also reloads the table.
                 if let Ok(fresh) = &fresh {
-                    upsert(projects, fresh.clone());
+                    upsert(projects, fresh.clone(), cx);
                     if after == After::Found {
                         cx.emit(ManageEvent::Wrote);
                     }

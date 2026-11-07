@@ -102,6 +102,31 @@ struct Runtime {
     origin: String,
 }
 
+/// Where a T3 server describes itself (T3's `EnvironmentMetadataHttpApi`).
+const DESCRIPTOR_PATH: &str = "/.well-known/t3/environment";
+/// The descriptor is a few hundred bytes; anything far larger isn't one.
+const DESCRIPTOR_LIMIT: u64 = 64 * 1024;
+/// How long a server that accepted the connection gets to describe itself.
+const IDENTITY_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The part of T3's `ExecutionEnvironmentDescriptor` that identifies the server.
+#[derive(Deserialize)]
+struct Descriptor {
+    #[serde(rename = "environmentId")]
+    environment_id: String,
+}
+
+/// What answers at a home's recorded origin.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Liveness {
+    /// The server there reports this home's environment ID.
+    Running,
+    /// Nothing accepts connections there.
+    Stopped,
+    /// Something answers there, but not as this home's T3 server: why.
+    Other(String),
+}
+
 impl Server {
     /// Reads where the server listens and which environment it is. Doesn't check that it is running.
     pub fn locate(userdata: &Path) -> Result<Self, NoThread> {
@@ -127,18 +152,49 @@ impl Server {
         })
     }
 
-    /// Whether something accepts connections at the origin's host and port, within `timeout`.
-    pub fn is_listening(&self, timeout: Duration) -> bool {
-        let Some(authority) = self.origin.split("://").nth(1) else {
-            return false;
+    /// Asks the server at the origin which T3 environment it is, through the unauthenticated descriptor T3's own
+    /// `t3 pair` reads (`GET /.well-known/t3/environment`, whose `environmentId` names the environment). Every T3
+    /// home defaults to port 3773 and a crash leaves its runtime file behind, so answering on the port proves
+    /// nothing: only a server reporting this home's `environment-id` is running from this home.
+    pub fn probe(&self, timeout: Duration) -> Liveness {
+        let client = match reqwest::blocking::Client::builder()
+            .connect_timeout(timeout)
+            .timeout(IDENTITY_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .build()
+        {
+            Ok(client) => client,
+            Err(err) => return Liveness::Other(format!("can't ask {} who it is: {err}", self.origin)),
         };
-        let authority = authority.split('/').next().unwrap_or(authority);
-        use std::net::ToSocketAddrs as _;
-        authority
-            .to_socket_addrs()
-            .into_iter()
-            .flatten()
-            .any(|address| std::net::TcpStream::connect_timeout(&address, timeout).is_ok())
+        let response = match client.get(format!("{}{DESCRIPTOR_PATH}", self.origin)).send() {
+            Ok(response) => response,
+            Err(err) if err.is_connect() => return Liveness::Stopped,
+            Err(_) => return Liveness::Other(format!("{} didn't say which T3 Code server it is", self.origin)),
+        };
+        if !response.status().is_success() {
+            return Liveness::Other(format!(
+                "{} answered HTTP {} when asked which T3 Code server it is",
+                self.origin,
+                response.status().as_u16()
+            ));
+        }
+        let mut body = Vec::new();
+        use std::io::Read as _;
+        let read = response.take(DESCRIPTOR_LIMIT + 1).read_to_end(&mut body);
+        let reported = read
+            .ok()
+            .filter(|_| body.len() as u64 <= DESCRIPTOR_LIMIT)
+            .and_then(|_| serde_json::from_slice::<Descriptor>(&body).ok())
+            .map(|descriptor| descriptor.environment_id);
+        match reported {
+            Some(id) if id == self.environment_id => Liveness::Running,
+            Some(_) => Liveness::Other(format!(
+                "the server at {} is another T3 Code environment, not the one whose files were found",
+                self.origin
+            )),
+            None => Liveness::Other(format!("{} didn't identify itself as a T3 Code server", self.origin)),
+        }
     }
 
     /// The web UI's address for a thread. The ID is percent-encoded as T3's router expects (`mcp:` is `mcp%3A`).
@@ -194,34 +250,61 @@ pub fn tooltip(lookup: &Lookup) -> String {
     }
 }
 
-/// The thread for each checkout, in the order given, from the local T3 server in `userdata`.
-/// The thread for each checkout from the first of `homes` whose server is listening. A home left with a stale
-/// runtime file by a crashed or stopped server is passed over for a later one that is running. With none running,
-/// the reason comes from the home [`resolve_userdata`] picks.
+/// The thread for each checkout from the first of `homes` whose own server is running ([`Server::probe`]). A home
+/// left with a stale runtime file by a crashed or stopped server is passed over for a later one that is running,
+/// even when another home's server now listens on the stale file's port. With none running, the reason comes from
+/// the home [`resolve_userdata`] picks.
 pub fn find_in_homes(homes: &[PathBuf], checkouts: &[PathBuf]) -> Vec<Lookup> {
+    find_in_homes_with(homes, checkouts, &|server| server.probe(PROBE))
+}
+
+/// [`find_in_homes`] with `probe` telling whether a located server is running from its home.
+pub fn find_in_homes_with(
+    homes: &[PathBuf],
+    checkouts: &[PathBuf],
+    probe: &dyn Fn(&Server) -> Liveness,
+) -> Vec<Lookup> {
+    let mut probed: Vec<(PathBuf, Liveness)> = Vec::new();
     for home in homes {
-        if let Ok(server) = Server::locate(&home.join("userdata"))
-            && server.is_listening(PROBE)
-        {
-            return lookups(&server, checkouts);
+        let userdata = home.join("userdata");
+        if let Ok(server) = Server::locate(&userdata) {
+            let liveness = probe(&server);
+            if liveness == Liveness::Running {
+                return lookups(&server, checkouts);
+            }
+            probed.push((userdata, liveness));
         }
     }
-    find(&resolve_userdata(homes), checkouts)
+    let userdata = resolve_userdata(homes);
+    let earlier = probed
+        .into_iter()
+        .find(|(dir, _)| *dir == userdata)
+        .map(|(_, liveness)| liveness);
+    find_with(&userdata, checkouts, &|server| {
+        earlier.clone().unwrap_or_else(|| probe(server))
+    })
 }
 
 /// How long to wait for a server to accept a connection.
 const PROBE: Duration = Duration::from_millis(300);
 
+/// The thread for each checkout, in the order given, from the local T3 server in `userdata`.
 pub fn find(userdata: &Path, checkouts: &[PathBuf]) -> Vec<Lookup> {
+    find_with(userdata, checkouts, &|server| server.probe(PROBE))
+}
+
+/// [`find`] with `probe` telling whether the located server is running from `userdata`'s home.
+pub fn find_with(userdata: &Path, checkouts: &[PathBuf], probe: &dyn Fn(&Server) -> Liveness) -> Vec<Lookup> {
     let all = |reason: NoThread| checkouts.iter().map(|_| Err(reason.clone())).collect();
     let server = match Server::locate(userdata) {
         Ok(server) => server,
         Err(reason) => return all(reason),
     };
-    if !server.is_listening(PROBE) {
-        return all(NoThread::NotRunning);
+    match probe(&server) {
+        Liveness::Running => lookups(&server, checkouts),
+        Liveness::Stopped => all(NoThread::NotRunning),
+        Liveness::Other(reason) => all(NoThread::Unreadable(reason)),
     }
-    lookups(&server, checkouts)
 }
 
 /// Every checkout's thread from a running server's database.

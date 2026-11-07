@@ -1993,3 +1993,64 @@ fn captures_projects_reread() {
     let listed = cx.update(|cx| manage.read(cx).projects().unwrap().visible_slugs(cx));
     assert!(listed.contains(&"yahtzee".to_owned()), "{listed:?}");
 }
+
+#[test]
+#[ignore = "writes issue 96 T3 home identity states offscreen"]
+fn captures_t3_home_identity() {
+    use crate::ui_tests::t3_homes::{CHECKOUT, Descriptor, Homes, Scratch, home};
+    let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").expect("CAPTURE_DIR"));
+    std::fs::create_dir_all(&out).unwrap();
+    let scratch = Scratch::new("captures-identity");
+    // One running server, for env-live, on the port both homes' runtime files record.
+    let server = Descriptor::serving("env-live");
+    let stale = scratch.0.join(".t3");
+    let live = scratch.0.join(".t3-server");
+    home(
+        &stale,
+        "env-stale",
+        &server.origin,
+        ("t-stale", "Stale session from a crashed home"),
+    );
+    home(&live, "env-live", &server.origin, ("t-live", "Live session"));
+    let checkout = Path::new(CHECKOUT);
+    let mut cx = headless();
+    for (name, homes) in [
+        ("t3-identity-wrong-environment", vec![stale.clone()]),
+        ("t3-identity-shared-port", vec![stale.clone(), live.clone()]),
+    ] {
+        let mut options = options();
+        options.threads = Arc::new(Homes(homes));
+        let (window, view) = open_with(&mut cx, vec![checkout.to_owned()], 1100., 420., options);
+        fill(&mut cx, &view, &demo::DemoSource);
+        // The production lookup probes the loopback server from a real background thread.
+        for _ in 0..400 {
+            if cx.update(|cx| view.read(cx).thread(checkout).is_some()) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            cx.run_until_parked();
+        }
+        let lookup = cx
+            .update(|cx| view.read(cx).thread(checkout).cloned())
+            .expect("the lookup landed");
+        match name {
+            "t3-identity-wrong-environment" => assert!(
+                dashboard_core::t3::tooltip(&lookup).contains("is another T3 Code environment"),
+                "{lookup:?}"
+            ),
+            _ => assert_eq!(
+                lookup.as_ref().map(|link| link.url.clone()),
+                Ok(format!("{}/env-live/t-live", server.origin))
+            ),
+        }
+        save(&mut cx, window, &out, name);
+        cx.update_window(window, |_, window, cx| window.hover(("t3", 0usize), cx))
+            .unwrap();
+        for _ in 0..6 {
+            cx.advance_clock(std::time::Duration::from_millis(150));
+            cx.run_until_parked();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        save(&mut cx, window, &out, &format!("{name}-tooltip"));
+    }
+}

@@ -1243,6 +1243,7 @@ dependencies = [
  "gpui-pre-apple",
  "image",
  "raw-window-handle",
+ "rusqlite",
  "serde_json",
 ]
 

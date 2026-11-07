@@ -158,9 +158,12 @@ Hover the dot for every signal behind it. A status's age never greys a dot.
   is the newest open top-level thread of the T3 project whose folder is the checkout, a running one first. T3 offers
   no other way to ask, so at startup and after every refresh the dashboard reads the state database in T3's
   `userdata` folder, read-only. It looks in `t3_home` from `config.toml`, then T3's own `T3CODE_HOME`, then `~/.t3`
-  and `~/.t3-server`, preferring the one a server is running from. When there is nothing to open, the button is
-  disabled and its tooltip says why: T3 isn't installed or running, has no project for the checkout, or has no open
-  thread. The T3 desktop app has no way to open a thread from outside, so the browser it is.
+  and `~/.t3-server`, preferring the one a server is running from. A folder's server counts as running only when
+  the server at the address its `server-runtime.json` records answers T3's `/.well-known/t3/environment` with
+  that folder's `environment-id`. Every T3 home defaults to port 3773, so a file left by a crashed server is
+  skipped even when another T3 server now listens on its port. When there is nothing to open, the button is
+  disabled and its tooltip says why: T3 isn't installed or running, has no project for the checkout, has no open
+  thread, or something other than that folder's T3 server answers at its address. The T3 desktop app has no way to open a thread from outside, so the browser it is.
 - **Refresh one** repository with its row's button. It reloads the same pmd read endpoints.
 - **Automatic refresh** runs every `refresh_minutes` (default 5). Connection and timeout failures retry after 5, 10, 20, then 60 seconds until recovery, even when automatic refresh is off. At startup the title reads "Connecting to pmd…". Later network failures keep the last good data and show one offline indicator with the last successful read time. HTTP and authentication errors remain visible.
 - **Config changes apply while it runs.** Save `config.toml` and, within a couple of seconds, added repositories

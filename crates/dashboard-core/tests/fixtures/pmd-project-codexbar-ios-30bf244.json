@@ -1,0 +1,103 @@
+{
+  "items": [
+    {
+      "assignment": null,
+      "author": "HemSoft",
+      "ghState": "open",
+      "ghUpdatedAt": "2026-10-21T11:30:00Z",
+      "id": "ID01",
+      "kind": "pr",
+      "labels": [],
+      "links": [
+        {
+          "kind": "closes",
+          "to": "ID02"
+        }
+      ],
+      "number": 3,
+      "priority": 0,
+      "priorityOverride": null,
+      "project": "codexbar-ios",
+      "rank": 0,
+      "status": "ready",
+      "statusReason": null,
+      "statusSource": "auto",
+      "title": "codexbar-ios pr 3",
+      "url": "https://github.com/hemsoft-dev/codexbar-ios/issues/3",
+      "version": 1,
+      "waitingReason": null,
+      "waitingSince": null
+    },
+    {
+      "assignment": null,
+      "author": "HemSoft",
+      "ghState": "open",
+      "ghUpdatedAt": "2026-10-21T11:00:00Z",
+      "id": "ID02",
+      "kind": "issue",
+      "labels": [],
+      "links": [
+        {
+          "by": "ID01",
+          "kind": "closes"
+        }
+      ],
+      "number": 1,
+      "priority": 0,
+      "priorityOverride": null,
+      "project": "codexbar-ios",
+      "rank": 0,
+      "status": "ready",
+      "statusReason": null,
+      "statusSource": "auto",
+      "title": "codexbar-ios issue 1",
+      "url": "https://github.com/hemsoft-dev/codexbar-ios/issues/1",
+      "version": 2,
+      "waitingReason": null,
+      "waitingSince": null
+    },
+    {
+      "assignment": null,
+      "author": "HemSoft",
+      "ghState": "open",
+      "ghUpdatedAt": "2026-10-21T10:00:00Z",
+      "id": "ID03",
+      "kind": "issue",
+      "labels": [
+        "waiting-on-franz"
+      ],
+      "links": [],
+      "number": 2,
+      "priority": 0,
+      "priorityOverride": null,
+      "project": "codexbar-ios",
+      "rank": 0,
+      "status": "waiting_on_franz",
+      "statusReason": null,
+      "statusSource": "auto",
+      "title": "codexbar-ios issue 2",
+      "url": "https://github.com/hemsoft-dev/codexbar-ios/issues/2",
+      "version": 1,
+      "waitingReason": "label:waiting-on-franz",
+      "waitingSince": "\u003ctime\u003e"
+    }
+  ],
+  "project": {
+    "counts": {
+      "openIssues": 2,
+      "openPrs": 1
+    },
+    "goal": "Goal of codexbar-ios",
+    "merged24h": 0,
+    "merged7d": 0,
+    "notes": "",
+    "priority": 0,
+    "repo": "hemsoft-dev/codexbar-ios",
+    "requires": [],
+    "riskLevel": 5,
+    "slug": "codexbar-ios",
+    "source": "portfolio",
+    "tracked": true,
+    "version": 1
+  }
+}

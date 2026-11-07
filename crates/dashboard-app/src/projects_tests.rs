@@ -49,11 +49,15 @@ pub(crate) fn sample_projects() -> Vec<Value> {
 type Change = Box<dyn FnOnce(&mut Vec<Value>) + Send>;
 
 /// An in-memory pmd for projects: the list with `all=1`, single rows, and `PUT` with `If-Match` or `If-None-Match`.
+/// A single row comes back as pmd's `GET /v1/projects/{slug}` sends it, `{"project": {...}, "items": [...]}` (#94).
 pub(crate) struct FakeProjects {
     scopes: Vec<String>,
     pub rows: Mutex<Vec<Value>>,
     pub writes: Mutex<Vec<WriteRequest>>,
     pub fail_next: Mutex<Option<(WriteError, Option<Change>)>>,
+    /// What the next single-row read answers instead, such as a malformed body.
+    pub next_read: Mutex<Option<Value>>,
+    pub reads: AtomicUsize,
 }
 
 impl FakeProjects {
@@ -63,7 +67,14 @@ impl FakeProjects {
             rows: Mutex::new(sample_projects()),
             writes: Mutex::default(),
             fail_next: Mutex::default(),
+            next_read: Mutex::default(),
+            reads: AtomicUsize::new(0),
         })
+    }
+
+    /// The next single-row read answers `value`, whatever pmd holds.
+    pub(crate) fn answer_next_read(&self, value: Value) {
+        *self.next_read.lock().unwrap() = Some(value);
     }
 
     pub(crate) fn fail_next(&self, error: WriteError, elsewhere: impl FnOnce(&mut Vec<Value>) + Send + 'static) {
@@ -95,12 +106,18 @@ impl WriteBackend for FakeProjects {
         Ok(())
     }
     fn read(&self, path: &str) -> Result<Value, WriteError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
         let slug = path.strip_prefix("v1/projects/").ok_or(WriteError::NotFound)?;
+        if let Some(answer) = self.next_read.lock().unwrap().take() {
+            return Ok(answer);
+        }
         let rows = self.rows.lock().unwrap();
-        rows.iter()
+        let project = rows
+            .iter()
             .find(|row| row["slug"] == slug)
             .cloned()
-            .ok_or(WriteError::NotFound)
+            .ok_or(WriteError::NotFound)?;
+        Ok(json!({"project": project, "items": []}))
     }
     fn list(&self, path: &str, query: &[(String, String)]) -> Result<Value, WriteError> {
         assert_eq!(path, "v1/projects");
@@ -493,8 +510,87 @@ async fn changed_elsewhere_shows_both_values_and_reapplies_on_the_new_version(cx
     assert_eq!(text_of(cx, handle, "conflict-priority"), "Priority: yours 1, now 2");
     click(cx, handle, "conflict-reapply");
     settle(cx, handle, &view).await;
-    assert_eq!(backend.writes.lock().unwrap()[1].precondition, Precondition::IfMatch(6));
+    let writes = backend.writes.lock().unwrap().clone();
+    assert_eq!(writes.len(), 2, "the conflict's one write, then Reapply's");
+    assert_eq!(writes[1].precondition, Precondition::IfMatch(6), "the re-read version");
     assert_eq!(backend.row("gh-x")["priority"], json!(1));
+}
+
+/// The editor's form: its message, version and whether it has unsaved edits.
+fn form_state(cx: &mut TestAppContext, manage: &Entity<Manage>) -> (Option<String>, Option<u64>, bool) {
+    cx.update(|cx| {
+        let form = manage.read(cx).projects().unwrap().editor_form().unwrap();
+        (form.message().map(str::to_owned), form.version(), form.is_dirty())
+    })
+}
+
+#[gpui_kit::test]
+async fn changed_elsewhere_can_discard_mine_for_the_reread_values(cx: &mut TestAppContext) {
+    let folder = Folder::new();
+    let backend = FakeProjects::new(&["read", "write:projects"]);
+    let (handle, view, manage) = open_with(cx, backend.clone(), &folder);
+    open_dialog(cx, handle, &view).await;
+    edit(cx, handle, &manage, "gh-x");
+    set_input(cx, handle, &manage, "notes", "mine");
+    backend.fail_next(WriteError::StaleVersion, |rows| {
+        let row = rows.iter_mut().find(|row| row["slug"] == "gh-x").unwrap();
+        row["goal"] = json!("Theirs");
+        row["version"] = json!(6);
+    });
+    click(cx, handle, "project-save");
+    settle(cx, handle, &view).await;
+    frame(cx, handle);
+    assert_eq!(text_of(cx, handle, "conflict-notes"), "Notes: yours mine, now (empty)");
+    assert_eq!(
+        text_of(cx, handle, "conflict-goal"),
+        "Goal: yours Maintenance: keep healthy, no new initiatives., now Theirs"
+    );
+    assert!(focused(cx, handle, "conflict-reapply"));
+    click(cx, handle, "conflict-discard");
+    assert!(!exists(cx, handle, "conflict"));
+    assert_eq!(form_value(cx, &manage, "notes"), "");
+    assert_eq!(form_value(cx, &manage, "goal"), "Theirs");
+    assert_eq!(form_state(cx, &manage), (None, Some(6), false));
+    // The next edit saves on the version read back.
+    set_input(cx, handle, &manage, "notes", "again");
+    click(cx, handle, "project-save");
+    settle(cx, handle, &view).await;
+    let writes = backend.writes.lock().unwrap().clone();
+    assert_eq!(writes.len(), 2);
+    assert_eq!(writes[1].precondition, Precondition::IfMatch(6));
+    assert_eq!(backend.row("gh-x")["notes"], json!("again"));
+}
+
+#[gpui_kit::test]
+async fn a_malformed_reread_says_so_and_nothing_is_sent_until_save(cx: &mut TestAppContext) {
+    let folder = Folder::new();
+    let backend = FakeProjects::new(&["read", "write:projects"]);
+    let (handle, view, manage) = open_with(cx, backend.clone(), &folder);
+    open_dialog(cx, handle, &view).await;
+    edit(cx, handle, &manage, "gh-x");
+    set_input(cx, handle, &manage, "notes", "mine");
+    // No project object, and a bare row, which isn't pmd's answer either.
+    let answers = [json!({"items": []}), project("gh-x", Some(3), true, "Theirs")];
+    for (round, answer) in answers.into_iter().enumerate() {
+        backend.answer_next_read(answer);
+        backend.fail_next(WriteError::StaleVersion, |_| {});
+        click(cx, handle, "project-save");
+        settle(cx, handle, &view).await;
+        frame(cx, handle);
+        assert!(!exists(cx, handle, "conflict"), "round {round}");
+        let failed = "Changed elsewhere, and reloading it failed: pmd returned malformed data.";
+        assert_eq!(text_of(cx, handle, "dialog-message"), failed);
+        assert_eq!(form_state(cx, &manage), (Some(failed.to_owned()), Some(2), true));
+        assert_eq!(form_value(cx, &manage, "notes"), "mine", "the edit stays");
+        let writes = backend.writes.lock().unwrap().clone();
+        assert_eq!(writes.len(), round + 1, "one write per Save, never retried");
+        assert!(writes.iter().all(|w| w.precondition == Precondition::IfMatch(2)));
+        assert_eq!(
+            backend.reads.load(Ordering::SeqCst),
+            round + 1,
+            "one re-read per conflict"
+        );
+    }
 }
 
 #[gpui_kit::test]
@@ -728,6 +824,10 @@ async fn a_create_that_timed_out_but_landed_becomes_an_edit_without_a_second_cre
         !exists(cx, handle, "project-field-repo"),
         "the stored project is edited now"
     );
+    // The read back found it, so no "checking for the row failed".
+    assert!(!exists(cx, handle, "dialog-message"));
+    assert_eq!(form_state(cx, &manage), (None, Some(2), false));
+    assert_eq!(backend.reads.load(Ordering::SeqCst), 1);
     press(cx, handle, "ctrl-enter");
     assert_eq!(backend.writes.lock().unwrap().len(), 1, "never a second create");
     click(cx, handle, "projects-back");

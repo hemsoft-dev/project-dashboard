@@ -125,6 +125,16 @@ impl Project {
             .collect()
     }
 
+    /// One project from `GET /v1/projects/{slug}`, which pmd answers as `{"project": {...}, "items": [...]}` (#94).
+    /// The open items aren't needed here. An answer without a `project` object is malformed, even a bare project row.
+    pub fn one_from_json(value: &Value) -> Result<Self, WriteError> {
+        value
+            .get("project")
+            .filter(|project| project.is_object())
+            .ok_or(WriteError::Malformed)
+            .and_then(Self::from_json)
+    }
+
     pub fn path(&self) -> String {
         path(&self.slug)
     }

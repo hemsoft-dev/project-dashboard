@@ -637,7 +637,7 @@ impl Manage {
                 .background_executor()
                 .spawn(async move { reader.read(&path) })
                 .await
-                .and_then(|value| Project::from_json(&value));
+                .and_then(|value| Project::one_from_json(&value));
             let _ = this.update_in(cx, |manage, window, cx| {
                 let writable = manage.projects_writable();
                 let Some(projects) = manage.projects_of(id) else {

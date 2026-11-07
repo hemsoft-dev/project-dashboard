@@ -62,6 +62,10 @@ pub(crate) struct FakeWork {
     /// Lists in pmd's order (effective priority, rank, then newest) instead of the order the items were given in, so
     /// a priority or rank save moves the item.
     pub in_pmd_order: AtomicBool,
+    /// The next listing of a later page (one with a cursor) fails with this.
+    pub fail_next_page: Mutex<Option<WriteError>>,
+    /// Later pages answer with the cursor they were asked for, so the listing never moves on.
+    pub stuck_cursor: AtomicBool,
 }
 
 impl FakeWork {
@@ -74,6 +78,8 @@ impl FakeWork {
             fail_next: Mutex::default(),
             fail_lists: Mutex::default(),
             in_pmd_order: AtomicBool::new(false),
+            fail_next_page: Mutex::default(),
+            stuck_cursor: AtomicBool::new(false),
         })
     }
 
@@ -111,6 +117,10 @@ impl WriteBackend for FakeWork {
         if let Some(error) = self.fail_lists.lock().unwrap().clone() {
             return Err(error);
         }
+        let paged = query.iter().any(|(key, _)| key == "cursor");
+        if paged && let Some(error) = self.fail_next_page.lock().unwrap().take() {
+            return Err(error);
+        }
         let get = |key: &str| query.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
         let items = self.items.lock().unwrap();
         let mut matching: Vec<Value> = items
@@ -137,7 +147,11 @@ impl WriteBackend for FakeWork {
         let start: usize = get("cursor").map_or(0, |cursor| cursor.parse().unwrap());
         let page: Vec<Value> = matching.iter().skip(start).take(limit).cloned().collect();
         let next = if start + limit < matching.len() {
-            (start + limit).to_string()
+            if paged && self.stuck_cursor.load(Ordering::SeqCst) {
+                start.to_string()
+            } else {
+                (start + limit).to_string()
+            }
         } else {
             String::new()
         };
@@ -1039,4 +1053,263 @@ async fn a_filter_change_selects_the_first_row_even_when_the_selected_item_is_st
     assert_eq!(numbers(cx, &manage), [200, 201, 202], "#202 is still listed");
     assert_eq!(selected(cx, &manage), 0);
     assert!(backend.writes.lock().unwrap().is_empty());
+}
+
+/// `count` open gh-x items, #200 on, all P2, with `rank` setting each one's rank.
+fn ranked(count: usize, rank: impl Fn(usize) -> i64) -> Vec<Value> {
+    (0..count)
+        .map(|ix| {
+            let mut item = work_item(ix, "gh-x", "issue", "An item");
+            item["rank"] = json!(rank(ix));
+            item
+        })
+        .collect()
+}
+
+/// Loads every page, then the keyboard opens row `row`: Back from an editor focuses the list, then Down reaches it.
+async fn open_deep_row(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    view: &Entity<BoardView>,
+    manage: &Entity<Manage>,
+    row: usize,
+) {
+    while cx.update(|cx| manage.read(cx).work_items().unwrap().has_more()) {
+        click(cx, handle, "work-load-more");
+        settle(cx, handle, view).await;
+    }
+    click(cx, handle, "work-row-0");
+    click(cx, handle, "work-back");
+    assert!(focused(cx, handle, "work-list"));
+    for _ in 0..row {
+        press(cx, handle, "down");
+    }
+    press(cx, handle, "enter");
+}
+
+fn lists(backend: &FakeWork) -> usize {
+    backend.lists.lock().unwrap().len()
+}
+
+/// The cursors of the listings made since `from`: `None` for a first page.
+fn cursors_since(backend: &FakeWork, from: usize) -> Vec<Option<String>> {
+    backend.lists.lock().unwrap()[from..]
+        .iter()
+        .map(|query| query.iter().find(|(k, _)| k == "cursor").map(|(_, v)| v.clone()))
+        .collect()
+}
+
+#[gpui_kit::test]
+async fn a_save_that_keeps_the_item_past_the_first_page_keeps_it_selected(cx: &mut TestAppContext) {
+    let backend = in_pmd_order(ranked(62, |_| 0));
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    open_deep_row(cx, handle, &view, &manage, 55).await;
+    assert_eq!(editing(cx, &manage), Some(255));
+    set_input(cx, handle, &manage, "rank", "5");
+    let before = lists(&backend);
+    press(cx, handle, "ctrl-enter");
+    settle(cx, handle, &view).await;
+    only_write_is_to(&backend, 255);
+    click(cx, handle, "work-back");
+    assert!(focused(cx, handle, "work-list"));
+    press(cx, handle, "enter");
+    assert_eq!(editing(cx, &manage), Some(255), "Enter reopens the item just saved");
+    click(cx, handle, "work-back");
+    assert_eq!(selected(cx, &manage), 61, "the highlight stayed on #255");
+    assert_eq!(numbers(cx, &manage)[61], 255, "rank 5 sorts #255 last");
+    assert_eq!(items(cx, &manage).len(), 62);
+    assert_eq!(
+        cursors_since(&backend, before),
+        [None, Some("50".to_owned())],
+        "the reload reads on to the page #255 is on now, and no further"
+    );
+}
+
+#[gpui_kit::test]
+async fn a_save_that_moves_the_item_from_the_third_page_to_the_second_keeps_it_selected(cx: &mut TestAppContext) {
+    // Ranks 0, 10 and 20 fill the three pages; rank 5 puts the item first on the second page.
+    let backend = in_pmd_order(ranked(130, |ix| (ix / 50) as i64 * 10));
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    open_deep_row(cx, handle, &view, &manage, 110).await;
+    assert_eq!(editing(cx, &manage), Some(310));
+    set_input(cx, handle, &manage, "rank", "5");
+    let before = lists(&backend);
+    click(cx, handle, "work-save");
+    settle(cx, handle, &view).await;
+    only_write_is_to(&backend, 310);
+    click(cx, handle, "work-back");
+    press(cx, handle, "enter");
+    assert_eq!(editing(cx, &manage), Some(310));
+    assert_eq!(selected(cx, &manage), 50);
+    assert_eq!(numbers(cx, &manage)[50], 310);
+    assert_eq!(items(cx, &manage).len(), 100, "two pages, up to the one with #310");
+    assert_eq!(cursors_since(&backend, before), [None, Some("50".to_owned())]);
+}
+
+#[gpui_kit::test]
+async fn a_deep_item_that_leaves_the_status_filter_hands_the_selection_to_the_row_in_its_place(
+    cx: &mut TestAppContext,
+) {
+    let backend = in_pmd_order(ranked(62, |_| 0));
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    click(cx, handle, "work-filter-status-ready");
+    settle(cx, handle, &view).await;
+    open_deep_row(cx, handle, &view, &manage, 55).await;
+    assert_eq!(editing(cx, &manage), Some(255));
+    click(cx, handle, "work-status-blocked");
+    set_input(cx, handle, &manage, "statusReason", "waiting on review");
+    let before = lists(&backend);
+    click(cx, handle, "work-save");
+    settle(cx, handle, &view).await;
+    only_write_is_to(&backend, 255);
+    click(cx, handle, "work-back");
+    press(cx, handle, "enter");
+    assert_eq!(editing(cx, &manage), Some(256), "the row in #255's old place");
+    assert_eq!(selected(cx, &manage), 55, "the same position, on a listed row");
+    assert_eq!(items(cx, &manage).len(), 61);
+    assert!(!numbers(cx, &manage).contains(&255));
+    assert_eq!(
+        cursors_since(&backend, before),
+        [None, Some("50".to_owned())],
+        "read to the end: only then is #255 known to be gone"
+    );
+}
+
+#[gpui_kit::test]
+async fn a_later_page_that_fails_keeps_the_rows_and_retry_finds_the_item(cx: &mut TestAppContext) {
+    let backend = in_pmd_order(ranked(62, |_| 0));
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    open_deep_row(cx, handle, &view, &manage, 55).await;
+    set_input(cx, handle, &manage, "rank", "5");
+    *backend.fail_next_page.lock().unwrap() = Some(WriteError::Network);
+    click(cx, handle, "work-save");
+    settle(cx, handle, &view).await;
+    only_write_is_to(&backend, 255);
+    click(cx, handle, "work-back");
+    // The rows on screen stay, as the last good data, with #255 still selected and nothing more to load from them.
+    assert_eq!(items(cx, &manage).len(), 62);
+    assert_eq!(selected(cx, &manage), 55);
+    assert_eq!(numbers(cx, &manage)[55], 255);
+    assert!(exists(cx, handle, "work-retry"));
+    assert!(!exists(cx, handle, "work-load-more"));
+    click(cx, handle, "work-retry");
+    settle(cx, handle, &view).await;
+    assert_eq!(items(cx, &manage).len(), 62);
+    assert!(!exists(cx, handle, "work-retry"));
+    assert_eq!(selected(cx, &manage), 61);
+    assert_eq!(
+        numbers(cx, &manage)[61],
+        255,
+        "Retry's reload found #255 on the second page"
+    );
+    assert_eq!(
+        backend.writes.lock().unwrap().len(),
+        1,
+        "a failed read never repeats the write"
+    );
+}
+
+#[gpui_kit::test]
+async fn a_listing_that_does_not_move_on_ends_the_reload(cx: &mut TestAppContext) {
+    let backend = in_pmd_order(ranked(130, |_| 0));
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    open_deep_row(cx, handle, &view, &manage, 55).await;
+    set_input(cx, handle, &manage, "rank", "5");
+    backend.stuck_cursor.store(true, Ordering::SeqCst);
+    let before = lists(&backend);
+    click(cx, handle, "work-save");
+    settle(cx, handle, &view).await;
+    only_write_is_to(&backend, 255);
+    assert_eq!(
+        cursors_since(&backend, before),
+        [None, Some("50".to_owned())],
+        "a page that hands back its own cursor ends the reload"
+    );
+    assert_eq!(items(cx, &manage).len(), 100);
+    click(cx, handle, "work-back");
+    assert_eq!(selected(cx, &manage), 55, "a listed row");
+    press(cx, handle, "enter");
+    assert_eq!(editing(cx, &manage), Some(256));
+}
+
+/// Runs one task at a time until `done`, so a test can act between a request and its answer.
+fn step_until(cx: &mut TestAppContext, mut done: impl FnMut() -> bool) {
+    for _ in 0..10_000 {
+        if done() {
+            return;
+        }
+        if !cx.executor().tick() {
+            break;
+        }
+    }
+    assert!(done(), "the awaited request never came");
+}
+
+/// Clicks or presses without running the tasks that starts.
+fn act_only(cx: &mut TestAppContext, handle: AnyWindowHandle, click: Option<&str>, key: Option<&str>) {
+    let click = click.map(|id| gpui_kit::SharedString::from(id.to_owned()));
+    cx.update_window(handle, |_, window, cx| {
+        if let Some(id) = click {
+            window.click(id, cx);
+        }
+        if let Some(key) = key {
+            window.press(key, cx);
+        }
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn a_filter_change_while_a_reload_reads_on_drops_its_late_page(cx: &mut TestAppContext) {
+    let backend = in_pmd_order(ranked(62, |_| 0));
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    open_deep_row(cx, handle, &view, &manage, 55).await;
+    set_input(cx, handle, &manage, "rank", "5");
+    let before = lists(&backend);
+    act_only(cx, handle, Some("work-save"), None);
+    // Stop once the reload has asked for its second page, before that page lands.
+    step_until(cx, || lists(&backend) == before + 2);
+    act_only(cx, handle, Some("work-back"), None);
+    act_only(cx, handle, Some("work-filter-kind-issue"), None);
+    settle(cx, handle, &view).await;
+    frame(cx, handle);
+    only_write_is_to(&backend, 255);
+    assert_eq!(
+        cursors_since(&backend, before),
+        [None, Some("50".to_owned()), None],
+        "the new filters list from their first page and the old reload reads no further"
+    );
+    assert!(has(&last_query(&backend), "kind", "issue"));
+    assert_eq!(
+        items(cx, &manage).len(),
+        50,
+        "the new listing's first page, not the late one mixed in"
+    );
+    assert_eq!(selected(cx, &manage), 0, "new filters start at the first row");
+    assert!(cx.update(|cx| manage.read(cx).work_items().unwrap().has_more()));
+}
+
+#[gpui_kit::test]
+async fn closing_the_dialog_while_a_reload_reads_on_drops_its_late_page(cx: &mut TestAppContext) {
+    let backend = in_pmd_order(ranked(62, |_| 0));
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    open_deep_row(cx, handle, &view, &manage, 55).await;
+    set_input(cx, handle, &manage, "rank", "5");
+    let before = lists(&backend);
+    act_only(cx, handle, Some("work-save"), None);
+    step_until(cx, || lists(&backend) == before + 2);
+    act_only(cx, handle, None, Some("escape"));
+    settle(cx, handle, &view).await;
+    frame(cx, handle);
+    assert_eq!(cx.update(|cx| manage.read(cx).dialog()), None);
+    only_write_is_to(&backend, 255);
+    assert_eq!(lists(&backend), before + 2, "nothing more is read for a closed dialog");
 }

@@ -72,6 +72,29 @@ fn a_page_reads_its_items_and_an_empty_cursor_means_the_last_page() {
 }
 
 #[test]
+fn a_reload_reads_on_only_while_the_listing_moves_on_and_within_its_page_limit() {
+    let page = |items: usize, next: &str| {
+        let items: Vec<Value> = (0..items).map(|_| item(json!({}))).collect();
+        WorkPage::from_json(&json!({"items": items, "nextCursor": next})).unwrap()
+    };
+    assert_eq!(page(50, "50").follow(None, 1), Some("50"));
+    assert_eq!(page(50, "100").follow(Some("50"), 2), Some("100"));
+    assert_eq!(page(12, "").follow(Some("50"), 2), None, "the last page");
+    assert_eq!(
+        page(50, "50").follow(Some("50"), 2),
+        None,
+        "a cursor that doesn't move on"
+    );
+    assert_eq!(page(0, "100").follow(Some("50"), 2), None, "a page that brings nothing");
+    assert_eq!(
+        page(50, "1000").follow(Some("950"), work::FOLLOW_PAGES),
+        None,
+        "the page limit"
+    );
+    assert_eq!(page(50, "950").follow(Some("900"), work::FOLLOW_PAGES - 1), Some("950"));
+}
+
+#[test]
 fn filters_become_pmds_query_with_paging() {
     assert_eq!(
         WorkFilter::default().query(None),

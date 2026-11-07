@@ -22,6 +22,8 @@ pub const MAX_REASON: usize = 500;
 pub const MAX_RANK: i64 = 1_000_000_000;
 /// Items per page. pmd allows up to 500; a page this size keeps the dialog quick.
 pub const PAGE: usize = 50;
+/// The most pages a reload reads while it looks for the item that was selected (#91): 1,000 items at [`PAGE`].
+pub const FOLLOW_PAGES: usize = 20;
 
 /// A status's label, as the Board titles its columns.
 pub fn status_label(status: &str) -> &str {
@@ -136,6 +138,16 @@ impl WorkPage {
             .filter(|cursor| !cursor.is_empty())
             .map(str::to_owned);
         Ok(Self { items, next_cursor })
+    }
+
+    /// Where a reload still looking for its selected item reads on from, after this page, read from `cursor`, made
+    /// `pages` pages so far (#91). `None` ends the reload: the listing is done, the page brought nothing or didn't move
+    /// the cursor on, or [`FOLLOW_PAGES`] pages have been read. Each page read on brings at least one item and a new
+    /// cursor, so the reload can't spin.
+    pub fn follow(&self, cursor: Option<&str>, pages: usize) -> Option<&str> {
+        self.next_cursor
+            .as_deref()
+            .filter(|next| !self.items.is_empty() && Some(*next) != cursor && pages < FOLLOW_PAGES)
     }
 }
 

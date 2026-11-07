@@ -28,6 +28,8 @@ raw-window-handle = "0.6"
 gpui-kit = { workspace = true, features = ["test-support"] }
 # Saves the headless captures (src/captures.rs) and the icon example's PNGs.
 image = { version = "0.25", default-features = false, features = ["png"] }
+# Writes the synthetic T3 state databases the T3 button's lookup reads (ui_tests.rs `t3_homes`, #96).
+rusqlite.workspace = true
 
 # macOS captures (src/captures.rs): GPUI's Mac platform must be created on the main thread, which a test never runs on,
 # so the captures build its text system directly. The version GPUI itself uses, already in the lock.

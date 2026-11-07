@@ -418,6 +418,11 @@ impl FakeT3 {
         )
     }
 
+    /// Accepts connections and reads requests but never answers, like a hung server.
+    fn stalled() -> Self {
+        Self::answering(STALLED, "")
+    }
+
     fn answering(status: u16, body: &str) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -429,8 +434,10 @@ impl FakeT3 {
             move || {
                 // Bounded: stops when dropped, and after a minute at most.
                 let deadline = Instant::now() + Duration::from_secs(60);
+                let mut held = Vec::new();
                 while !stop.load(Ordering::SeqCst) && Instant::now() < deadline {
                     match listener.accept() {
+                        Ok((stream, _)) if status == STALLED => held.push(stream),
                         Ok((stream, _)) => answer(stream, status, &body),
                         Err(_) => std::thread::sleep(Duration::from_millis(5)),
                     }
@@ -453,6 +460,9 @@ impl Drop for FakeT3 {
         }
     }
 }
+
+/// [`FakeT3::answering`]'s status for a server that never answers.
+const STALLED: u16 = 0;
 
 fn answer(mut stream: std::net::TcpStream, status: u16, body: &str) {
     stream.set_nonblocking(false).unwrap();
@@ -682,6 +692,25 @@ fn something_that_isnt_a_t3_server_on_the_port_is_a_reason() {
         };
         assert!(reason.contains(expected), "{status} {body:.40}: {reason}");
     }
+}
+
+#[test]
+fn a_server_that_accepts_but_never_answers_is_a_reason() {
+    let scratch = Scratch::new("stalled");
+    database(&scratch.0, &[("p1", DASHBOARD, false)], &[]);
+    let stalled = FakeT3::stalled();
+    userdata(&scratch.0, &stalled.origin, "env-1");
+    let started = Instant::now();
+    let found = t3::find(&scratch.0, &[PathBuf::from(DASHBOARD)]);
+    let Err(NoThread::Unreadable(reason)) = &found[0] else {
+        panic!("expected a reason, got {found:?}");
+    };
+    assert_eq!(
+        *reason,
+        format!("{} didn't say which T3 Code server it is", stalled.origin)
+    );
+    // Bounded by the probe's own timeout, not the stalled server.
+    assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
 }
 
 #[test]

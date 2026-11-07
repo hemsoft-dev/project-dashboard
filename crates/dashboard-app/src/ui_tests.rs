@@ -2080,6 +2080,218 @@ async fn a_row_without_a_thread_has_a_disabled_t3_button_that_says_why(cx: &mut 
     assert!(!cx.update(|cx| view.read(cx).is_expanded(weather)));
 }
 
+/// Synthetic T3 homes for the T3 button through the production lookup (#96): each home's state database, runtime
+/// file and environment ID, and a loopback server answering T3's environment descriptor. No real T3 install,
+/// profile or child process; the server is a thread in the test process.
+pub(crate) mod t3_homes {
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    /// The checkout every synthetic home has a project for.
+    pub(crate) const CHECKOUT: &str = "/demo/codexbar";
+
+    /// [`dashboard_core::t3::find_in_homes`] over `homes`, as the app's `LocalT3` runs it over the real ones.
+    pub(crate) struct Homes(pub(crate) Vec<PathBuf>);
+
+    impl dashboard_core::t3::ThreadFinder for Homes {
+        fn find(&self, checkouts: &[PathBuf]) -> Vec<dashboard_core::t3::Lookup> {
+            dashboard_core::t3::find_in_homes(&self.0, checkouts)
+        }
+    }
+
+    /// A folder removed when dropped.
+    pub(crate) struct Scratch(pub(crate) PathBuf);
+
+    impl Scratch {
+        pub(crate) fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("project-dashboard-ui-t3-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A running T3 server for one environment: answers `GET /.well-known/t3/environment` as T3 does, until
+    /// dropped (a minute at most).
+    pub(crate) struct Descriptor {
+        pub(crate) origin: String,
+        stop: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Descriptor {
+        pub(crate) fn serving(environment: &str) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let origin = format!("http://{}", listener.local_addr().unwrap());
+            let body = serde_json::json!({
+                "environmentId": environment,
+                "label": "fixture",
+                "platform": { "os": "linux", "arch": "x64" },
+                "serverVersion": "0.1.8",
+                "capabilities": { "repositoryIdentity": true },
+            })
+            .to_string();
+            let stop = Arc::new(AtomicBool::new(false));
+            let thread = std::thread::spawn({
+                let stop = Arc::clone(&stop);
+                move || {
+                    let deadline = Instant::now() + Duration::from_secs(60);
+                    while !stop.load(Ordering::SeqCst) && Instant::now() < deadline {
+                        match listener.accept() {
+                            Ok((stream, _)) => answer(stream, &body),
+                            Err(_) => std::thread::sleep(Duration::from_millis(5)),
+                        }
+                    }
+                }
+            });
+            Self {
+                origin,
+                stop,
+                thread: Some(thread),
+            }
+        }
+    }
+
+    impl Drop for Descriptor {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(thread) = self.thread.take() {
+                thread.join().unwrap();
+            }
+        }
+    }
+
+    fn answer(mut stream: std::net::TcpStream, body: &str) {
+        stream.set_nonblocking(false).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 1024];
+        while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+            match stream.read(&mut chunk) {
+                Ok(0) | Err(_) => return,
+                Ok(n) => request.extend_from_slice(&chunk[..n]),
+            }
+        }
+        let (status, body) = if request.starts_with(b"GET /.well-known/t3/environment ") {
+            (200, body)
+        } else {
+            (404, "")
+        };
+        let _ = write!(
+            stream,
+            "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+    }
+
+    /// A T3 home for `environment` whose runtime file records `origin`, with one open thread `(id, title)` in its
+    /// project for [`CHECKOUT`]. Tables shaped like T3's `statev2.sqlite`.
+    pub(crate) fn home(home: &Path, environment: &str, origin: &str, (id, title): (&str, &str)) {
+        let userdata = home.join("userdata");
+        std::fs::create_dir_all(&userdata).unwrap();
+        let db = rusqlite::Connection::open(userdata.join(dashboard_core::t3::STATE_DB)).unwrap();
+        db.execute_batch(
+            "CREATE TABLE projection_projects (project_id TEXT PRIMARY KEY, workspace_root TEXT NOT NULL,
+                 deleted_at TEXT);
+             CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+                 title TEXT NOT NULL, updated_at TEXT, archived_at TEXT, deleted_at TEXT, payload_json TEXT NOT NULL);
+             CREATE TABLE orchestration_v2_projection_runs (run_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL,
+                 status TEXT NOT NULL);",
+        )
+        .unwrap();
+        db.execute("INSERT INTO projection_projects VALUES ('p', ?1, NULL)", [CHECKOUT])
+            .unwrap();
+        db.execute(
+            "INSERT INTO orchestration_v2_projection_threads
+                 VALUES (?1, 'p', ?2, '2026-11-07T08:00:00.000Z', NULL, NULL, '{}')",
+            [id, title],
+        )
+        .unwrap();
+        let port = origin.rsplit(':').next().unwrap();
+        std::fs::write(
+            userdata.join("server-runtime.json"),
+            format!(
+                r#"{{"version":1,"pid":4242,"port":{port},"origin":"{origin}","startedAt":"2026-11-07T08:00:00.000Z"}}"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(userdata.join("environment-id"), format!("{environment}\n")).unwrap();
+    }
+}
+
+#[gpui_kit::test]
+fn the_t3_button_links_only_the_home_whose_own_server_answers(cx: &mut TestAppContext) {
+    use dashboard_core::t3::tooltip;
+    use t3_homes::{CHECKOUT, Descriptor, Homes, Scratch, home};
+    let scratch = Scratch::new("identity");
+    // One running server, for env-live, on the port both homes' runtime files record (#96).
+    let server = Descriptor::serving("env-live");
+    let stale = scratch.0.join(".t3");
+    let live = scratch.0.join(".t3-server");
+    home(&stale, "env-stale", &server.origin, ("t-stale", "Stale session"));
+    home(&live, "env-live", &server.origin, ("t-live", "Live session"));
+    let checkout = Path::new(CHECKOUT);
+    let board = |cx: &mut TestAppContext, homes: Vec<PathBuf>| {
+        let mut opts = options();
+        opts.threads = Arc::new(Homes(homes));
+        let (handle, view) = open_board(
+            cx,
+            vec![checkout.to_owned()],
+            StatusCache::default(),
+            Arc::new(demo::DemoSource),
+            opts,
+        );
+        cx.run_until_parked();
+        let lookup = cx
+            .update(|cx| view.read(cx).thread(checkout).cloned())
+            .expect("the lookup landed");
+        (handle, lookup)
+    };
+
+    // Only the crashed home: another environment answers on its port, so the button is disabled with that reason.
+    let (handle, lookup) = board(cx, vec![stale.clone()]);
+    let reason = tooltip(&lookup);
+    assert_eq!(
+        reason,
+        format!(
+            "Can't read T3 Code's threads: the server at {} is another T3 Code environment, not the one whose \
+             files were found",
+            server.origin
+        )
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(("t3", 0usize)).disabled(), Some(true));
+        window.click(("t3", 0usize), cx);
+    })
+    .unwrap();
+    assert_eq!(cx.opened_url(), None);
+
+    // The crashed home first, then the home the server belongs to: the running home's thread is linked.
+    let (handle, lookup) = board(cx, vec![stale, live]);
+    let link = lookup.unwrap();
+    assert_eq!(link.title, "Live session");
+    assert_eq!(link.url, format!("{}/env-live/t-live", server.origin));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_ne!(window.find(("t3", 0usize)).disabled(), Some(true));
+        window.click(("t3", 0usize), cx);
+    })
+    .unwrap();
+    assert_eq!(cx.opened_url().as_deref(), Some(link.url.as_str()));
+}
+
 #[gpui_kit::test]
 async fn threads_are_looked_up_at_start_and_again_after_each_refresh(cx: &mut TestAppContext) {
     let counter = Arc::new(CountingThreads(std::sync::atomic::AtomicUsize::new(0)));

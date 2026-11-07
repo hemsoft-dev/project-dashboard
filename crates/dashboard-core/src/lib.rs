@@ -18,6 +18,7 @@ pub mod priority;
 pub mod projects;
 pub mod recovery;
 pub mod scheduler;
+pub mod selection;
 pub mod source;
 pub mod status;
 pub mod t3;

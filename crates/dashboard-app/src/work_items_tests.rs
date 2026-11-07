@@ -1,6 +1,7 @@
 //! Headless UI tests for the Work items dialog (#35), against an in-memory pmd. No desktop window, OS input or network.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dashboard_core::cache::StatusCache;
@@ -58,6 +59,9 @@ pub(crate) struct FakeWork {
     pub fail_next: Mutex<Option<(WriteError, Option<Box<dyn FnOnce(&mut Vec<Value>) + Send>>)>>,
     /// Listings fail while this is set.
     pub fail_lists: Mutex<Option<WriteError>>,
+    /// Lists in pmd's order (effective priority, rank, then newest) instead of the order the items were given in, so
+    /// a priority or rank save moves the item.
+    pub in_pmd_order: AtomicBool,
 }
 
 impl FakeWork {
@@ -69,6 +73,7 @@ impl FakeWork {
             writes: Mutex::default(),
             fail_next: Mutex::default(),
             fail_lists: Mutex::default(),
+            in_pmd_order: AtomicBool::new(false),
         })
     }
 
@@ -108,7 +113,7 @@ impl WriteBackend for FakeWork {
         }
         let get = |key: &str| query.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
         let items = self.items.lock().unwrap();
-        let matching: Vec<Value> = items
+        let mut matching: Vec<Value> = items
             .iter()
             .filter(|item| item["ghState"] == "open")
             .filter(|item| get("status").is_none_or(|status| item["status"] == status.as_str()))
@@ -120,6 +125,14 @@ impl WriteBackend for FakeWork {
             })
             .cloned()
             .collect();
+        if self.in_pmd_order.load(Ordering::SeqCst) {
+            matching.sort_by(|a, b| {
+                let key = |item: &Value| (item["priority"].as_u64(), item["rank"].as_i64());
+                key(a)
+                    .cmp(&key(b))
+                    .then_with(|| b["ghUpdatedAt"].as_str().cmp(&a["ghUpdatedAt"].as_str()))
+            });
+        }
         let limit: usize = get("limit").unwrap().parse().unwrap();
         let start: usize = get("cursor").map_or(0, |cursor| cursor.parse().unwrap());
         let page: Vec<Value> = matching.iter().skip(start).take(limit).cloned().collect();
@@ -828,4 +841,202 @@ async fn an_item_that_closed_before_the_conflict_reread_shows_as_closed(cx: &mut
     assert!(!exists(cx, handle, "conflict"));
     assert!(!exists(cx, handle, "conflict-reapply"));
     assert!(exists(cx, handle, "work-closed"));
+}
+
+/// A pmd listing in its own order, over `items`.
+fn in_pmd_order(items: Vec<Value>) -> Arc<FakeWork> {
+    let backend = FakeWork::new(&["read", "write:work"], items);
+    backend.in_pmd_order.store(true, Ordering::SeqCst);
+    backend
+}
+
+/// Three open gh-x items, #200 to #202, all P2 at rank 0.
+fn three_items() -> Vec<Value> {
+    (0..3).map(|ix| work_item(ix, "gh-x", "issue", "An item")).collect()
+}
+
+fn numbers(cx: &mut TestAppContext, manage: &Entity<Manage>) -> Vec<u64> {
+    items(cx, manage).iter().map(|item| item.number).collect()
+}
+
+fn selected(cx: &mut TestAppContext, manage: &Entity<Manage>) -> usize {
+    cx.update(|cx| manage.read(cx).work_items().unwrap().selected())
+}
+
+fn editing(cx: &mut TestAppContext, manage: &Entity<Manage>) -> Option<u64> {
+    cx.update(|cx| {
+        manage
+            .read(cx)
+            .work_items()
+            .unwrap()
+            .editor_item()
+            .map(|item| item.number)
+    })
+}
+
+/// The test's one write went to the item it edited, at the version it showed.
+fn only_write_is_to(backend: &FakeWork, number: u64) {
+    let writes = backend.writes.lock().unwrap().clone();
+    assert_eq!(writes.len(), 1, "{writes:?}");
+    assert_eq!(writes[0].path, format!("v1/work/01JBXWORK{:04}", number - 200));
+    assert_eq!(writes[0].precondition, Precondition::IfMatch(3));
+}
+
+#[gpui_kit::test]
+async fn a_priority_save_that_moves_the_item_keeps_it_selected_after_back(cx: &mut TestAppContext) {
+    let backend = in_pmd_order(three_items());
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    press(cx, handle, "down");
+    press(cx, handle, "down");
+    press(cx, handle, "enter");
+    assert_eq!(editing(cx, &manage), Some(202));
+    click(cx, handle, "work-priority-0");
+    press(cx, handle, "ctrl-enter");
+    settle(cx, handle, &view).await;
+    only_write_is_to(&backend, 202);
+    assert_eq!(numbers(cx, &manage), [202, 200, 201], "P0 sorts #202 first");
+    click(cx, handle, "work-back");
+    assert!(focused(cx, handle, "work-list"));
+    assert_eq!(selected(cx, &manage), 0, "the highlight moved with #202");
+    press(cx, handle, "enter");
+    assert_eq!(editing(cx, &manage), Some(202), "Enter reopens the item just saved");
+}
+
+#[gpui_kit::test]
+async fn a_rank_save_that_moves_the_item_down_keeps_it_selected_after_back(cx: &mut TestAppContext) {
+    let mut items = three_items();
+    items[2]["rank"] = json!(10);
+    let backend = in_pmd_order(items);
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    press(cx, handle, "enter");
+    assert_eq!(editing(cx, &manage), Some(200));
+    set_input(cx, handle, &manage, "rank", "5");
+    press(cx, handle, "ctrl-enter");
+    settle(cx, handle, &view).await;
+    only_write_is_to(&backend, 200);
+    assert_eq!(
+        numbers(cx, &manage),
+        [201, 200, 202],
+        "rank 5 sorts #200 between 0 and 10"
+    );
+    click(cx, handle, "work-back");
+    assert_eq!(selected(cx, &manage), 1);
+    press(cx, handle, "enter");
+    assert_eq!(editing(cx, &manage), Some(200));
+}
+
+#[gpui_kit::test]
+async fn a_save_that_keeps_the_order_keeps_the_same_row_selected(cx: &mut TestAppContext) {
+    let backend = in_pmd_order(three_items());
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    click(cx, handle, "work-row-2");
+    click(cx, handle, "work-status-blocked");
+    set_input(cx, handle, &manage, "statusReason", "waiting on review");
+    press(cx, handle, "ctrl-enter");
+    settle(cx, handle, &view).await;
+    only_write_is_to(&backend, 202);
+    assert_eq!(numbers(cx, &manage), [200, 201, 202]);
+    click(cx, handle, "work-back");
+    assert_eq!(selected(cx, &manage), 2);
+    press(cx, handle, "enter");
+    assert_eq!(editing(cx, &manage), Some(202));
+}
+
+#[gpui_kit::test]
+async fn a_moved_item_stays_selected_when_the_reload_brings_back_only_the_first_page(cx: &mut TestAppContext) {
+    let many = (0..62).map(|ix| work_item(ix, "gh-x", "issue", "An item")).collect();
+    let backend = in_pmd_order(many);
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    click(cx, handle, "work-load-more");
+    settle(cx, handle, &view).await;
+    assert_eq!(items(cx, &manage).len(), 62);
+    // Load more is gone with the last page, and its focus with it. Back from an editor focuses the list again; the
+    // keyboard then reaches row 55, scrolling as it goes.
+    click(cx, handle, "work-row-0");
+    click(cx, handle, "work-back");
+    assert!(focused(cx, handle, "work-list"));
+    for _ in 0..55 {
+        press(cx, handle, "down");
+    }
+    press(cx, handle, "enter");
+    assert_eq!(editing(cx, &manage), Some(255));
+    click(cx, handle, "work-priority-0");
+    click(cx, handle, "work-save");
+    settle(cx, handle, &view).await;
+    let writes = backend.writes.lock().unwrap().clone();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].path, "v1/work/01JBXWORK0055");
+    assert_eq!(
+        items(cx, &manage).len(),
+        50,
+        "the reload starts again from the first page"
+    );
+    click(cx, handle, "work-back");
+    assert_eq!(selected(cx, &manage), 0);
+    press(cx, handle, "enter");
+    assert_eq!(editing(cx, &manage), Some(255));
+}
+
+#[gpui_kit::test]
+async fn an_item_that_leaves_the_status_filter_hands_the_selection_to_a_listed_row(cx: &mut TestAppContext) {
+    let backend = in_pmd_order(three_items());
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    click(cx, handle, "work-filter-status-ready");
+    settle(cx, handle, &view).await;
+    click(cx, handle, "work-row-1");
+    click(cx, handle, "work-status-blocked");
+    set_input(cx, handle, &manage, "statusReason", "waiting on review");
+    click(cx, handle, "work-save");
+    settle(cx, handle, &view).await;
+    only_write_is_to(&backend, 201);
+    assert_eq!(numbers(cx, &manage), [200, 202], "#201 is blocked now, not ready");
+    click(cx, handle, "work-back");
+    assert_eq!(selected(cx, &manage), 1, "the same position, on a listed row");
+    press(cx, handle, "enter");
+    assert_eq!(editing(cx, &manage), Some(202));
+}
+
+#[gpui_kit::test]
+async fn when_the_last_item_leaves_the_list_enter_opens_nothing(cx: &mut TestAppContext) {
+    let mut items = three_items();
+    items[0]["status"] = json!("blocked");
+    items[1]["status"] = json!("blocked");
+    let backend = in_pmd_order(items);
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    click(cx, handle, "work-filter-status-ready");
+    settle(cx, handle, &view).await;
+    assert_eq!(numbers(cx, &manage), [202]);
+    click(cx, handle, "work-row-0");
+    click(cx, handle, "work-status-blocked");
+    set_input(cx, handle, &manage, "statusReason", "waiting on review");
+    press(cx, handle, "ctrl-enter");
+    settle(cx, handle, &view).await;
+    only_write_is_to(&backend, 202);
+    click(cx, handle, "work-back");
+    assert!(exists(cx, handle, "work-list-empty"));
+    assert_eq!(selected(cx, &manage), 0);
+    press(cx, handle, "enter");
+    assert_eq!(editing(cx, &manage), None, "no row, no editor");
+    assert_eq!(backend.writes.lock().unwrap().len(), 1, "and nothing else is written");
+}
+
+#[gpui_kit::test]
+async fn a_filter_change_selects_the_first_row_even_when_the_selected_item_is_still_listed(cx: &mut TestAppContext) {
+    let backend = in_pmd_order(three_items());
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    press(cx, handle, "down");
+    press(cx, handle, "down");
+    assert_eq!(selected(cx, &manage), 2);
+    click(cx, handle, "work-filter-kind-issue");
+    settle(cx, handle, &view).await;
+    assert_eq!(numbers(cx, &manage), [200, 201, 202], "#202 is still listed");
+    assert_eq!(selected(cx, &manage), 0);
+    assert!(backend.writes.lock().unwrap().is_empty());
 }

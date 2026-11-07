@@ -10,6 +10,7 @@
 use std::sync::Arc;
 
 use dashboard_core::edit::{Form, Next};
+use dashboard_core::selection;
 use dashboard_core::work::{
     self, AUTO, FIELDS, Kind, MAX_REASON, STATUSES, WorkFilter, WorkItem, WorkPage, status_label,
 };
@@ -279,9 +280,19 @@ impl Manage {
                 match result {
                     Ok(page) => {
                         if cursor.is_none() {
+                            // Under the same filters the selected item stays selected wherever the new page puts
+                            // it (#91), after a save reorders it or a change elsewhere moves it. Under new filters
+                            // the position stays, as before; a filter chip has already reset it to the first row.
+                            let previous = (work.rows_filter == filter)
+                                .then(|| work.items.get(work.selected).map(|item| item.id.clone()))
+                                .flatten();
                             work.rows_filter = filter;
                             work.items = page.items;
-                            work.selected = work.selected.min(work.items.len().saturating_sub(1));
+                            work.selected = selection::reselect(
+                                previous.as_deref(),
+                                work.selected,
+                                work.items.iter().map(|item| item.id.as_str()),
+                            );
                         } else {
                             work.items.extend(page.items);
                         }

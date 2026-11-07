@@ -1886,3 +1886,110 @@ fn captures_work_reload_stopped() {
     save(&mut cx, handle, &out, "stopped-work-2-enter");
     assert_eq!(editing(&mut cx), Some(255));
 }
+
+/// Issue 94: the Projects re-reads take pmd's wrapped `GET /v1/projects/{slug}` answer. A stale-version save reaches
+/// the conflict and Reapply saves on the re-read version; a create that timed out but landed opens as the stored
+/// project. Each state is saved, then checked, so the old code still writes the state it gets wrong.
+#[test]
+#[ignore = "writes issue 94 Projects re-read states offscreen"]
+fn captures_projects_reread() {
+    use crate::projects_tests::{FakeProjects, Folder};
+    use dashboard_core::write::{CreateCheck, Precondition, WriteError};
+    use serde_json::json;
+    let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").expect("CAPTURE_DIR"));
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cx = headless();
+    let folder = Folder::new();
+    let backend = FakeProjects::new(&["read", "write:projects"]);
+    let (handle, manage) = open_manage_dialog(
+        &mut cx,
+        backend.clone(),
+        Some(folder.config_dir().join("config.toml")),
+        dashboard_core::write::Feature::Projects,
+    );
+    let click = |cx: &mut HeadlessAppContext, id: &str| {
+        let id = gpui_kit::SharedString::from(id.to_owned());
+        cx.update_window(handle, |_, window, cx| window.click(id, cx)).unwrap();
+        settle(cx);
+    };
+    let form = |cx: &mut HeadlessAppContext| {
+        cx.update(|cx| {
+            manage.read(cx).projects().unwrap().editor_form().map(|form| {
+                (
+                    form.value("slug").to_owned(),
+                    form.version(),
+                    form.message().map(str::to_owned),
+                    form.conflict_state().map(|c| {
+                        c.differences()
+                            .into_iter()
+                            .map(|(field, mine, theirs)| format!("{field}: {mine} / {theirs}"))
+                            .collect::<Vec<_>>()
+                    }),
+                )
+            })
+        })
+    };
+
+    // gh-x at P3, version 2: pick P1 while someone else changes its goal.
+    click(&mut cx, "project-row-3");
+    click(&mut cx, "project-priority-1");
+    backend.fail_next(WriteError::StaleVersion, |rows| {
+        let row = rows.iter_mut().find(|row| row["slug"] == "gh-x").unwrap();
+        row["goal"] = json!("Ship the status schema v2");
+        row["version"] = json!(6);
+    });
+    key(&mut cx, handle, &["ctrl-enter"]);
+    settle(&mut cx);
+    save(&mut cx, handle, &out, "reread-projects-1-conflict");
+    let (slug, version, _, conflict) = form(&mut cx).unwrap();
+    assert_eq!((slug.as_str(), version), ("gh-x", Some(2)));
+    assert_eq!(
+        conflict.expect("the conflict panel"),
+        [
+            "goal: Maintenance: keep healthy, no new initiatives. / Ship the status schema v2",
+            "priority: 1 / 3",
+        ]
+    );
+
+    // Reapply mine: one PUT on the re-read version.
+    click(&mut cx, "conflict-reapply");
+    settle(&mut cx);
+    save(&mut cx, handle, &out, "reread-projects-2-reapplied");
+    let writes = backend.writes.lock().unwrap().clone();
+    assert_eq!(writes.len(), 2);
+    assert_eq!(writes[1].precondition, Precondition::IfMatch(6));
+    assert_eq!(form(&mut cx).unwrap().1, Some(7));
+
+    // Add yahtzee; the create times out, but pmd stored it.
+    click(&mut cx, "projects-back");
+    click(&mut cx, "projects-add");
+    let repo = cx.update(|cx| manage.read(cx).input("repo").unwrap());
+    cx.update_window(handle, |_, window, cx| {
+        repo.update(cx, |input, cx| input.set_value("hemsoft-dev/yahtzee", window, cx))
+    })
+    .unwrap();
+    settle(&mut cx);
+    click(&mut cx, "project-priority-3");
+    backend.fail_next(
+        WriteError::Timeout {
+            create: Some(CreateCheck::Exists),
+        },
+        |rows| {
+            rows.push(
+                json!({"slug": "yahtzee", "repo": "hemsoft-dev/yahtzee", "priority": 3, "goal": "",
+                "notes": "", "requires": [], "tracked": true, "riskLevel": 5, "source": "api", "version": 1}),
+            )
+        },
+    );
+    key(&mut cx, handle, &["ctrl-enter"]);
+    settle(&mut cx);
+    save(&mut cx, handle, &out, "reread-projects-3-created");
+    assert_eq!(form(&mut cx).unwrap(), ("yahtzee".to_owned(), Some(1), None, None));
+    assert_eq!(backend.writes.lock().unwrap().len(), 3, "one create, never resent");
+
+    // Back: the list has it.
+    click(&mut cx, "projects-back");
+    save(&mut cx, handle, &out, "reread-projects-4-list");
+    let listed = cx.update(|cx| manage.read(cx).projects().unwrap().visible_slugs(cx));
+    assert!(listed.contains(&"yahtzee".to_owned()), "{listed:?}");
+}

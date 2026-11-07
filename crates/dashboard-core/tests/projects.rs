@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use dashboard_core::config::Config;
 use dashboard_core::edit::{Form, Next};
 use dashboard_core::projects::{self, FIELDS, LinkError, Project};
-use dashboard_core::write::{Method, Precondition, WriteBackend, WriteError, WriteRequest};
+use dashboard_core::write::{CreateCheck, Method, Precondition, WriteBackend, WriteError, WriteRequest};
 use serde_json::{Value, json};
 
 #[path = "support/stub.rs"]
@@ -324,6 +324,144 @@ fn a_risk_level_changed_elsewhere_is_a_difference_and_pmds_range_error_lands_on_
     let sent: Value = serde_json::from_str(&stub.requests()[0].body).unwrap();
     assert_eq!(sent["riskLevel"], 9);
     assert_eq!(stub.requests()[0].header("if-match"), Some("4"));
+}
+
+/// pmd's `GET /v1/projects/{slug}` answer, from project-manager's `internal/api/testdata/project.golden.json` at
+/// 30bf244 (#94).
+const PMD_PROJECT: &str = include_str!("fixtures/pmd-project-codexbar-ios-30bf244.json");
+
+#[test]
+fn a_single_project_read_takes_pmds_project_object_and_nothing_else() {
+    let answer: Value = serde_json::from_str(PMD_PROJECT).unwrap();
+    let one = Project::one_from_json(&answer).unwrap();
+    assert_eq!(
+        (
+            one.slug.as_str(),
+            one.repo.as_str(),
+            one.priority,
+            one.risk_level,
+            one.version
+        ),
+        ("codexbar-ios", "hemsoft-dev/codexbar-ios", Some(0), Some(5), 1)
+    );
+    assert_eq!(
+        Project::from_json(&answer),
+        Err(WriteError::Malformed),
+        "the answer isn't a row"
+    );
+    let malformed = [
+        json!({"items": []}),
+        project(json!({})),
+        json!({"project": null, "items": []}),
+        json!({"project": [project(json!({}))]}),
+        json!({"project": {"slug": "gh-x"}, "items": []}),
+    ];
+    for answer in malformed {
+        assert_eq!(Project::one_from_json(&answer), Err(WriteError::Malformed), "{answer}");
+    }
+}
+
+/// pmd's answer to `GET /v1/projects/gh-x` with `project` in place of its project.
+fn wrapped(project: Value) -> Reply {
+    Reply::json(200, json!({"project": project, "items": []}))
+}
+
+#[test]
+fn a_stale_version_rereads_pmds_wrapped_project_into_the_conflict() {
+    let dir = Dir::new();
+    let puts = AtomicUsize::new(0);
+    let stub = Stub::new(move |request| match request.method.as_str() {
+        "PUT" if puts.fetch_add(1, Ordering::SeqCst) == 0 => {
+            Reply::error(409, "stale_version", "If-Match 3 is not the current version 4")
+        }
+        "PUT" => Reply::json(200, project(json!({"goal": "Mine", "version": 5}))),
+        _ => wrapped(project(json!({"goal": "Theirs", "version": 4}))),
+    });
+    let writer = dir.writer(&stub);
+    let gh_x = Project::from_json(&project(json!({}))).unwrap();
+    let mut edit = Form::edit(gh_x.row(), &FIELDS);
+    edit.set("goal", "Mine");
+    let put = |edit: &mut Form| {
+        let (slug, body) = projects::body(edit.values()).unwrap();
+        let precondition = edit.begin_save().unwrap();
+        writer.write(&WriteRequest {
+            method: Method::Put,
+            path: projects::path(&slug),
+            precondition,
+            body,
+        })
+    };
+    let error = put(&mut edit).unwrap_err();
+    assert_eq!(edit.failed(&error), Next::Reread);
+    let theirs = writer
+        .read(&gh_x.path())
+        .and_then(|value| Project::one_from_json(&value))
+        .unwrap();
+    edit.conflict(theirs.row());
+    assert_eq!(
+        edit.conflict_state().unwrap().differences(),
+        [("goal", "Mine", "Theirs")]
+    );
+    edit.reapply();
+    let saved = Project::from_json(&put(&mut edit).unwrap()).unwrap();
+    edit.saved(saved.row());
+    let requests = stub.requests();
+    let seen: Vec<(&str, &str, Option<&str>)> = requests
+        .iter()
+        .map(|r| (r.method.as_str(), r.path.as_str(), r.header("if-match")))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("PUT", "/v1/projects/gh-x", Some("3")),
+            ("GET", "/v1/projects/gh-x", None),
+            ("PUT", "/v1/projects/gh-x", Some("4")),
+        ]
+    );
+    assert_eq!(requests[1].token(), stub::READ, "the re-read uses the read token");
+    assert_eq!(edit.version(), Some(5));
+}
+
+#[test]
+fn a_create_that_timed_out_reads_back_the_project_pmd_stored() {
+    let dir = Dir::new();
+    let stub = Stub::new(|request| match request.method.as_str() {
+        "PUT" => {
+            let mut reply = Reply::json(201, project(json!({"slug": "yahtzee", "repo": "hemsoft-dev/yahtzee"})));
+            reply.delay = std::time::Duration::from_millis(1500);
+            reply
+        }
+        _ => wrapped(project(
+            json!({"slug": "yahtzee", "repo": "hemsoft-dev/yahtzee", "version": 1}),
+        )),
+    });
+    let mut writer = dir.writer(&stub);
+    writer.timeout = std::time::Duration::from_millis(500);
+    let mut values = new_project();
+    values.insert("slug".into(), "yahtzee".into());
+    values.insert("repo".into(), "hemsoft-dev/yahtzee".into());
+    let (slug, body) = projects::body(&values).unwrap();
+    let error = writer
+        .write(&WriteRequest {
+            method: Method::Put,
+            path: projects::path(&slug),
+            precondition: Precondition::IfNoneMatch,
+            body,
+        })
+        .unwrap_err();
+    assert_eq!(
+        error,
+        WriteError::Timeout {
+            create: Some(CreateCheck::Exists)
+        }
+    );
+    let stored = writer
+        .read(&projects::path(&slug))
+        .and_then(|value| Project::one_from_json(&value))
+        .unwrap();
+    assert_eq!((stored.slug.as_str(), stored.version), ("yahtzee", 1));
+    let methods: Vec<String> = stub.requests().iter().map(|r| r.method.clone()).collect();
+    assert_eq!(methods, ["PUT", "GET", "GET"], "one create, never resent");
 }
 
 /// A temporary folder: a config dir and checkouts with a given origin.

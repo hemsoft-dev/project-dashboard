@@ -1,6 +1,7 @@
 //! The Work items dialog's data (#35): parsing pmd's items and pages, the list's query, the changed-field `PATCH` and
 //! its checks, and the write against a loopback stub for every answer pmd gives.
 use dashboard_core::edit::{Form, Next};
+use dashboard_core::selection::Beyond;
 use dashboard_core::work::{self, FIELDS, Kind, WorkFilter, WorkItem, WorkPage};
 use dashboard_core::write::{Method, Precondition, WriteBackend, WriteError, WriteRequest};
 use serde_json::{Value, json};
@@ -68,6 +69,42 @@ fn a_page_reads_its_items_and_an_empty_cursor_means_the_last_page() {
     assert_eq!(
         WorkPage::from_json(&json!({"nextCursor": ""})),
         Err(WriteError::Malformed)
+    );
+}
+
+#[test]
+fn a_reload_reads_on_only_while_the_listing_moves_on_and_within_its_page_limit() {
+    let page = |items: usize, next: &str| {
+        let items: Vec<Value> = (0..items).map(|_| item(json!({}))).collect();
+        WorkPage::from_json(&json!({"items": items, "nextCursor": next})).unwrap()
+    };
+    assert_eq!(page(50, "50").beyond(None, 1), Beyond::More);
+    assert_eq!(page(50, "100").beyond(Some("50"), 2), Beyond::More);
+    assert_eq!(page(12, "").beyond(Some("50"), 2), Beyond::End, "the last page");
+    assert_eq!(page(0, "").beyond(Some("50"), 2), Beyond::End, "an empty last page");
+    assert_eq!(
+        page(50, "50").beyond(Some("50"), 2),
+        Beyond::Unread,
+        "a cursor that doesn't move on is unread, not the end"
+    );
+    assert_eq!(
+        page(0, "100").beyond(Some("50"), 2),
+        Beyond::Unread,
+        "a page that brings nothing is unread, not the end"
+    );
+    assert_eq!(
+        page(50, "1000").beyond(Some("950"), work::FOLLOW_PAGES),
+        Beyond::Unread,
+        "the page limit is unread, not the end"
+    );
+    assert_eq!(
+        page(12, "").beyond(Some("950"), work::FOLLOW_PAGES),
+        Beyond::End,
+        "a last page at the limit is still the end"
+    );
+    assert_eq!(
+        page(50, "950").beyond(Some("900"), work::FOLLOW_PAGES - 1),
+        Beyond::More
     );
 }
 

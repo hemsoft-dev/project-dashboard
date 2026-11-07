@@ -1673,3 +1673,216 @@ fn captures_projects_selection_after_reorder() {
     save(&mut cx, handle, &out, "selection-projects-4-enter");
     assert_eq!(editing(&mut cx).as_deref(), Some("gh-x"));
 }
+
+/// Issue 91, Work items past the first page: a rank save that keeps the item on the second page keeps it selected.
+/// From a pmd that lists in its own order, with 62 items; Load more, then the keyboard from row 55. Each state is saved,
+/// then checked, so the old code still writes the state it gets wrong.
+#[test]
+#[ignore = "writes issue 91 deep-page Work items selection states offscreen"]
+fn captures_work_deep_page_selection() {
+    use crate::work_items_tests::{FakeWork, work_item};
+    use std::sync::atomic::Ordering;
+    let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").expect("CAPTURE_DIR"));
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cx = headless();
+    let projects = [
+        "gh-x",
+        "codexbar",
+        "hs-buddy",
+        "chief",
+        "set-it-free-loop",
+        "project-dashboard",
+    ];
+    let items = (0..62)
+        .map(|ix| {
+            let project = projects[ix % projects.len()];
+            work_item(ix, project, "issue", &format!("Maintenance item {}", ix + 1))
+        })
+        .collect();
+    let backend = FakeWork::new(&["read", "write:work"], items);
+    backend.in_pmd_order.store(true, Ordering::SeqCst);
+    let (handle, manage) = open_manage_dialog(
+        &mut cx,
+        backend.clone(),
+        None,
+        dashboard_core::write::Feature::WorkItems,
+    );
+    let listed = |cx: &mut HeadlessAppContext| {
+        cx.update(|cx| {
+            let work = manage.read(cx).work_items().unwrap();
+            let numbers: Vec<u64> = work.items().iter().map(|item| item.number).collect();
+            (numbers, work.selected())
+        })
+    };
+    let editing = |cx: &mut HeadlessAppContext| {
+        cx.update(|cx| {
+            manage
+                .read(cx)
+                .work_items()
+                .unwrap()
+                .editor_item()
+                .map(|item| item.number)
+        })
+    };
+    let click = |cx: &mut HeadlessAppContext, id: &str| {
+        let id = gpui_kit::SharedString::from(id.to_owned());
+        cx.update_window(handle, |_, window, cx| window.click(id, cx)).unwrap();
+        settle(cx);
+    };
+
+    // Load more brings the second page. Open the first row and go Back by keyboard, which focuses the list, then Down
+    // to row 55, #255.
+    click(&mut cx, "work-load-more");
+    click(&mut cx, "work-row-0");
+    tab_to(&mut cx, handle, "tab", "work-back");
+    key(&mut cx, handle, &["enter"]);
+    for _ in 0..55 {
+        key(&mut cx, handle, &["down"]);
+    }
+    save(&mut cx, handle, &out, "deep-work-1-before");
+    let (numbers, selected) = listed(&mut cx);
+    assert_eq!((numbers.len(), numbers[55], selected), (62, 255, 55));
+
+    // Enter opens it; rank 5 (typed into the rank field), Ctrl+Enter saves it. The reload reads both pages to find it.
+    key(&mut cx, handle, &["enter"]);
+    assert_eq!(editing(&mut cx), Some(255));
+    let rank = cx.update(|cx| manage.read(cx).input("rank").unwrap());
+    cx.update_window(handle, |_, window, cx| {
+        rank.update(cx, |input, cx| input.set_value("5", window, cx))
+    })
+    .unwrap();
+    let before = backend.lists.lock().unwrap().len();
+    key(&mut cx, handle, &["ctrl-enter"]);
+    settle(&mut cx);
+    save(&mut cx, handle, &out, "deep-work-2-saved");
+    let writes = backend.writes.lock().unwrap().clone();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].path, "v1/work/01JBXWORK0055");
+    assert_eq!(writes[0].body, serde_json::json!({"rank": 5}));
+
+    // Tab to Back to list, Enter: the highlight is on #255, now last, on the second page, scrolled into view.
+    tab_to(&mut cx, handle, "tab", "work-back");
+    key(&mut cx, handle, &["enter"]);
+    save(&mut cx, handle, &out, "deep-work-3-after-back");
+    assert!(has_focus(&mut cx, handle, "work-list"));
+    let (numbers, selected) = listed(&mut cx);
+    assert_eq!((numbers.len(), numbers[61], selected), (62, 255, 61));
+    let cursors: Vec<Option<String>> = backend.lists.lock().unwrap()[before..]
+        .iter()
+        .map(|query| query.iter().find(|(k, _)| k == "cursor").map(|(_, v)| v.clone()))
+        .collect();
+    assert_eq!(cursors, [None, Some("50".to_owned())], "the reload read both pages");
+
+    // Enter reopens #255.
+    key(&mut cx, handle, &["enter"]);
+    save(&mut cx, handle, &out, "deep-work-4-enter");
+    assert_eq!(editing(&mut cx), Some(255));
+}
+
+/// Issue 91, a reload that stops before pmd's list ends: a rank save on #255, then a listing whose second page hands
+/// back its own cursor. The rows from before the save stay with #255 selected, beside the error and Retry. Keyboard
+/// from row 55; each state is saved, then checked.
+#[test]
+#[ignore = "writes issue 91 stopped-reload Work items state offscreen"]
+fn captures_work_reload_stopped() {
+    use crate::work_items_tests::{FakeWork, work_item};
+    use std::sync::atomic::Ordering;
+    let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").expect("CAPTURE_DIR"));
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cx = headless();
+    let projects = [
+        "gh-x",
+        "codexbar",
+        "hs-buddy",
+        "chief",
+        "set-it-free-loop",
+        "project-dashboard",
+    ];
+    let items = (0..130)
+        .map(|ix| {
+            let project = projects[ix % projects.len()];
+            work_item(ix, project, "issue", &format!("Maintenance item {}", ix + 1))
+        })
+        .collect();
+    let backend = FakeWork::new(&["read", "write:work"], items);
+    backend.in_pmd_order.store(true, Ordering::SeqCst);
+    let (handle, manage) = open_manage_dialog(
+        &mut cx,
+        backend.clone(),
+        None,
+        dashboard_core::write::Feature::WorkItems,
+    );
+    let listed = |cx: &mut HeadlessAppContext| {
+        cx.update(|cx| {
+            let work = manage.read(cx).work_items().unwrap();
+            let numbers: Vec<u64> = work.items().iter().map(|item| item.number).collect();
+            (numbers, work.selected())
+        })
+    };
+    let editing = |cx: &mut HeadlessAppContext| {
+        cx.update(|cx| {
+            manage
+                .read(cx)
+                .work_items()
+                .unwrap()
+                .editor_item()
+                .map(|item| item.number)
+        })
+    };
+    let click = |cx: &mut HeadlessAppContext, id: &str| {
+        let id = gpui_kit::SharedString::from(id.to_owned());
+        cx.update_window(handle, |_, window, cx| window.click(id, cx)).unwrap();
+        settle(cx);
+    };
+
+    // All three pages, then Back from the first row's editor focuses the list, and Down to row 55, #255.
+    click(&mut cx, "work-load-more");
+    click(&mut cx, "work-load-more");
+    click(&mut cx, "work-row-0");
+    tab_to(&mut cx, handle, "tab", "work-back");
+    key(&mut cx, handle, &["enter"]);
+    for _ in 0..55 {
+        key(&mut cx, handle, &["down"]);
+    }
+    let (numbers, selected) = listed(&mut cx);
+    assert_eq!((numbers.len(), numbers[55], selected), (130, 255, 55));
+
+    // Enter, rank 5, Ctrl+Enter: the reload's second page hands back its own cursor, so it stops there.
+    key(&mut cx, handle, &["enter"]);
+    assert_eq!(editing(&mut cx), Some(255));
+    let rank = cx.update(|cx| manage.read(cx).input("rank").unwrap());
+    cx.update_window(handle, |_, window, cx| {
+        rank.update(cx, |input, cx| input.set_value("5", window, cx))
+    })
+    .unwrap();
+    backend.stuck_cursor.store(true, Ordering::SeqCst);
+    let before = backend.lists.lock().unwrap().len();
+    key(&mut cx, handle, &["ctrl-enter"]);
+    settle(&mut cx);
+
+    // Tab to Back to list, Enter: the rows from before the save, #255 still selected at row 56, the error and Retry.
+    tab_to(&mut cx, handle, "tab", "work-back");
+    key(&mut cx, handle, &["enter"]);
+    save(&mut cx, handle, &out, "stopped-work-1-after-back");
+    let (numbers, selected) = listed(&mut cx);
+    assert_eq!((numbers.len(), numbers[55], selected), (130, 255, 55));
+    let message = cx
+        .update_window(handle, |_, window, _| {
+            window.find("dialog-message").label().unwrap_or_default().to_owned()
+        })
+        .unwrap();
+    assert!(message.starts_with("The reload stopped after 2 pages"), "{message}");
+    let writes = backend.writes.lock().unwrap().clone();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].path, "v1/work/01JBXWORK0055");
+    let cursors: Vec<Option<String>> = backend.lists.lock().unwrap()[before..]
+        .iter()
+        .map(|query| query.iter().find(|(k, _)| k == "cursor").map(|(_, v)| v.clone()))
+        .collect();
+    assert_eq!(cursors, [None, Some("50".to_owned())]);
+
+    // Enter reopens #255.
+    key(&mut cx, handle, &["enter"]);
+    save(&mut cx, handle, &out, "stopped-work-2-enter");
+    assert_eq!(editing(&mut cx), Some(255));
+}

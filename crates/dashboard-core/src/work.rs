@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::edit::{Form, Row};
+use crate::selection::Beyond;
 use crate::write::WriteError;
 
 /// The editor's fields, as pmd names them, so a `400` that names one lands next to it.
@@ -22,6 +23,8 @@ pub const MAX_REASON: usize = 500;
 pub const MAX_RANK: i64 = 1_000_000_000;
 /// Items per page. pmd allows up to 500; a page this size keeps the dialog quick.
 pub const PAGE: usize = 50;
+/// The most pages a reload reads while it looks for the item that was selected (#91): 1,000 items at [`PAGE`].
+pub const FOLLOW_PAGES: usize = 20;
 
 /// A status's label, as the Board titles its columns.
 pub fn status_label(status: &str) -> &str {
@@ -136,6 +139,18 @@ impl WorkPage {
             .filter(|cursor| !cursor.is_empty())
             .map(str::to_owned);
         Ok(Self { items, next_cursor })
+    }
+
+    /// What lies past this page for a reload still looking for its selected item, this page read from `cursor` with
+    /// `pages` pages read so far (#91). Without a next cursor the listing has ended. With one, the reload reads on (from
+    /// `next_cursor`) only if this page brought at least one item, the cursor moved on and fewer than [`FOLLOW_PAGES`]
+    /// pages are read, so it can't spin; otherwise the rest of the listing is unread, not absent.
+    pub fn beyond(&self, cursor: Option<&str>, pages: usize) -> Beyond {
+        match self.next_cursor.as_deref() {
+            None => Beyond::End,
+            Some(next) if self.items.is_empty() || Some(next) == cursor || pages >= FOLLOW_PAGES => Beyond::Unread,
+            Some(_) => Beyond::More,
+        }
     }
 }
 

@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use dashboard_core::edit::{Form, Next};
-use dashboard_core::selection;
+use dashboard_core::selection::{self, Reload};
 use dashboard_core::work::{
     self, AUTO, FIELDS, Kind, MAX_REASON, STATUSES, WorkFilter, WorkItem, WorkPage, status_label,
 };
@@ -68,10 +68,19 @@ pub struct WorkItemsDialog {
     /// Bumped by every load from the first page, so an older page landing late can't replace a newer list.
     generation: u64,
     selected: usize,
+    /// A reload's pages so far, while it reads on to find the selected item (#91). The rows on screen, and their
+    /// selection, stay until it is found or the listing ends.
+    staged: Option<Staged>,
     load_more: Control,
     retry: Control,
     editor: Option<Editor>,
     editors_opened: u64,
+}
+
+/// The pages a reload has read so far, and how many.
+struct Staged {
+    rows: Vec<WorkItem>,
+    pages: usize,
 }
 
 pub(super) struct Editor {
@@ -227,6 +236,7 @@ impl Manage {
             load_error: None,
             generation: 0,
             selected: 0,
+            staged: None,
             load_more: control(cx),
             retry: control(cx),
             editor: None,
@@ -249,8 +259,9 @@ impl Manage {
         };
         let cursor = if reset {
             work.generation += 1;
-            // The old listing's cursor means nothing for the new query.
+            // The old listing's cursor, and any reload's pages, mean nothing for the new query.
             work.next_cursor = None;
+            work.staged = None;
             None
         } else {
             match &work.next_cursor {
@@ -277,28 +288,64 @@ impl Manage {
                     return;
                 }
                 work.loading = false;
+                let mut read_on = false;
                 match result {
-                    Ok(page) => {
-                        if cursor.is_none() {
-                            // Under the same filters the selected item stays selected wherever the new page puts
-                            // it (#91), after a save reorders it or a change elsewhere moves it. Under new filters
-                            // the position stays, as before; a filter chip has already reset it to the first row.
-                            let previous = (work.rows_filter == filter)
-                                .then(|| work.items.get(work.selected).map(|item| item.id.clone()))
-                                .flatten();
-                            work.rows_filter = filter;
-                            work.items = page.items;
-                            work.selected = selection::reselect(
-                                previous.as_deref(),
-                                work.selected,
-                                work.items.iter().map(|item| item.id.as_str()),
-                            );
-                        } else {
-                            work.items.extend(page.items);
+                    // A first page, or the next page of a reload still looking for the selected item.
+                    Ok(page) if cursor.is_none() || work.staged.is_some() => {
+                        let (mut rows, pages) = match work.staged.take() {
+                            Some(staged) => (staged.rows, staged.pages + 1),
+                            None => (Vec::new(), 1),
+                        };
+                        let beyond = page.beyond(cursor.as_deref(), pages);
+                        rows.extend(page.items);
+                        // Under the same filters the selected item stays selected wherever the reload puts it
+                        // (#91), after a save reorders it or a change elsewhere moves it, on whichever page. Under
+                        // new filters the position stays, as before; a filter chip has already reset it to the
+                        // first row.
+                        let previous = (work.rows_filter == filter)
+                            .then(|| work.items.get(work.selected).map(|item| item.id.clone()))
+                            .flatten();
+                        match selection::reload(
+                            previous.as_deref(),
+                            work.selected,
+                            rows.iter().map(|item| item.id.as_str()),
+                            beyond,
+                        ) {
+                            Reload::More => {
+                                work.staged = Some(Staged { rows, pages });
+                                work.next_cursor = page.next_cursor;
+                                read_on = true;
+                            }
+                            Reload::Incomplete => {
+                                // Stopped before the listing ended, without the selected item: it may only be unread.
+                                // As with a failed page, the rows on screen and their selection stay, as the last
+                                // good data, beside the error and Retry; the pages read are dropped, not shown as the
+                                // list.
+                                work.next_cursor = None;
+                                work.load_error = Some(format!(
+                                    "The reload stopped after {pages} {}, before pmd's list ended and before it \
+                                     reached the selected item. These rows are from before the reload.",
+                                    if pages == 1 { "page" } else { "pages" }
+                                ));
+                            }
+                            Reload::Show(selected) => {
+                                work.rows_filter = filter;
+                                work.items = rows;
+                                work.selected = selected;
+                                work.next_cursor = page.next_cursor;
+                            }
                         }
+                    }
+                    Ok(page) => {
+                        work.items.extend(page.items);
                         work.next_cursor = page.next_cursor;
                     }
                     Err(error) => {
+                        if work.staged.take().is_some() {
+                            // A reload that failed part way keeps the rows on screen, with their selection, as the
+                            // last good data. Its cursor belongs to the new listing, so it can't load more of them.
+                            work.next_cursor = None;
+                        }
                         if cursor.is_none() && work.rows_filter != filter {
                             // The rows on screen belong to other filters: drop them rather than mix listings. Under
                             // the same filters they are the last good data and stay, beside the error.
@@ -307,6 +354,9 @@ impl Manage {
                         }
                         work.load_error = Some(error.to_string());
                     }
+                }
+                if read_on {
+                    manage.load_work(id, false, cx);
                 }
                 cx.notify();
             });

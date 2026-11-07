@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::edit::{Form, Row};
+use crate::selection::Beyond;
 use crate::write::WriteError;
 
 /// The editor's fields, as pmd names them, so a `400` that names one lands next to it.
@@ -140,14 +141,16 @@ impl WorkPage {
         Ok(Self { items, next_cursor })
     }
 
-    /// Where a reload still looking for its selected item reads on from, after this page, read from `cursor`, made
-    /// `pages` pages so far (#91). `None` ends the reload: the listing is done, the page brought nothing or didn't move
-    /// the cursor on, or [`FOLLOW_PAGES`] pages have been read. Each page read on brings at least one item and a new
-    /// cursor, so the reload can't spin.
-    pub fn follow(&self, cursor: Option<&str>, pages: usize) -> Option<&str> {
-        self.next_cursor
-            .as_deref()
-            .filter(|next| !self.items.is_empty() && Some(*next) != cursor && pages < FOLLOW_PAGES)
+    /// What lies past this page for a reload still looking for its selected item, this page read from `cursor` with
+    /// `pages` pages read so far (#91). Without a next cursor the listing has ended. With one, the reload reads on (from
+    /// `next_cursor`) only if this page brought at least one item, the cursor moved on and fewer than [`FOLLOW_PAGES`]
+    /// pages are read, so it can't spin; otherwise the rest of the listing is unread, not absent.
+    pub fn beyond(&self, cursor: Option<&str>, pages: usize) -> Beyond {
+        match self.next_cursor.as_deref() {
+            None => Beyond::End,
+            Some(next) if self.items.is_empty() || Some(next) == cursor || pages >= FOLLOW_PAGES => Beyond::Unread,
+            Some(_) => Beyond::More,
+        }
     }
 }
 

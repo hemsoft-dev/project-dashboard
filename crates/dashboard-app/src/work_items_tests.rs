@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dashboard_core::cache::StatusCache;
-use dashboard_core::work::WorkItem;
+use dashboard_core::work::{self, WorkItem};
 use dashboard_core::write::{Precondition, Whoami, WriteBackend, WriteError, WriteRequest};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext};
@@ -66,6 +66,8 @@ pub(crate) struct FakeWork {
     pub fail_next_page: Mutex<Option<WriteError>>,
     /// Later pages answer with the cursor they were asked for, so the listing never moves on.
     pub stuck_cursor: AtomicBool,
+    /// Later pages come back empty but say the listing goes on.
+    pub empty_pages: AtomicBool,
 }
 
 impl FakeWork {
@@ -80,6 +82,7 @@ impl FakeWork {
             in_pmd_order: AtomicBool::new(false),
             fail_next_page: Mutex::default(),
             stuck_cursor: AtomicBool::new(false),
+            empty_pages: AtomicBool::new(false),
         })
     }
 
@@ -145,7 +148,11 @@ impl WriteBackend for FakeWork {
         }
         let limit: usize = get("limit").unwrap().parse().unwrap();
         let start: usize = get("cursor").map_or(0, |cursor| cursor.parse().unwrap());
-        let page: Vec<Value> = matching.iter().skip(start).take(limit).cloned().collect();
+        let page: Vec<Value> = if paged && self.empty_pages.load(Ordering::SeqCst) {
+            Vec::new()
+        } else {
+            matching.iter().skip(start).take(limit).cloned().collect()
+        };
         let next = if start + limit < matching.len() {
             if paged && self.stuck_cursor.load(Ordering::SeqCst) {
                 start.to_string()
@@ -1213,8 +1220,57 @@ async fn a_later_page_that_fails_keeps_the_rows_and_retry_finds_the_item(cx: &mu
     );
 }
 
+/// Loads the second page only, then the keyboard opens row 55, #255: Back from an editor focuses the list.
+async fn open_row_55_of_two_pages(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    view: &Entity<BoardView>,
+    manage: &Entity<Manage>,
+) {
+    click(cx, handle, "work-load-more");
+    settle(cx, handle, view).await;
+    click(cx, handle, "work-row-0");
+    click(cx, handle, "work-back");
+    for _ in 0..55 {
+        press(cx, handle, "down");
+    }
+    press(cx, handle, "enter");
+    assert_eq!(editing(cx, manage), Some(255));
+}
+
+/// After a reload that stopped before pmd's list ended without reaching #255: Back and Enter still reach #255, the
+/// `rows` from before the save stay with #255 selected where it was, the error shows beside Retry, and the save wrote
+/// once.
+fn assert_reload_kept_255(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    manage: &Entity<Manage>,
+    backend: &FakeWork,
+    rows: usize,
+) {
+    click(cx, handle, "work-back");
+    press(cx, handle, "enter");
+    assert_eq!(
+        editing(cx, manage),
+        Some(255),
+        "Enter still reopens the item just saved"
+    );
+    click(cx, handle, "work-back");
+    assert_eq!(selected(cx, manage), 55, "the selection stayed on #255");
+    assert_eq!(items(cx, manage).len(), rows, "the rows from before the save stay");
+    assert_eq!(numbers(cx, manage)[55], 255);
+    let message = text_of(cx, handle, "dialog-message");
+    assert!(
+        message.starts_with("The reload stopped after") && message.contains("before pmd's list ended"),
+        "{message}"
+    );
+    assert!(exists(cx, handle, "work-retry"));
+    assert!(!exists(cx, handle, "work-load-more"));
+    only_write_is_to(backend, 255);
+}
+
 #[gpui_kit::test]
-async fn a_listing_that_does_not_move_on_ends_the_reload(cx: &mut TestAppContext) {
+async fn a_listing_that_does_not_move_on_stops_the_reload_and_keeps_the_rows(cx: &mut TestAppContext) {
     let backend = in_pmd_order(ranked(130, |_| 0));
     let (handle, view, manage) = open_with(cx, backend.clone());
     open_dialog(cx, handle, &view).await;
@@ -1224,17 +1280,70 @@ async fn a_listing_that_does_not_move_on_ends_the_reload(cx: &mut TestAppContext
     let before = lists(&backend);
     click(cx, handle, "work-save");
     settle(cx, handle, &view).await;
-    only_write_is_to(&backend, 255);
+    assert_reload_kept_255(cx, handle, &manage, &backend, 130);
     assert_eq!(
         cursors_since(&backend, before),
         [None, Some("50".to_owned())],
-        "a page that hands back its own cursor ends the reload"
+        "a page that hands back its own cursor stops the reload"
     );
-    assert_eq!(items(cx, &manage).len(), 100);
+}
+
+#[gpui_kit::test]
+async fn an_empty_page_that_says_the_list_goes_on_stops_the_reload_and_keeps_the_rows(cx: &mut TestAppContext) {
+    let backend = in_pmd_order(ranked(130, |_| 0));
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    open_deep_row(cx, handle, &view, &manage, 55).await;
+    set_input(cx, handle, &manage, "rank", "5");
+    backend.empty_pages.store(true, Ordering::SeqCst);
+    let before = lists(&backend);
+    click(cx, handle, "work-save");
+    settle(cx, handle, &view).await;
+    assert_reload_kept_255(cx, handle, &manage, &backend, 130);
+    assert_eq!(cursors_since(&backend, before), [None, Some("50".to_owned())]);
+}
+
+#[gpui_kit::test]
+async fn a_reload_at_its_page_limit_without_the_item_stops_and_keeps_the_rows(cx: &mut TestAppContext) {
+    // Rank 5 sorts #255 last of 1,060, on page 22, past the 20 pages a reload reads.
+    let backend = in_pmd_order(ranked(1060, |_| 0));
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    open_row_55_of_two_pages(cx, handle, &view, &manage).await;
+    set_input(cx, handle, &manage, "rank", "5");
+    let before = lists(&backend);
+    click(cx, handle, "work-save");
+    settle(cx, handle, &view).await;
+    assert_reload_kept_255(cx, handle, &manage, &backend, 100);
+    let read = cursors_since(&backend, before);
+    assert_eq!(read.len(), work::FOLLOW_PAGES, "exactly the page limit, and no more");
+    assert_eq!(read.last(), Some(&Some("950".to_owned())));
+}
+
+#[gpui_kit::test]
+async fn an_item_found_on_the_last_page_a_reload_reads_stays_selected(cx: &mut TestAppContext) {
+    // Ranks 0 and 10 around rank 5 put #255 at row 990, on page 20, the last a reload reads.
+    let backend = in_pmd_order(ranked(1060, |ix| if ix < 990 { 0 } else { 10 }));
+    let (handle, view, manage) = open_with(cx, backend.clone());
+    open_dialog(cx, handle, &view).await;
+    open_row_55_of_two_pages(cx, handle, &view, &manage).await;
+    set_input(cx, handle, &manage, "rank", "5");
+    let before = lists(&backend);
+    click(cx, handle, "work-save");
+    settle(cx, handle, &view).await;
+    only_write_is_to(&backend, 255);
     click(cx, handle, "work-back");
-    assert_eq!(selected(cx, &manage), 55, "a listed row");
     press(cx, handle, "enter");
-    assert_eq!(editing(cx, &manage), Some(256));
+    assert_eq!(editing(cx, &manage), Some(255));
+    click(cx, handle, "work-back");
+    assert_eq!(selected(cx, &manage), 989);
+    assert_eq!(items(cx, &manage).len(), 1000, "the 20 pages read, shown as the list");
+    assert!(!exists(cx, handle, "dialog-message"), "no error");
+    assert!(
+        cx.update(|cx| manage.read(cx).work_items().unwrap().has_more()),
+        "Load more goes on from page 21"
+    );
+    assert_eq!(cursors_since(&backend, before).len(), work::FOLLOW_PAGES);
 }
 
 /// Runs one task at a time until `done`, so a test can act between a request and its answer.

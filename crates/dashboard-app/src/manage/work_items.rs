@@ -296,7 +296,7 @@ impl Manage {
                             Some(staged) => (staged.rows, staged.pages + 1),
                             None => (Vec::new(), 1),
                         };
-                        let follow = page.follow(cursor.as_deref(), pages).map(str::to_owned);
+                        let beyond = page.beyond(cursor.as_deref(), pages);
                         rows.extend(page.items);
                         // Under the same filters the selected item stays selected wherever the reload puts it
                         // (#91), after a save reorders it or a change elsewhere moves it, on whichever page. Under
@@ -309,12 +309,24 @@ impl Manage {
                             previous.as_deref(),
                             work.selected,
                             rows.iter().map(|item| item.id.as_str()),
-                            follow.is_some(),
+                            beyond,
                         ) {
                             Reload::More => {
                                 work.staged = Some(Staged { rows, pages });
-                                work.next_cursor = follow;
+                                work.next_cursor = page.next_cursor;
                                 read_on = true;
+                            }
+                            Reload::Incomplete => {
+                                // Stopped before the listing ended, without the selected item: it may only be unread.
+                                // As with a failed page, the rows on screen and their selection stay, as the last
+                                // good data, beside the error and Retry; the pages read are dropped, not shown as the
+                                // list.
+                                work.next_cursor = None;
+                                work.load_error = Some(format!(
+                                    "The reload stopped after {pages} {}, before pmd's list ended and before it \
+                                     reached the selected item. These rows are from before the reload.",
+                                    if pages == 1 { "page" } else { "pages" }
+                                ));
                             }
                             Reload::Show(selected) => {
                                 work.rows_filter = filter;

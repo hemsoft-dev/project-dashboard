@@ -954,14 +954,10 @@ async fn a_moved_item_stays_selected_when_the_reload_brings_back_only_the_first_
     click(cx, handle, "work-load-more");
     settle(cx, handle, &view).await;
     assert_eq!(items(cx, &manage).len(), 62);
-    // Load more is gone with the last page, and its focus with it: Tab back to the list, then the keyboard reaches
-    // row 55, scrolling as it goes.
-    for _ in 0..40 {
-        if focused(cx, handle, "work-list") {
-            break;
-        }
-        press(cx, handle, "tab");
-    }
+    // Load more is gone with the last page, and its focus with it. Back from an editor focuses the list again; the
+    // keyboard then reaches row 55, scrolling as it goes.
+    click(cx, handle, "work-row-0");
+    click(cx, handle, "work-back");
     assert!(focused(cx, handle, "work-list"));
     for _ in 0..55 {
         press(cx, handle, "down");

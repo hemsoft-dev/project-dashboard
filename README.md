@@ -137,8 +137,17 @@ Hover the dot for every signal behind it. A status's age never greys a dot.
 
   Several rows can be open at once, and they stay open across refreshes. Click an item, or a row's last activity, to
   open it in your browser.
-- **Sort** by update time with the **Updated** column header: newest first, then oldest first, then config order
-  again. Repositories with nothing to date stay at the bottom either way.
+- **Sort** by any column: click its header for one direction, again for the other, and a third time for config order.
+  The sorted header is bright and shows an arrow, ↑ for ascending and ↓ for descending. Each start sorts by
+  **Updated**, newest first; the sort is never saved.
+  - Repository, Last activity and T3 session sort by their shown text, A to Z first, ignoring case. Last activity
+    compares its label and title ("PR #12 Fix the thing"); **Updated** compares the activity's time.
+  - PRs, Issues, Merged 24h and Merged 7d sort as numbers, most first, so 10 comes before 2. Zero is a count.
+  - A row with nothing to compare (`?`, `–`, `—`, no T3 thread, a failed read, still loading) stays at the bottom in
+    both directions. Rows that compare equal keep config order.
+- **Filter** the Project table with the box beside the view buttons: rows whose name contains the text, ignoring case,
+  as you type. The sort, expanded rows and refreshes carry on underneath; clear the box (or **Clear filter** when
+  nothing matches) to see every row again. The filter is never saved.
 - **Priority** shows pmd's tier, such as `P0`, immediately before PRs. Click its header for highest priority first,
   then lowest first, then config order. Equal priorities keep config order; unknowns stay last in either direction.
   A repository without a known tier shows `—`. Failed reads retain the last good priorities from the same pmd

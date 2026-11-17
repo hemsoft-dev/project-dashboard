@@ -32,8 +32,9 @@ use dashboard_core::status::{HealthRow, Issue, PullRequest, RunOutcome, Section,
 use dashboard_core::t3::{self, Lookup, ThreadFinder};
 use dashboard_core::ui_state::UiState;
 use dashboard_core::write::{PmdWriter, WriteBackend};
-use dashboard_core::{APP_NAME, Board, Card, Overall, SortOrder};
+use dashboard_core::{APP_NAME, Board, Card, Overall, SortColumn, SortOrder};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, TitleBar,
@@ -134,6 +135,8 @@ pub struct BoardView {
     /// Expanded rows, by checkout, so expansion survives refreshes and re-sorting.
     expanded: HashSet<PathBuf>,
     sort: SortOrder,
+    /// The Project table's name filter (#98). Like the sort, it starts empty on every launch.
+    filter: Entity<InputState>,
     pub(crate) columns: ColumnWidths,
     resizing: Option<Resize>,
     /// The repository column's width as last laid out, which a narrow window can make less than its setting.
@@ -188,6 +191,8 @@ impl BoardView {
         let manage_events = cx.subscribe(&manage, |view, _, event, cx| match event {
             ManageEvent::Wrote => view.refresh_all(cx),
         });
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter projects by name"));
+        cx.observe(&filter, |_, _, cx| cx.notify()).detach();
         let writer = match (&options.pmd, &options.config_dir) {
             (Some(_), Some(dir)) => Config::load(dir)
                 .ok()
@@ -215,7 +220,8 @@ impl BoardView {
             config_file,
             options,
             expanded: HashSet::new(),
-            sort: SortOrder::NewestFirst,
+            sort: SortOrder::NEWEST_FIRST,
+            filter,
             columns,
             resizing: None,
             repository_laid_out: Rc::new(Cell::new(None)),
@@ -492,14 +498,48 @@ impl BoardView {
     }
 
     /// Moves to the next order: newest updated first, oldest first, then config order.
+    #[cfg(test)]
     pub fn cycle_sort(&mut self, cx: &mut Context<Self>) {
         self.sort = self.sort.next();
         cx.notify();
     }
 
+    #[cfg(test)]
     pub fn cycle_priority_sort(&mut self, cx: &mut Context<Self>) {
         self.sort = self.sort.next_priority();
         cx.notify();
+    }
+
+    /// A click on `column`'s header: its first direction, the reverse, then config order (#98).
+    pub fn cycle_column_sort(&mut self, column: SortColumn, cx: &mut Context<Self>) {
+        self.sort = self.sort.next_for(column);
+        cx.notify();
+    }
+
+    /// The name filter's text as typed.
+    fn filter_text(&self, cx: &App) -> String {
+        self.filter.read(cx).value().to_string()
+    }
+
+    /// Replaces the name filter's text, as typing would.
+    pub fn set_filter(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.filter
+            .update(cx, |input, cx| input.set_value(text.to_owned(), window, cx));
+        cx.notify();
+    }
+
+    /// The displayed T3 thread title for a row, when it has a thread.
+    fn session_title(&self, card: &Card) -> Option<String> {
+        self.threads
+            .get(&card.checkout)
+            .and_then(|lookup| lookup.as_ref().ok())
+            .map(|link| link.title.clone())
+    }
+
+    /// The card indices the Project table shows: matching the name filter, in the current sort.
+    fn visible_rows(&self, cx: &App) -> Vec<usize> {
+        self.board
+            .rows(self.sort, &self.filter_text(cx), |card| self.session_title(card))
     }
 
     /// Priority never occupies a status worker or delays the UI. Coalesce repeated requests and ignore an old config's result.
@@ -545,10 +585,9 @@ impl BoardView {
 
     /// The checkouts in the order the table shows them.
     #[cfg(test)]
-    pub fn row_order(&self) -> Vec<PathBuf> {
+    pub fn row_order(&self, cx: &App) -> Vec<PathBuf> {
         let cards = self.board.cards();
-        self.board
-            .order(self.sort)
+        self.visible_rows(cx)
             .into_iter()
             .map(|ix| cards[ix].checkout.clone())
             .collect()
@@ -1155,19 +1194,13 @@ impl BoardView {
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> gpui_kit::Stateful<gpui_kit::Div> {
+        // Session is pinned outside this scrolling row; the render places its header beside it.
+        let cells: Vec<AnyElement> = SortColumn::ALL
+            .into_iter()
+            .filter(|&column| column != SortColumn::Session)
+            .map(|column| self.sort_header(column, cx).into_any_element())
+            .collect();
         let theme = cx.theme();
-        let foreground = theme.foreground;
-        let (arrow, sort_label) = match self.sort {
-            SortOrder::Config | SortOrder::PriorityFirst | SortOrder::PriorityLast => ("", "Updated, not sorted"),
-            SortOrder::NewestFirst => ("↓", "Updated, newest first"),
-            SortOrder::OldestFirst => ("↑", "Updated, oldest first"),
-        };
-        let sorted = matches!(self.sort, SortOrder::NewestFirst | SortOrder::OldestFirst);
-        let (priority_arrow, priority_label) = match self.sort {
-            SortOrder::PriorityFirst => ("↑", "Priority, highest first"),
-            SortOrder::PriorityLast => ("↓", "Priority, lowest first"),
-            _ => ("", "Priority, not sorted"),
-        };
         h_flex()
             .id("table-header")
             .px_2()
@@ -1187,66 +1220,69 @@ impl BoardView {
             .border_color(theme.border)
             .child(div().w(CHEVRON).flex_none())
             .child(div().w(STATE).flex_none())
+            .children(cells)
+    }
+
+    /// A header cell that sorts its column (#98): each click moves to its first direction, the reverse, then config
+    /// order. The sorted column's title is bright and carries an arrow, up for ascending and down for descending.
+    fn sort_header(&self, column: SortColumn, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let (muted, foreground) = (theme.muted_foreground, theme.foreground);
+        let direction = self.sort.direction_of(column);
+        // Counts are right-aligned, so their arrow goes first and the title stays over the numbers.
+        let numeric = matches!(
+            column,
+            SortColumn::PullRequests | SortColumn::Issues | SortColumn::Merged24h | SortColumn::Merged7d
+        );
+        let title = div().min_w_0().truncate().child(column.title());
+        let arrow = direction.map(|direction| div().flex_none().child(direction.arrow()));
+        let cell = h_flex()
+            .id(sort_id(column))
+            .test_support()
+            .aria_label(self.sort.label(column))
+            .size_full()
+            .min_w_0()
+            .gap_1()
+            .text_xs()
+            .font_semibold()
+            .text_color(muted)
+            .cursor_pointer()
+            .when(numeric, |this| this.justify_end())
+            // The pinned session lane sits outside the scrolling header row and pads its own text.
+            .when(column == SortColumn::Session, |this| this.px_2())
+            .when(direction.is_some(), |this| this.text_color(foreground))
+            .hover(move |style| style.text_color(foreground))
+            .on_click(cx.listener(move |view, _, _, cx| view.cycle_column_sort(column, cx)));
+        let cell = if numeric {
+            cell.children(arrow).child(title)
+        } else {
+            cell.child(title).children(arrow)
+        };
+        self.header_cell(column.column(), cell, cx)
+    }
+
+    /// Shown in place of rows when the name filter matches none.
+    fn render_no_match(&self, filter: &str, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .id("no-match")
+            .test_support()
+            .aria_label(format!("No projects match “{}”", filter.trim()))
+            .py_8()
+            .gap_2()
+            .items_center()
             .child(
-                self.header_cell(
-                    Column::Repository,
-                    div()
-                        .id("header-repository")
-                        .test_support()
-                        .truncate()
-                        .child(column_title(Column::Repository)),
-                    cx,
-                ),
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("No projects match “{}”", filter.trim())),
             )
             .child(
-                self.header_cell(
-                    Column::Priority,
-                    h_flex()
-                        .id("sort-priority")
-                        .test_support()
-                        .aria_label(priority_label)
-                        .size_full()
-                        .gap_1()
-                        .cursor_pointer()
-                        .when(!priority_arrow.is_empty(), |this| this.text_color(foreground))
-                        .hover(move |style| style.text_color(foreground))
-                        .on_click(cx.listener(|view, _, _, cx| view.cycle_priority_sort(cx)))
-                        .child(column_title(Column::Priority))
-                        .child(priority_arrow),
-                    cx,
-                ),
+                Button::new("clear-filter")
+                    .small()
+                    .ghost()
+                    .label("Clear filter")
+                    .on_click(cx.listener(|view, _, window, cx| view.set_filter("", window, cx))),
             )
-            .child(self.header_cell(
-                Column::PullRequests,
-                div().truncate().text_right().child(column_title(Column::PullRequests)),
-                cx,
-            ))
-            .child(self.header_cell(
-                Column::Issues,
-                div().truncate().text_right().child(column_title(Column::Issues)),
-                cx,
-            ))
-            .child(self.header_cell(Column::Merged24h, div().truncate().text_right().child("Merged 24h"), cx))
-            .child(self.header_cell(Column::Merged7d, div().truncate().text_right().child("Merged 7d"), cx))
-            .child(
-                self.header_cell(
-                    Column::Updated,
-                    h_flex()
-                        .id("sort-updated")
-                        .test_support()
-                        .aria_label(sort_label)
-                        .size_full()
-                        .gap_1()
-                        .cursor_pointer()
-                        .when(sorted, |this| this.text_color(foreground))
-                        .hover(move |style| style.text_color(foreground))
-                        .on_click(cx.listener(|view, _, _, cx| view.cycle_sort(cx)))
-                        .child(column_title(Column::Updated))
-                        .child(arrow),
-                    cx,
-                ),
-            )
-            .child(self.header_cell(Column::Activity, div().truncate().child("Last activity"), cx))
     }
 
     fn render_row(
@@ -1263,24 +1299,9 @@ impl BoardView {
         let toggle = card.checkout.clone();
         let toggle_chevron = card.checkout.clone();
         let now = self.now();
-        let count = |section: &str, len: fn(&StatusDocument) -> usize| -> String {
-            card.document.as_ref().map_or_else(
-                || "–".to_owned(),
-                |document| section_count(document, section, len(document)),
-            )
-        };
-        let open_counts = card
-            .document
-            .as_ref()
-            .and_then(|doc| doc.hosted.as_ref())
-            .map(|hosted| &hosted.open_counts);
-        let prs = open_counts.and_then(|counts| counts.open_prs).map_or_else(
-            || count("pullRequests.open", |document| document.pull_requests.open.len()),
-            |n| n.to_string(),
-        );
-        let issues = open_counts
-            .and_then(|counts| counts.open_issues)
-            .map_or_else(|| count("issues", |document| document.issues.len()), |n| n.to_string());
+        // The same values the PRs and Issues sorts compare (#98).
+        let prs = card.open_pull_requests().to_string();
+        let issues = card.open_issues().to_string();
         let error = card.display_error().filter(|error| !error.is_setup());
         // pmd regenerates a status only when the repository changes, and confirms it on every sweep: show both, each
         // with its local time on hover.
@@ -1544,15 +1565,10 @@ impl BoardView {
                     .child(issues),
             )
             .children([Column::Merged24h, Column::Merged7d].map(|column| {
-                let counts = card
-                    .document
-                    .as_ref()
-                    .and_then(|doc| doc.hosted.as_ref())
-                    .map(|hosted| &hosted.merge_counts);
-                let count = counts.and_then(|counts| match column {
-                    Column::Merged24h => counts.merged_24h,
-                    _ => counts.merged_7d,
-                });
+                let count = match column {
+                    Column::Merged24h => card.merged_24h(),
+                    _ => card.merged_7d(),
+                };
                 let text = count.map_or_else(|| "—".to_owned(), |n| n.to_string());
                 column_cell(column, &self.columns)
                     .id((
@@ -1930,6 +1946,21 @@ fn column_cell(column: Column, widths: &ColumnWidths) -> gpui_kit::Div {
     }
 }
 
+/// A sortable header's element id. Repository keeps its older `header-repository` id.
+fn sort_id(column: SortColumn) -> &'static str {
+    match column {
+        SortColumn::Repository => "header-repository",
+        SortColumn::Priority => "sort-priority",
+        SortColumn::PullRequests => "sort-prs",
+        SortColumn::Issues => "sort-issues",
+        SortColumn::Merged24h => "sort-merged24h",
+        SortColumn::Merged7d => "sort-merged7d",
+        SortColumn::Updated => "sort-updated",
+        SortColumn::Activity => "sort-activity",
+        SortColumn::Session => "sort-session",
+    }
+}
+
 fn column_title(column: Column) -> &'static str {
     match column {
         Column::Repository => "Repository",
@@ -2020,6 +2051,26 @@ impl Render for BoardView {
                         )
                     }),
                 )
+                // The Project table's name filter (#98), beside the view it filters.
+                .when(
+                    self.selected_view == dashboard_core::config::View::Project && !self.board.is_empty(),
+                    |this| {
+                        this.child(
+                            div().w(rems(16.)).min_w(rems(7.)).flex_shrink(1.).child(
+                                Input::new(&self.filter)
+                                    .id("project-filter")
+                                    .aria_label("Filter projects by name")
+                                    .small()
+                                    .cleanable(true)
+                                    .prefix(
+                                        Icon::new(IconName::Search)
+                                            .small()
+                                            .text_color(cx.theme().muted_foreground),
+                                    ),
+                            ),
+                        )
+                    },
+                )
                 .child(div().flex_1())
                 .when(self.selected_view == dashboard_core::config::View::Project, |this| {
                     this.child(self.render_source_freshness(cx))
@@ -2044,12 +2095,15 @@ impl Render for BoardView {
                 window.viewport_size().width / window.rem_size(),
                 self.resizing.is_some_and(|resize| resize.automatic_activity),
             );
-            let rows: Vec<AnyElement> = self
-                .board
-                .order(self.sort)
+            let filter = self.filter_text(cx);
+            let mut rows: Vec<AnyElement> = self
+                .visible_rows(cx)
                 .into_iter()
                 .map(|ix| self.render_row(ix, &cards[ix], table_width, cx).into_any_element())
                 .collect();
+            if rows.is_empty() {
+                rows.push(self.render_no_match(&filter, cx).into_any_element());
+            }
             content = content.child(
                 v_flex()
                     .flex_1()
@@ -2066,7 +2120,7 @@ impl Render for BoardView {
                                     .track_scroll(&self.table_scroll)
                                     .child(self.render_header(cx).min_w(table_width)),
                             )
-                            .child(self.header_cell(Column::Session, div().px_2().text_xs().child("T3 session"), cx)),
+                            .child(self.sort_header(SortColumn::Session, cx)),
                     )
                     .child(
                         v_flex()
@@ -2263,12 +2317,9 @@ fn state_dot(ix: usize, overall: Overall, signals: Option<dashboard_core::Signal
 
 /// Keep the count of loaded rows even when enrichment failed. An empty unavailable list is unknown ("?"),
 /// and a section turned off for this run reads "–".
+#[cfg(test)]
 pub(crate) fn section_count(document: &StatusDocument, section: &str, len: usize) -> String {
-    match document.section(section) {
-        Some(section) if section.is_unavailable() && len == 0 => "?".to_owned(),
-        Some(section) if section.is_disabled() => "–".to_owned(),
-        _ => len.to_string(),
-    }
+    dashboard_core::Count::of_section(document, section, len).to_string()
 }
 
 fn section_label(name: &str) -> &str {

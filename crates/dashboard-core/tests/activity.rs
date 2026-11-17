@@ -194,15 +194,15 @@ fn config_order_is_the_default_and_update_time_sorts_both_ways() {
     assert_eq!(SortOrder::default(), SortOrder::Config);
     assert_eq!(board.order(SortOrder::Config), [0, 1, 2, 3, 4, 5]);
     // Ties keep config order; repositories without an update time go last, in config order, either way.
-    assert_eq!(board.order(SortOrder::NewestFirst), [2, 4, 0, 3, 1, 5]);
-    assert_eq!(board.order(SortOrder::OldestFirst), [0, 3, 4, 2, 1, 5]);
+    assert_eq!(board.order(SortOrder::NEWEST_FIRST), [2, 4, 0, 3, 1, 5]);
+    assert_eq!(board.order(SortOrder::OLDEST_FIRST), [0, 3, 4, 2, 1, 5]);
 }
 
 #[test]
 fn the_sort_cycles_newest_oldest_then_config() {
-    assert_eq!(SortOrder::Config.next(), SortOrder::NewestFirst);
-    assert_eq!(SortOrder::NewestFirst.next(), SortOrder::OldestFirst);
-    assert_eq!(SortOrder::OldestFirst.next(), SortOrder::Config);
+    assert_eq!(SortOrder::Config.next(), SortOrder::NEWEST_FIRST);
+    assert_eq!(SortOrder::NEWEST_FIRST.next(), SortOrder::OLDEST_FIRST);
+    assert_eq!(SortOrder::OLDEST_FIRST.next(), SortOrder::Config);
 }
 
 #[test]
@@ -228,8 +228,8 @@ fn loading_and_failed_cards_without_a_status_sort_last() {
         },
         &mut cache,
     );
-    assert_eq!(board.order(SortOrder::NewestFirst), [2, 0, 1]);
-    assert_eq!(board.order(SortOrder::OldestFirst), [2, 0, 1]);
+    assert_eq!(board.order(SortOrder::NEWEST_FIRST), [2, 0, 1]);
+    assert_eq!(board.order(SortOrder::OLDEST_FIRST), [2, 0, 1]);
 }
 
 #[test]

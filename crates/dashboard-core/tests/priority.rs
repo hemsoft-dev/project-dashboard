@@ -178,8 +178,8 @@ fn priority_sort_keeps_ties_and_unknowns_in_config_order_in_both_directions() {
         );
     }
     board.set_priorities(Priorities::parse(PROJECTS.as_bytes()).unwrap());
-    assert_eq!(board.order(SortOrder::PriorityFirst), [3, 1, 4, 0, 2, 5]);
-    assert_eq!(board.order(SortOrder::PriorityLast), [1, 4, 3, 0, 2, 5]);
+    assert_eq!(board.order(SortOrder::PRIORITY_FIRST), [3, 1, 4, 0, 2, 5]);
+    assert_eq!(board.order(SortOrder::PRIORITY_LAST), [1, 4, 3, 0, 2, 5]);
     assert_eq!(board.order(SortOrder::Config), [0, 1, 2, 3, 4, 5]);
     // Status refreshes don't overwrite priority; priority failures don't change gh-x health.
     let mut cache = StatusCache::default();

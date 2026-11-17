@@ -19,6 +19,7 @@ pub mod projects;
 pub mod recovery;
 pub mod scheduler;
 pub mod selection;
+pub mod sort;
 pub mod source;
 pub mod status;
 pub mod t3;
@@ -35,6 +36,8 @@ use crate::cache::StatusCache;
 use crate::scheduler::Outcome;
 use crate::source::FetchError;
 use crate::status::StatusDocument;
+
+pub use crate::sort::{Direction, SortColumn, SortOrder};
 
 /// The app's name, as the window title and the taskbar show it.
 pub const APP_NAME: &str = "Project Dashboard";
@@ -126,6 +129,43 @@ impl Signals {
     }
 }
 
+/// An open-count cell: a number, `?` when its section couldn't be read, or `–` when it's off or there's no status.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Count {
+    Known(u64),
+    Unavailable,
+    Off,
+}
+
+impl Count {
+    /// A status section's count as the table shows it. An unavailable section that still lists items shows them.
+    pub fn of_section(document: &StatusDocument, section: &str, len: usize) -> Self {
+        match document.section(section) {
+            Some(section) if section.is_unavailable() && len == 0 => Self::Unavailable,
+            Some(section) if section.is_disabled() => Self::Off,
+            _ => Self::Known(len as u64),
+        }
+    }
+
+    /// The number to sort by, or `None` for `?` and `–`.
+    pub fn value(self) -> Option<u64> {
+        match self {
+            Self::Known(n) => Some(n),
+            Self::Unavailable | Self::Off => None,
+        }
+    }
+}
+
+impl std::fmt::Display for Count {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Known(n) => write!(f, "{n}"),
+            Self::Unavailable => f.write_str("?"),
+            Self::Off => f.write_str("–"),
+        }
+    }
+}
+
 impl Card {
     pub fn new(checkout: PathBuf) -> Self {
         Self {
@@ -156,6 +196,58 @@ impl Card {
     /// The newest PR, issue or run in the latest status.
     pub fn last_activity(&self) -> Option<Activity> {
         self.document.as_ref().and_then(last_activity)
+    }
+
+    /// The PRs column: pmd's open count, else the status's open list.
+    pub fn open_pull_requests(&self) -> Count {
+        self.open_count(
+            |hosted| hosted.open_counts.open_prs,
+            "pullRequests.open",
+            |document| document.pull_requests.open.len(),
+        )
+    }
+
+    /// The Issues column: pmd's open count, else the status's issue list.
+    pub fn open_issues(&self) -> Count {
+        self.open_count(
+            |hosted| hosted.open_counts.open_issues,
+            "issues",
+            |document| document.issues.len(),
+        )
+    }
+
+    fn open_count(
+        &self,
+        hosted: fn(&pmd::Hosted) -> Option<u64>,
+        section: &str,
+        len: fn(&StatusDocument) -> usize,
+    ) -> Count {
+        let Some(document) = &self.document else {
+            return Count::Off;
+        };
+        match document.hosted.as_ref().and_then(hosted) {
+            Some(n) => Count::Known(n),
+            None => Count::of_section(document, section, len(document)),
+        }
+    }
+
+    /// pmd's merged-in-24-hours count, when it supplies one.
+    pub fn merged_24h(&self) -> Option<u64> {
+        self.document.as_ref()?.hosted.as_ref()?.merge_counts.merged_24h
+    }
+
+    /// pmd's merged-in-7-days count, when it supplies one.
+    pub fn merged_7d(&self) -> Option<u64> {
+        self.document.as_ref()?.hosted.as_ref()?.merge_counts.merged_7d
+    }
+
+    /// The Last activity column's text ("PR #12 Fix the thing"), or `None` when it shows an error or a placeholder.
+    pub fn activity_text(&self) -> Option<String> {
+        if self.display_error().is_some_and(|error| !error.is_setup()) {
+            return None;
+        }
+        self.last_activity()
+            .map(|activity| format!("{} {}", activity.label, activity.title).trim_end().to_owned())
     }
 
     /// What pmd's data flags for this project, or `None` without pmd data.
@@ -430,35 +522,20 @@ impl Board {
             .find(|error| error.is_setup())
     }
 
-    /// The cards' indices in config, update-time, or priority order. Unknown values sort last in either direction;
+    /// The cards' indices in config order or sorted by one column. Unknown values sort last in either direction;
     /// ties retain config order.
     pub fn order(&self, sort: SortOrder) -> Vec<usize> {
-        let mut order: Vec<usize> = (0..self.cards.len()).collect();
-        if sort == SortOrder::Config {
-            return order;
-        }
-        if matches!(sort, SortOrder::PriorityFirst | SortOrder::PriorityLast) {
-            order.sort_by(
-                |&a, &b| match (self.priority(&self.cards[a]), self.priority(&self.cards[b])) {
-                    (Some(a), Some(b)) if sort == SortOrder::PriorityFirst => a.cmp(&b),
-                    (Some(a), Some(b)) => b.cmp(&a),
-                    (a, b) => b.is_some().cmp(&a.is_some()),
-                },
-            );
-            return order;
-        }
-        let updated: Vec<_> = self
-            .cards
-            .iter()
-            .map(|card| card.last_activity().map(|activity| activity.at))
+        self.rows(sort, "", |_| None)
+    }
+
+    /// The Project table's rows (#98): the cards whose displayed name contains `filter`, ignoring case, in `sort`
+    /// order. `session` gives a card's displayed T3 thread title, which the board itself doesn't hold.
+    pub fn rows(&self, sort: SortOrder, filter: &str, session: impl Fn(&Card) -> Option<String>) -> Vec<usize> {
+        let mut rows: Vec<usize> = (0..self.cards.len())
+            .filter(|&ix| sort::name_matches(&self.cards[ix].name(), filter))
             .collect();
-        // Stable, so equal times and cards without an update time keep config order.
-        order.sort_by(|&a, &b| match (updated[a], updated[b]) {
-            (Some(a), Some(b)) if sort == SortOrder::NewestFirst => b.cmp(&a),
-            (Some(a), Some(b)) => a.cmp(&b),
-            (a, b) => b.is_some().cmp(&a.is_some()),
-        });
-        order
+        sort::order(&self.cards, &mut rows, sort, |card| self.priority(card), session);
+        rows
     }
 
     pub fn checkouts(&self) -> Vec<PathBuf> {
@@ -471,41 +548,6 @@ impl Board {
 
     pub fn priority(&self, card: &Card) -> Option<u8> {
         self.priorities.for_card(card)
-    }
-}
-
-/// How the table orders its rows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SortOrder {
-    /// The order of `repositories` in config.toml.
-    #[default]
-    Config,
-    /// Most recently updated first.
-    NewestFirst,
-    /// Least recently updated first.
-    OldestFirst,
-    /// P0 first, unknown priorities last; ties keep config order.
-    PriorityFirst,
-    /// Highest priority number first, unknown priorities last; ties keep config order.
-    PriorityLast,
-}
-
-impl SortOrder {
-    /// The order after a click on the Updated header: newest first, then oldest first, then config order again.
-    pub fn next(self) -> Self {
-        match self {
-            Self::Config | Self::PriorityFirst | Self::PriorityLast => Self::NewestFirst,
-            Self::NewestFirst => Self::OldestFirst,
-            Self::OldestFirst => Self::Config,
-        }
-    }
-
-    pub fn next_priority(self) -> Self {
-        match self {
-            Self::PriorityFirst => Self::PriorityLast,
-            Self::PriorityLast => Self::Config,
-            _ => Self::PriorityFirst,
-        }
     }
 }
 

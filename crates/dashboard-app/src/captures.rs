@@ -2054,3 +2054,99 @@ fn captures_t3_home_identity() {
         save(&mut cx, window, &out, &format!("{name}-tooltip"));
     }
 }
+
+/// pmd's hosted rows with open and merged counts that tell numeric order from text order (#98): 10 against 2, zeros,
+/// and minibot without counts (its sections are unavailable, so it shows "?").
+struct CountsSource;
+
+impl StatusSource for CountsSource {
+    fn fetch(&self, checkout: &Path, refresh: bool) -> Result<StatusDocument, FetchError> {
+        let mut document = demo::HostedSource.fetch(checkout, refresh)?;
+        let name = checkout.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+        let (prs, issues, merged_24h, merged_7d) = match name {
+            "gh-x" => (Some(2), Some(10), Some(0), Some(4)),
+            "codexbar" => (Some(10), Some(2), Some(3), Some(17)),
+            "minibot" => (None, None, None, None),
+            "hs-buddy" => (Some(1), Some(0), Some(1), Some(2)),
+            "project-dashboard" => (Some(3), Some(12), Some(2), Some(9)),
+            "chief" => (Some(0), Some(1), Some(0), Some(0)),
+            "hs-pi-dashboard" => (Some(2), Some(3), None, Some(1)),
+            "set-it-free-loop" => (Some(4), Some(0), Some(1), Some(11)),
+            "summarist" => (Some(0), Some(2), Some(0), Some(3)),
+            "tickdown" => (Some(1), Some(1), Some(0), Some(2)),
+            _ => (Some(0), Some(0), Some(0), Some(0)),
+        };
+        if let Some(hosted) = &mut document.hosted {
+            hosted.open_counts = dashboard_core::pmd::OpenCounts {
+                open_prs: prs,
+                open_issues: issues,
+            };
+            hosted.merge_counts = dashboard_core::pmd::MergeCounts { merged_24h, merged_7d };
+        }
+        Ok(document)
+    }
+}
+
+#[test]
+#[ignore = "writes screenshots; run with CAPTURE_DIR set"]
+fn captures_filter_and_sort() {
+    let Some(out) = std::env::var_os("CAPTURE_DIR").map(PathBuf::from) else {
+        return;
+    };
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cx = headless();
+    // At 480 px the count headers start past the scrolling data pane's edge; scroll to each, as a person would.
+    let click = |cx: &mut HeadlessAppContext, handle: AnyWindowHandle, id: &'static str| {
+        cx.update_window(handle, |_, window, cx| {
+            crate::ui_tests::reveal_header(window, id, cx);
+            window.click(id, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    let filter = |cx: &mut HeadlessAppContext, handle: AnyWindowHandle, view: &Entity<BoardView>, text: &str| {
+        cx.update_window(handle, |_, window, cx| {
+            view.update(cx, |view, cx| view.set_filter(text, window, cx))
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    for (width, suffix) in [(1100., ""), (480., "-narrow")] {
+        let (board, view) = open_sized(&mut cx, demo::checkouts(), width, 620.);
+        fill(&mut cx, &view, &CountsSource);
+        settle(&mut cx);
+        // Cold start: Updated newest first, the filter empty.
+        save(&mut cx, board, &out, &format!("sort-default{suffix}"));
+        // PRs, most first, then fewest first: 10 before 4 before 2, and minibot's "?" and weather-cli's "–" last.
+        click(&mut cx, board, "sort-prs");
+        save(&mut cx, board, &out, &format!("sort-prs-most{suffix}"));
+        click(&mut cx, board, "sort-prs");
+        save(&mut cx, board, &out, &format!("sort-prs-fewest{suffix}"));
+        // Issues, most first: 12 and 10 before 3 and 2.
+        click(&mut cx, board, "sort-issues");
+        save(&mut cx, board, &out, &format!("sort-issues-most{suffix}"));
+        // A text column: T3 session titles A to Z, rows without a thread last.
+        click(&mut cx, board, "sort-session");
+        save(&mut cx, board, &out, &format!("sort-session-az{suffix}"));
+        // The filter narrows the rows and keeps the chosen sort.
+        click(&mut cx, board, "sort-issues");
+        filter(&mut cx, board, &view, "HS-");
+        save(&mut cx, board, &out, &format!("filter-hs-issues{suffix}"));
+        filter(&mut cx, board, &view, "no-such-project");
+        save(&mut cx, board, &out, &format!("filter-no-match{suffix}"));
+        filter(&mut cx, board, &view, "");
+        save(&mut cx, board, &out, &format!("filter-cleared{suffix}"));
+    }
+    // At 130%, the filter and the arrows still fit their cells.
+    cx.update(|cx| {
+        crate::zoom::set_level(1.3, cx);
+        crate::zoom::hide_toast(cx);
+    });
+    let (board, view) = open_sized(&mut cx, demo::checkouts(), 1100., 620.);
+    fill(&mut cx, &view, &CountsSource);
+    settle(&mut cx);
+    click(&mut cx, board, "sort-merged7d");
+    filter(&mut cx, board, &view, "dashboard");
+    save(&mut cx, board, &out, "filter-merged7d-130");
+    cx.update(|cx| crate::zoom::set_level(1.0, cx));
+}

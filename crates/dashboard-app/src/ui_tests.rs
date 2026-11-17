@@ -561,10 +561,10 @@ async fn startup_sorts_cached_and_fresh_activity_newest_first(cx: &mut TestAppCo
     cache.insert(checkouts[1].clone(), fixtures::document(ATTENTION));
     cache.insert(checkouts[4].clone(), fixtures::document(CLEAN));
     let (handle, view) = open_board(cx, checkouts.clone(), cache, Arc::new(demo::DemoSource), options());
-    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::NewestFirst);
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::NEWEST_FIRST);
     let assert_order = |cx: &mut TestAppContext, indices: &[usize]| {
         let expected = indices.iter().map(|&ix| checkouts[ix].clone()).collect::<Vec<_>>();
-        assert_eq!(cx.update(|cx| view.read(cx).row_order()), expected);
+        assert_eq!(cx.update(|cx| view.read(cx).row_order(cx)), expected);
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             assert_eq!(window.find("sort-updated").label(), Some("Updated, newest first"));
@@ -596,7 +596,7 @@ async fn a_later_start_resets_manual_sort_without_changing_saved_preferences(cx:
     saved.columns.set(Column::Repository, 20.88);
     saved.save(&dir.0).unwrap();
     let saved_bytes = std::fs::read(dir.0.join(STATE_FILE)).unwrap();
-    for manual in [SortOrder::OldestFirst, SortOrder::Config, SortOrder::PriorityFirst] {
+    for manual in [SortOrder::OLDEST_FIRST, SortOrder::Config, SortOrder::PRIORITY_FIRST] {
         let (_, view) = open_board(
             cx,
             four(),
@@ -608,10 +608,10 @@ async fn a_later_start_resets_manual_sort_without_changing_saved_preferences(cx:
                 ..options()
             },
         );
-        assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::NewestFirst);
+        assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::NEWEST_FIRST);
         cx.update(|cx| {
             view.update(cx, |view, cx| {
-                if manual == SortOrder::PriorityFirst {
+                if manual == SortOrder::PRIORITY_FIRST {
                     view.cycle_priority_sort(cx);
                 } else {
                     view.cycle_sort(cx);
@@ -637,7 +637,7 @@ async fn a_later_start_resets_manual_sort_without_changing_saved_preferences(cx:
             ..options()
         },
     );
-    assert_eq!(cx.update(|cx| restarted.read(cx).sort()), SortOrder::NewestFirst);
+    assert_eq!(cx.update(|cx| restarted.read(cx).sort()), SortOrder::NEWEST_FIRST);
     assert_eq!(cx.update(|cx| restarted.read(cx).columns()), saved.columns);
 }
 
@@ -645,7 +645,7 @@ async fn a_later_start_resets_manual_sort_without_changing_saved_preferences(cx:
 async fn the_updated_header_sorts_newest_first_then_oldest_first_then_config_order(cx: &mut TestAppContext) {
     let (handle, view) = twelve(cx).await;
     let names = |cx: &mut TestAppContext| {
-        cx.update(|cx| view.read(cx).row_order())
+        cx.update(|cx| view.read(cx).row_order(cx))
             .iter()
             .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
             .collect::<Vec<_>>()
@@ -669,7 +669,7 @@ async fn the_updated_header_sorts_newest_first_then_oldest_first_then_config_ord
     assert_eq!(header(cx), "Updated, not sorted");
     assert_eq!(names(cx)[..4], ["gh-x", "codexbar", "minibot", "weather-cli"]);
     click(cx);
-    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::NewestFirst);
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::NEWEST_FIRST);
     assert_eq!(header(cx), "Updated, newest first");
     assert_eq!(
         names(cx),
@@ -692,7 +692,7 @@ async fn the_updated_header_sorts_newest_first_then_oldest_first_then_config_ord
         ]
     );
     click(cx);
-    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::OldestFirst);
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::OLDEST_FIRST);
     assert_eq!(header(cx), "Updated, oldest first");
     assert_eq!(
         names(cx),
@@ -715,7 +715,7 @@ async fn the_updated_header_sorts_newest_first_then_oldest_first_then_config_ord
     let oldest = names(cx);
     press(cx, handle, "f5");
     settle(cx, handle, &view).await;
-    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::OldestFirst);
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::OLDEST_FIRST);
     assert_eq!(names(cx), oldest);
     click(cx);
     assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::Config);
@@ -730,7 +730,7 @@ async fn the_updated_header_sorts_newest_first_then_oldest_first_then_config_ord
     press(cx, handle, "f5");
     settle(cx, handle, &view).await;
     assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::Config);
-    assert_eq!(cx.update(|cx| view.read(cx).row_order()), demo::checkouts());
+    assert_eq!(cx.update(|cx| view.read(cx).row_order(cx)), demo::checkouts());
 }
 
 #[gpui_kit::test]
@@ -1825,7 +1825,7 @@ async fn dragging_a_column_border_resizes_the_header_and_every_row(cx: &mut Test
     assert_eq!(width_of(cx, handle, ("prs", 3usize)), px(5.25 * 16.));
     assert_eq!(handle_center(cx, handle, Column::PullRequests).x, before.x + px(32.));
     // Dragging a border never sorts or expands anything.
-    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::NewestFirst);
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::NEWEST_FIRST);
     assert!(!cx.update(|cx| view.read(cx).is_expanded(Path::new("/demo/gh-x"))));
 }
 
@@ -2700,26 +2700,26 @@ async fn priority_values_precede_prs_and_sort_without_expanding_rows(cx: &mut Te
     })
     .unwrap();
     cx.run_until_parked();
-    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::PriorityFirst);
-    let order = cx.update(|cx| view.read(cx).row_order());
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::PRIORITY_FIRST);
+    let order = cx.update(|cx| view.read(cx).row_order(cx));
     assert_eq!(order[0], Path::new("/demo/set-it-free-loop"));
     assert_eq!(order[1], Path::new("/demo/hs-buddy"));
     assert_eq!(order[2], Path::new("/demo/gh-x"));
     assert_eq!(order[6], Path::new("/demo/minibot"));
     press(cx, handle, "f5");
     settle(cx, handle, &view).await;
-    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::PriorityFirst);
-    assert_eq!(cx.update(|cx| view.read(cx).row_order()), order);
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::PRIORITY_FIRST);
+    assert_eq!(cx.update(|cx| view.read(cx).row_order(cx)), order);
     assert!(!cx.update(|cx| view.read(cx).is_expanded(Path::new("/demo/gh-x"))));
     cx.update_window(handle, |_, window, cx| window.click("sort-priority", cx))
         .unwrap();
     cx.run_until_parked();
-    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::PriorityLast);
-    assert_eq!(cx.update(|cx| view.read(cx).row_order())[0], Path::new("/demo/gh-x"));
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::PRIORITY_LAST);
+    assert_eq!(cx.update(|cx| view.read(cx).row_order(cx))[0], Path::new("/demo/gh-x"));
     cx.update_window(handle, |_, window, cx| window.click("sort-priority", cx))
         .unwrap();
     cx.run_until_parked();
-    assert_eq!(cx.update(|cx| view.read(cx).row_order()), demo::checkouts());
+    assert_eq!(cx.update(|cx| view.read(cx).row_order(cx)), demo::checkouts());
     cx.update_window(handle, |_, window, cx| {
         window.click("sort-priority", cx);
         window.render_frame(cx);
@@ -2727,7 +2727,7 @@ async fn priority_values_precede_prs_and_sort_without_expanding_rows(cx: &mut Te
     })
     .unwrap();
     cx.run_until_parked();
-    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::NewestFirst);
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::NEWEST_FIRST);
 }
 
 #[gpui_kit::test]
@@ -2749,7 +2749,7 @@ async fn priority_width_survives_a_restart_and_dragging_does_not_sort(cx: &mut T
     assert_eq!(cx.update(|cx| view.read(cx).columns()).get(Column::Priority), width);
     assert_eq!(width_of(cx, handle, "sort-priority"), px(width * 16.));
     assert_eq!(width_of(cx, handle, ("priority", 0usize)), px(width * 16.));
-    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::NewestFirst);
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::NEWEST_FIRST);
     let saved = dashboard_core::ui_state::UiState::load(&dir).columns;
     assert_eq!(saved.get(Column::Priority), width);
     let (restored, _) = open_board(
@@ -5082,4 +5082,230 @@ fn fleet_inflight_read_never_overlaps_and_source_changes_reject_old_results(cx: 
     cx.update(|cx| assert!(live.view.read(cx).fleet_activity.machines.is_empty()));
     until(cx, |cx| cx.update(|cx| !live.view.read(cx).fleet_loading));
     cx.update(|cx| assert!(live.view.read(cx).fleet_activity_error.is_some()));
+}
+
+/// Each Project header's id, as #98 made all nine sortable.
+const SORT_HEADERS: [(dashboard_core::SortColumn, &str); 9] = [
+    (dashboard_core::SortColumn::Repository, "header-repository"),
+    (dashboard_core::SortColumn::Priority, "sort-priority"),
+    (dashboard_core::SortColumn::PullRequests, "sort-prs"),
+    (dashboard_core::SortColumn::Issues, "sort-issues"),
+    (dashboard_core::SortColumn::Merged24h, "sort-merged24h"),
+    (dashboard_core::SortColumn::Merged7d, "sort-merged7d"),
+    (dashboard_core::SortColumn::Updated, "sort-updated"),
+    (dashboard_core::SortColumn::Activity, "sort-activity"),
+    (dashboard_core::SortColumn::Session, "sort-session"),
+];
+
+fn header_label(cx: &mut TestAppContext, handle: AnyWindowHandle, id: &'static str) -> String {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.find(id).label().unwrap_or_default().to_owned()
+    })
+    .unwrap()
+}
+
+fn click_header(cx: &mut TestAppContext, handle: AnyWindowHandle, id: &'static str) {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(id, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+/// The rows' card indices, top to bottom, as drawn.
+fn drawn_rows(cx: &mut TestAppContext, handle: AnyWindowHandle) -> Vec<usize> {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let mut rows: Vec<(gpui_kit::Pixels, usize)> = (0..12usize)
+            .filter_map(|ix| window.try_find(("row", ix)).map(|row| (row.bounds().origin.y, ix)))
+            .collect();
+        rows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        rows.into_iter().map(|(_, ix)| ix).collect()
+    })
+    .unwrap()
+}
+
+/// The number a count cell shows, or `None` for "?", "–" or "—".
+fn shown_count(cx: &mut TestAppContext, handle: AnyWindowHandle, id: (&'static str, usize)) -> Option<u64> {
+    text_of(cx, handle, id)
+        .split([' ', ':'])
+        .find_map(|word| word.parse().ok())
+}
+
+#[gpui_kit::test]
+async fn every_project_header_sorts_both_ways_and_says_which_way(cx: &mut TestAppContext) {
+    let (handle, view) = twelve(cx).await;
+    // Cold start: Updated newest first, every other header unsorted.
+    for (column, id) in SORT_HEADERS {
+        let expected = if column == dashboard_core::SortColumn::Updated {
+            "Updated, newest first".to_owned()
+        } else {
+            format!("{}, not sorted", column.title())
+        };
+        assert_eq!(header_label(cx, handle, id), expected);
+    }
+    for (column, id) in SORT_HEADERS {
+        let first = column.first_direction();
+        for direction in [first, first.reverse()] {
+            click_header(cx, handle, id);
+            let sort = SortOrder::By(column, direction);
+            assert_eq!(cx.update(|cx| view.read(cx).sort()), sort);
+            assert_eq!(header_label(cx, handle, id), sort.label(column));
+            // Only the sorted header claims a direction.
+            for (other, other_id) in SORT_HEADERS.into_iter().filter(|(other, _)| *other != column) {
+                assert_eq!(
+                    header_label(cx, handle, other_id),
+                    format!("{}, not sorted", other.title())
+                );
+            }
+            // The drawn rows follow the sort.
+            let order = cx.update(|cx| {
+                let view = view.read(cx);
+                view.row_order(cx)
+                    .iter()
+                    .map(|path| demo::checkouts().iter().position(|p| p == path).unwrap())
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(drawn_rows(cx, handle), order, "{column:?} {direction:?}");
+        }
+        // A third click returns to config order.
+        click_header(cx, handle, id);
+        assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::Config);
+        assert_eq!(cx.update(|cx| view.read(cx).row_order(cx)), demo::checkouts());
+        assert_eq!(header_label(cx, handle, id), format!("{}, not sorted", column.title()));
+    }
+}
+
+#[gpui_kit::test]
+async fn count_headers_sort_the_shown_numbers_with_unknown_counts_last(cx: &mut TestAppContext) {
+    let (handle, view) = twelve(cx).await;
+    for (id, cell) in [("sort-prs", "prs"), ("sort-issues", "issues")] {
+        for descending in [true, false] {
+            click_header(cx, handle, id);
+            let rows = drawn_rows(cx, handle);
+            let counts: Vec<Option<u64>> = rows.iter().map(|&ix| shown_count(cx, handle, (cell, ix))).collect();
+            let known: Vec<u64> = counts.iter().map_while(|count| *count).collect();
+            // Unknown counts ("?" or "–") only after every number, in both directions.
+            assert!(counts[known.len()..].iter().all(Option::is_none), "{id}: {counts:?}");
+            assert!(known.len() >= 8, "{id}: {counts:?}");
+            let mut expected = known.clone();
+            expected.sort_unstable();
+            if descending {
+                expected.reverse();
+            }
+            assert_eq!(known, expected, "{id} descending={descending}");
+        }
+        click_header(cx, handle, id);
+        assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::Config);
+    }
+}
+
+#[gpui_kit::test]
+async fn the_name_filter_narrows_rows_says_when_none_match_and_clears(cx: &mut TestAppContext) {
+    let (handle, view) = twelve(cx).await;
+    let names = |cx: &mut TestAppContext| {
+        cx.update(|cx| view.read(cx).row_order(cx))
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+    };
+    // Keep one row expanded, so filtering can't lose its details.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("expand", 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    // Typed into the box: matches ignore case and keep the current Updated order.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("project-filter", cx);
+        window.input("HS-", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(names(cx), ["hs-buddy", "hs-pi-dashboard"]);
+    assert_eq!(drawn_rows(cx, handle).len(), 2);
+    assert!(
+        cx.update_window(handle, |_, window, _| window.try_find("no-match").is_none())
+            .unwrap()
+    );
+    // Sorting applies to the filtered rows, and a refresh keeps both.
+    click_header(cx, handle, "header-repository");
+    assert_eq!(names(cx), ["hs-buddy", "hs-pi-dashboard"]);
+    click_header(cx, handle, "header-repository");
+    assert_eq!(names(cx), ["hs-pi-dashboard", "hs-buddy"]);
+    press(cx, handle, "f5");
+    settle(cx, handle, &view).await;
+    assert_eq!(names(cx), ["hs-pi-dashboard", "hs-buddy"]);
+    // No match: the header stays and the table says so in place of rows.
+    // The header clicks took focus; click back into the box (after "HS-") to keep typing.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("project-filter", cx);
+        window.input("zz", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(names(cx).is_empty());
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("no-match").label(), Some("No projects match “HS-zz”"));
+        assert!(window.try_find("header-repository").is_some());
+        assert!(window.try_find(("row", 0usize)).is_none());
+        window.click("clear-filter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    // Cleared: every row is back, in the sort still chosen, and the expanded row is still open.
+    assert_eq!(names(cx).len(), 12);
+    // Z to A by displayed name: "weather-cli" has no owner prefix, so it precedes every "hemsoft-dev/…".
+    assert_eq!(names(cx)[..2], ["weather-cli", "yahtzee"]);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("no-match").is_none());
+        assert!(window.try_find(("details", 0usize)).is_some());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn the_filter_and_sort_are_not_saved_and_dragging_a_count_border_does_not_sort(cx: &mut TestAppContext) {
+    use dashboard_core::ui_state::{STATE_FILE, UiState};
+
+    let dir = ConfigDir::new("filter-transient", &[]);
+    UiState::default().save(&dir.0).unwrap();
+    let open = |cx: &mut TestAppContext| {
+        open_board(
+            cx,
+            four(),
+            StatusCache::default(),
+            Arc::new(demo::DemoSource),
+            Options {
+                ui_state_dir: Some(dir.0.clone()),
+                ..options()
+            },
+        )
+    };
+    let (handle, view) = open(cx);
+    drag_border(cx, handle, Column::Issues, 32.);
+    let width = Column::Issues.default_width() + 2.;
+    assert_eq!(width_of(cx, handle, "sort-issues"), px(width * 16.));
+    assert_eq!(width_of(cx, handle, ("issues", 0usize)), px(width * 16.));
+    assert_eq!(cx.update(|cx| view.read(cx).sort()), SortOrder::NEWEST_FIRST);
+    click_header(cx, handle, "sort-issues");
+    cx.update_window(handle, |_, window, cx| {
+        view.update(cx, |view, cx| view.set_filter("gh", window, cx))
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| view.read(cx).row_order(cx)).len(), 1);
+    let saved = std::fs::read_to_string(dir.0.join(STATE_FILE)).unwrap();
+    assert!(!saved.contains("\"gh\""), "{saved}");
+    assert_eq!(UiState::load(&dir.0).columns.get(Column::Issues), width);
+    let (_, restarted) = open(cx);
+    assert_eq!(cx.update(|cx| restarted.read(cx).sort()), SortOrder::NEWEST_FIRST);
+    assert_eq!(cx.update(|cx| restarted.read(cx).row_order(cx)).len(), 4);
 }

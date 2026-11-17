@@ -5309,3 +5309,70 @@ async fn the_filter_and_sort_are_not_saved_and_dragging_a_count_border_does_not_
     assert_eq!(cx.update(|cx| restarted.read(cx).sort()), SortOrder::NEWEST_FIRST);
     assert_eq!(cx.update(|cx| restarted.read(cx).row_order(cx)).len(), 4);
 }
+
+/// Scrolls the Project table sideways until header `id` lies wholly inside the table's viewport, as a person would
+/// before clicking it. Narrow or zoomed windows scroll the data columns beside the pinned session lane, so a header
+/// can sit past the viewport's edge. Returns whether a scroll was needed.
+pub(crate) fn reveal_header(window: &mut gpui_kit::Window, id: &'static str, cx: &mut gpui_kit::App) -> bool {
+    window.render_frame(cx);
+    // The T3 session header sits in the pinned lane beside the table, never inside its scrolling viewport.
+    if id == "sort-session" {
+        return false;
+    }
+    let table = window.find("table").bounds();
+    let header = window.find(id).bounds();
+    if header.left() >= table.left() && header.right() <= table.right() {
+        return false;
+    }
+    let dx = table.left() - header.left();
+    window.scroll("table", gpui_kit::ScrollDelta::Pixels(gpui_kit::point(dx, px(0.))), cx);
+    window.render_frame(cx);
+    let header = window.find(id).bounds();
+    assert!(
+        header.left() >= table.left() && header.right() <= table.right(),
+        "{id} is still outside the table viewport after scrolling: {header:?} vs {table:?}"
+    );
+    true
+}
+
+#[gpui_kit::test]
+async fn at_the_minimum_width_every_header_sorts_once_scrolled_into_view(cx: &mut TestAppContext) {
+    // 480 px is the window's minimum (main.rs): the data columns scroll sideways beside the pinned session lane.
+    let (handle, view) = open_board_sized(
+        cx,
+        demo::checkouts(),
+        StatusCache::default(),
+        Arc::new(demo::DemoSource),
+        options(),
+        480.,
+    );
+    cx.update(|cx| view.update(cx, |view, cx| view.refresh_all(cx)));
+    settle(cx, handle, &view).await;
+    // The count headers start past the viewport until the table scrolls (CI's capture first tried a blind click).
+    let issues_hidden = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let table = window.find("table").bounds();
+            window.find("sort-issues").bounds().right() > table.right()
+        })
+        .unwrap();
+    assert!(
+        issues_hidden,
+        "Issues should start outside a 480 px table before scrolling"
+    );
+    let mut scrolled = 0;
+    for (column, id) in SORT_HEADERS {
+        scrolled += cx
+            .update_window(handle, |_, window, cx| {
+                let moved = reveal_header(window, id, cx);
+                window.click(id, cx);
+                moved as usize
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let sort = SortOrder::By(column, column.first_direction());
+        assert_eq!(cx.update(|cx| view.read(cx).sort()), sort, "{id}");
+        assert_eq!(header_label(cx, handle, id), sort.label(column));
+    }
+    assert!(scrolled > 0, "at least one header needed a sideways scroll");
+}

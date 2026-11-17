@@ -2095,9 +2095,10 @@ fn captures_filter_and_sort() {
     };
     std::fs::create_dir_all(&out).unwrap();
     let mut cx = headless();
+    // At 480 px the count headers start past the scrolling data pane's edge; scroll to each, as a person would.
     let click = |cx: &mut HeadlessAppContext, handle: AnyWindowHandle, id: &'static str| {
         cx.update_window(handle, |_, window, cx| {
-            window.render_frame(cx);
+            crate::ui_tests::reveal_header(window, id, cx);
             window.click(id, cx);
         })
         .unwrap();

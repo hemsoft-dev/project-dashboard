@@ -336,6 +336,8 @@ fn linux_named_acl_is_preserved_and_parent_acl_does_not_broaden_new_files() {
     assert_eq!(read_config_acl(&dir.path()).unwrap(), None);
     assert_eq!(std::fs::metadata(dir.path()).unwrap().mode() & 0o777, 0o600);
     setxattr(dir.path(), CONFIG_ACL, &original_acl, XattrFlags::empty()).unwrap();
+    // The read itself returns the whole ACL, before any save could rewrite it.
+    assert_eq!(read_config_acl(&dir.path()).unwrap(), Some(original_acl.clone()));
     let before = std::fs::metadata(dir.path()).unwrap();
     // Negative control: the old default-permission temporary-and-rename drops the named deny entry.
     let legacy = dir.0.join("legacy.tmp");

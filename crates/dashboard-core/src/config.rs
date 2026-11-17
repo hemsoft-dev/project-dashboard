@@ -592,7 +592,9 @@ const CONFIG_ACL: &str = "system.posix_acl_access";
 
 #[cfg(target_os = "linux")]
 fn read_config_acl(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
-    match rustix::fs::getxattr(path, CONFIG_ACL, &mut [] as &mut [u8]) {
+    // Size the buffer with rustix's size query. Since rustix 1.1.6 (RUSTSEC-2026-0486), `getxattr` with an empty
+    // buffer reads zero bytes instead of returning the size, and saving that empty ACL back would remove it.
+    match rustix::fs::getxattr_query(path, CONFIG_ACL) {
         Ok(size) => {
             let mut acl = vec![0; size];
             let read = rustix::fs::getxattr(path, CONFIG_ACL, acl.as_mut_slice())?;

@@ -1,9 +1,9 @@
 //! Project Dashboard's mark: the four dashboard tiles in HemSoft gold on a black rounded square, the gold running from
 //! bright at the top right to deep at the bottom left like the hemsoft-dev avatar's streaks.
 //!
-//! One drawing serves the Windows executable's icon (`build.rs`) and `assets/icon-256.png` (`examples/icon.rs`); a test
-//! fails when the committed PNG no longer matches the drawing. The build script includes this file by path, so it
-//! depends on nothing.
+//! One drawing serves the Windows executable's icon (`build.rs`), `assets/icon-256.png` and `assets/icon.svg`
+//! (`examples/icon.rs`); tests fail when either committed file no longer matches the drawing. The build script
+//! includes this file by path, so it depends on nothing.
 
 // Each consumer uses a subset: the build script only `ico`, the example only `rgba`.
 #![allow(dead_code)]
@@ -98,6 +98,34 @@ pub fn rgba(size: u32) -> Vec<u8> {
     }
     out
 }
+
+/// The mark as SVG on the same 32-unit grid, for places that show a project's icon from a file, such as T3 Code. The
+/// gradient runs along the line `gold_at` measures, so it matches the raster drawing.
+pub fn svg() -> String {
+    let hex = |[r, g, b]: [u8; 3]| format!("#{r:02x}{g:02x}{b:02x}");
+    let mut out = String::from(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 32 32\" width=\"32\" height=\"32\">\n  <title>Project Dashboard</title>\n  <defs>\n    <linearGradient id=\"gold\" gradientUnits=\"userSpaceOnUse\" x1=\"26\" y1=\"6\" x2=\"6\" y2=\"26\">\n",
+    );
+    for (offset, gold) in ["0", "0.5", "1"].into_iter().zip(GOLDS) {
+        out += &format!("      <stop offset=\"{offset}\" stop-color=\"{}\"/>\n", hex(gold));
+    }
+    out += "    </linearGradient>\n  </defs>\n";
+    out += &format!(
+        "  <rect width=\"32\" height=\"32\" rx=\"{SQUARE_RADIUS}\" fill=\"{}\"/>\n",
+        hex(BLACK)
+    );
+    out += "  <g fill=\"url(#gold)\">\n";
+    for (left, top, right, bottom) in TILES {
+        out += &format!(
+            "    <rect x=\"{left}\" y=\"{top}\" width=\"{}\" height=\"{}\" rx=\"{TILE_RADIUS}\"/>\n",
+            right - left,
+            bottom - top
+        );
+    }
+    out += "  </g>\n</svg>\n";
+    out
+}
+
 /// An `.ico` file with the mark at each of `sizes` (1 to 256 px) as a 32-bit bitmap with alpha, the form every
 /// Windows version reads.
 pub fn ico(sizes: &[u32]) -> Vec<u8> {
@@ -275,6 +303,25 @@ mod tests {
             png.as_raw() == &rgba(256),
             "assets/icon-256.png is stale: run `cargo run -p dashboard-app --example icon -- assets/icon-256.png 256`"
         );
+    }
+
+    #[test]
+    fn the_committed_svg_is_the_current_drawing() {
+        assert!(
+            include_str!("../../../assets/icon.svg") == svg(),
+            "assets/icon.svg is stale: run `cargo run -p dashboard-app --example icon -- assets/icon.svg`"
+        );
+    }
+
+    #[test]
+    fn the_svg_draws_the_square_and_every_tile_in_the_gold_ramp() {
+        let svg = svg();
+        assert!(svg.contains(r##"<rect width="32" height="32" rx="7" fill="#0a0a0a"/>"##));
+        for gold in ["#d4af37", "#b8860b", "#8b6914"] {
+            assert!(svg.contains(gold), "the ramp holds {gold}");
+        }
+        assert_eq!(svg.matches(r#"rx="1.75""#).count(), TILES.len());
+        assert!(svg.contains(r#"<rect x="17" y="14" width="9" height="12" rx="1.75"/>"#));
     }
 
     #[test]

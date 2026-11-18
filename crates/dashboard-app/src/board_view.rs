@@ -19,7 +19,6 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Utc};
 use dashboard_core::activity::{age_words, clock_time, moment, parse_time};
 use dashboard_core::cache::StatusCache;
 use dashboard_core::columns::{Column, ColumnWidths};
@@ -47,6 +46,7 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _, Window, actions, canvas, div, px,
     rems,
 };
+use jiff::Timestamp;
 
 use crate::manage::{Manage, ManageEvent};
 
@@ -89,7 +89,7 @@ pub struct Options {
     /// at startup (the demo, tests and screenshots).
     pub config_dir: Option<PathBuf>,
     /// A fixed "now" for last-activity ages, for tests and screenshots; `None` reads the clock.
-    pub now: Option<DateTime<Utc>>,
+    pub now: Option<Timestamp>,
     /// The column widths to start with, as `ui-state.json` remembers them.
     pub columns: ColumnWidths,
     /// The folder for `ui-state.json`, where resized columns are saved; `None` keeps them in memory.
@@ -593,8 +593,8 @@ impl BoardView {
             .collect()
     }
 
-    fn now(&self) -> DateTime<Utc> {
-        self.options.now.unwrap_or_else(Utc::now)
+    fn now(&self) -> Timestamp {
+        self.options.now.unwrap_or_else(Timestamp::now)
     }
 
     pub fn toggle_expanded(&mut self, checkout: &Path, cx: &mut Context<Self>) {
@@ -1069,7 +1069,10 @@ impl BoardView {
         } else if transient {
             last_success.map_or_else(
                 || "Connecting to pmd…".to_owned(),
-                |at| format!("pmd offline · last success {}", at.format("%X")),
+                |at| {
+                    let at = at.to_zoned(jiff::tz::TimeZone::system());
+                    format!("pmd offline · last success {}", at.strftime("%H:%M:%S"))
+                },
             )
         } else {
             match (refreshing, self.last_refresh) {
@@ -2213,7 +2216,7 @@ fn ago(elapsed: Duration) -> String {
 }
 
 /// The row's pmd ages, "checked 12m ago · changed 5h 23m ago", and their local times for the tooltip.
-fn freshness(hosted: &Hosted, now: DateTime<Utc>) -> (String, String) {
+fn freshness(hosted: &Hosted, now: Timestamp) -> (String, String) {
     let changed = hosted.changed();
     let checked = hosted.checked();
     let text = match (checked, changed) {
@@ -2239,8 +2242,8 @@ fn freshness(hosted: &Hosted, now: DateTime<Utc>) -> (String, String) {
 
 /// Where the details came from, at the bottom: when pmd last checked and changed this status, when its Board was
 /// built, and the local health pmd doesn't supply.
-fn about_pmd(ix: usize, hosted: &Hosted, now: DateTime<Utc>, cx: &App) -> impl IntoElement + use<> {
-    let when = |at: Option<DateTime<Utc>>| at.map_or_else(|| "unknown".to_owned(), |at| moment(at, now));
+fn about_pmd(ix: usize, hosted: &Hosted, now: Timestamp, cx: &App) -> impl IntoElement + use<> {
+    let when = |at: Option<Timestamp>| at.map_or_else(|| "unknown".to_owned(), |at| moment(at, now));
     let mut lines = vec![format!("Status changed {}", when(hosted.changed()))];
     if let Some(checked) = hosted.checked() {
         lines.push(format!("pmd last checked {}", moment(checked, now)));

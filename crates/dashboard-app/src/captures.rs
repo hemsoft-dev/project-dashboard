@@ -1436,7 +1436,7 @@ fn captures_fleet_runtime_ages() {
                     v.selected_view = dashboard_core::config::View::Fleet;
                     v.fleet_status = crate::ui_tests::fleet_status_fixture();
                     v.fleet_activity = crate::ui_tests::fleet_activity_fixture();
-                    let observed = chrono::Utc::now() - chrono::Duration::seconds(age);
+                    let observed = jiff::Timestamp::now() - jiff::SignedDuration::from_secs(age);
                     v.fleet_activity.observed_at = Some(observed);
                     for machine in &mut v.fleet_activity.machines {
                         machine.observed_at = Some(observed);

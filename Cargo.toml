@@ -13,8 +13,9 @@ publish = false
 dashboard-core = { path = "crates/dashboard-core" }
 gpui-kit = "0.8.0"
 serde = { version = "1", features = ["derive"] }
-# Timestamps for last activity, as CodexBar pins it.
-chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+# Timestamps, ages and local time (#105). chrono, which CodexBar pins, is unmaintained (RUSTSEC-2026-0543); the
+# dashboard's own code uses jiff, and chrono remains only beneath GPUI.
+jiff = "0.2.39"
 serde_json = "1"
 # The config file (crates/dashboard-core/src/config.rs).
 toml = "1"

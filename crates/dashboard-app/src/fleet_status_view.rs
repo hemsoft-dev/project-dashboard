@@ -9,11 +9,11 @@ use gpui_kit::{
 
 impl BoardView {
     pub(crate) fn render_fleet(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let now = chrono::Utc::now();
+        let now = jiff::Timestamp::now();
         let data = &self.fleet_status;
         let load_stale = data
             .fetched_at
-            .is_none_or(|at| now.signed_duration_since(at).num_seconds() > 600);
+            .is_none_or(|at| dashboard_core::activity::seconds_since(at, now) > 600);
         let mut body = v_flex()
             .id("fleet-status")
             .test_support()

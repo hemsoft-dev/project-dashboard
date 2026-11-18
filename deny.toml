@@ -12,6 +12,7 @@ unused-ignored-advisory = "deny"
 # Only unmaintained crates that arrive through GPUI belong here, each with its own reason. Never list a vulnerability:
 # patch it. These leave when gpui-kit does, and gpui-kit moves together with CodexBar (AGENTS.md).
 ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "chrono 0.4.45, from gpui-base, gpui-component, gpui-pre and gpui-pre-scheduler. GPUI uses it for its calendar and time widgets, its scheduler clock and accessibility debug stamps; the dashboard's own code uses jiff (#105). Leaving needs GPUI off chrono." },
     { id = "RUSTSEC-2024-0384", reason = "instant 0.1.13, from gpui-base and gpui-component. On native targets it only re-exports std::time, so it has no logic of its own to go wrong." },
     { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15, from gpui-component and pulp. A proc macro that runs at compile time on our locked source; none of it ships in the executable." },
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile 2.2.0, in the lock but not in any build: gpui-kit-assets takes gpui-pre-reqwest only on wasm, which in turn takes rustls-pemfile only off wasm. cargo tree finds it on no Windows, Linux, macOS or wasm target." },

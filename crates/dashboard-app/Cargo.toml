@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 dashboard-core.workspace = true
-chrono.workspace = true
+jiff.workspace = true
 serde_json.workspace = true
 gpui-kit.workspace = true
 

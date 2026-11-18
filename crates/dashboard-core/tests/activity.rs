@@ -2,16 +2,17 @@
 
 use std::path::PathBuf;
 
-use chrono::{DateTime, FixedOffset, Utc};
-use dashboard_core::activity::{ActivityKind, age_words, ago, clock_time_in, last_activity, time_in};
+use dashboard_core::activity::{ActivityKind, age_words, ago, clock_time_in, last_activity, parse_time, time_in};
 use dashboard_core::cache::StatusCache;
 use dashboard_core::fixtures::{self, ATTENTION, CLEAN, UNAVAILABLE};
 use dashboard_core::scheduler::Outcome;
 use dashboard_core::status::{Issue, PullRequest, PullRequests, StatusDocument, WorkflowRun};
 use dashboard_core::{Board, SortOrder};
+use jiff::tz::{TimeZone, offset};
+use jiff::{SignedDuration, Timestamp};
 
-fn at(text: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(text).unwrap().with_timezone(&Utc)
+fn at(text: &str) -> Timestamp {
+    text.parse().unwrap()
 }
 
 fn pr(number: u64, updated_at: Option<&str>) -> PullRequest {
@@ -143,9 +144,9 @@ fn the_activity_reads_its_label_age_and_time() {
     assert_eq!(newest.label, "PR #12");
     assert_eq!(newest.age(at("2026-10-21T06:30:00Z")), "14m ago");
     // US Eastern in October is four hours behind UTC.
-    let eastern = FixedOffset::west_opt(4 * 3600).unwrap();
+    let eastern = TimeZone::fixed(offset(-4));
     assert_eq!(time_in(newest.at, &eastern), "2026-10-21 02:16");
-    assert_eq!(time_in(newest.at, &Utc), "2026-10-21 06:16");
+    assert_eq!(time_in(newest.at, &TimeZone::UTC), "2026-10-21 06:16");
 }
 
 #[test]
@@ -235,7 +236,7 @@ fn loading_and_failed_cards_without_a_status_sort_last() {
 #[test]
 fn ages_read_in_one_or_two_units_never_seconds() {
     let now = at("2026-10-27T22:00:00Z");
-    let before = |seconds: i64| age_words(now - chrono::Duration::seconds(seconds), now);
+    let before = |seconds: i64| age_words(now - SignedDuration::from_secs(seconds), now);
     assert_eq!(before(0), "just now");
     assert_eq!(before(59), "just now");
     assert_eq!(before(-30), "just now");
@@ -250,7 +251,7 @@ fn ages_read_in_one_or_two_units_never_seconds() {
 
 #[test]
 fn clock_times_are_local_and_readable_without_utc() {
-    let eastern = FixedOffset::west_opt(4 * 3_600).unwrap();
+    let eastern = TimeZone::fixed(offset(-4));
     let now = at("2026-10-27T22:20:00Z");
     // Franz's Board stamp, 22:08:36Z, is 6:08 PM in New York.
     assert_eq!(clock_time_in(at("2026-10-27T22:08:36Z"), now, &eastern), "Tue 6:08 PM");
@@ -263,4 +264,28 @@ fn clock_times_are_local_and_readable_without_utc() {
         clock_time_in(at("2025-12-31T23:00:00Z"), now, &eastern),
         "Dec 31 2025, 7:00 PM"
     );
+    // Midnight and noon read as 12, not 0.
+    assert_eq!(clock_time_in(at("2026-10-27T04:05:00Z"), now, &eastern), "Tue 12:05 AM");
+    assert_eq!(clock_time_in(at("2026-10-27T16:05:00Z"), now, &eastern), "Tue 12:05 PM");
+}
+
+#[test]
+fn times_parse_only_with_an_offset_and_compare_as_instants() {
+    assert_eq!(
+        parse_time("2026-10-21T02:16:00-04:00"),
+        Some(at("2026-10-21T06:16:00Z"))
+    );
+    assert_eq!(
+        parse_time("2026-10-21T06:16:00+00:00"),
+        Some(at("2026-10-21T06:16:00Z"))
+    );
+    assert_eq!(
+        parse_time("2026-10-21T06:16:00.250Z")
+            .map(|t| t.as_millisecond() - at("2026-10-21T06:16:00Z").as_millisecond()),
+        Some(250)
+    );
+    assert_eq!(parse_time("2026-10-21T06:16:00"), None);
+    assert_eq!(parse_time("2026-10-21"), None);
+    assert_eq!(parse_time("not a time"), None);
+    assert_eq!(parse_time(""), None);
 }

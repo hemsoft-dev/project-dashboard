@@ -164,13 +164,18 @@ fn checked_time_is_the_later_of_pmds_last_sweep_and_the_status_and_optional() {
     let swept = checked(Reply::json(
         json!({"sweepAgeSeconds":60,"webhookAgeSeconds":null,"githubLow":false}),
     ));
-    let age = (chrono::Utc::now() - swept.unwrap()).num_seconds();
+    let age = jiff::Timestamp::now().duration_since(swept.unwrap()).as_secs();
     assert!((59..=70).contains(&age), "{age}");
     // A sweep older than the status: the status itself is the last check.
     let older = checked(Reply::json(
         json!({"sweepAgeSeconds":999_999_999,"webhookAgeSeconds":null,"githubLow":false}),
     ));
     assert_eq!(older, dashboard_core::activity::parse_time("2026-10-25T20:00:00Z"));
+    // A sweep age past any representable date also leaves the status as the last check, and doesn't panic.
+    let ancient = checked(Reply::json(
+        json!({"sweepAgeSeconds":i64::MAX,"webhookAgeSeconds":null,"githubLow":false}),
+    ));
+    assert_eq!(ancient, dashboard_core::activity::parse_time("2026-10-25T20:00:00Z"));
     // No sweep since pmd started, a failing or malformed /healthz: unknown, and the status still loads.
     assert_eq!(
         checked(Reply::json(

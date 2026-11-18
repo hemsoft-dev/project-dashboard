@@ -460,7 +460,7 @@ impl Board {
         };
         card.refreshing = false;
         card.recovery
-            .record(&outcome.result, std::time::Instant::now(), chrono::Local::now());
+            .record(&outcome.result, std::time::Instant::now(), jiff::Timestamp::now());
         match outcome.result {
             Ok(mut document) => {
                 if let Some(hosted) = &mut document.hosted

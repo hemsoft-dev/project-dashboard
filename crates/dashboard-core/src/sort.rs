@@ -185,7 +185,7 @@ impl SortOrder {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Key {
     Number(u64),
-    Time(chrono::DateTime<chrono::Utc>),
+    Time(jiff::Timestamp),
     Text(String),
 }
 

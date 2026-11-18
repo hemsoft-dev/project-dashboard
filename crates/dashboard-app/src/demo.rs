@@ -3,17 +3,15 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Duration, Utc};
 use dashboard_core::fixtures::{self, ATTENTION, CLEAN, UNAVAILABLE};
 use dashboard_core::source::{FetchError, StatusSource};
 use dashboard_core::status::StatusDocument;
 use dashboard_core::t3::{Lookup, NoThread, ThreadFinder, ThreadLink};
+use jiff::{SignedDuration, Timestamp};
 
 /// The fixtures' own "now": the clean and attention documents were generated at 06:30 UTC.
-pub fn fixture_now() -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339("2026-10-21T06:30:00Z")
-        .unwrap()
-        .with_timezone(&Utc)
+pub fn fixture_now() -> Timestamp {
+    "2026-10-21T06:30:00Z".parse().unwrap()
 }
 
 /// The first four repositories: clean, needing attention, partly unavailable, and failing.
@@ -50,8 +48,8 @@ pub fn checkouts() -> Vec<PathBuf> {
 
 /// Dates every item in `document` an hour or more before `at`, then makes the `lead` item (falling back to a run)
 /// the one touched at `at`.
-fn date(document: &mut StatusDocument, lead: Lead, at: DateTime<Utc>) {
-    let older = Some((at - Duration::minutes(61)).to_rfc3339());
+fn date(document: &mut StatusDocument, lead: Lead, at: Timestamp) {
+    let older = Some((at - SignedDuration::from_mins(61)).to_string());
     for pr in document
         .pull_requests
         .open
@@ -67,7 +65,7 @@ fn date(document: &mut StatusDocument, lead: Lead, at: DateTime<Utc>) {
         run.created_at.clone_from(&older);
         run.started_at.clone_from(&older);
     }
-    let newest = Some(at.to_rfc3339());
+    let newest = Some(at.to_string());
     match lead {
         Lead::PullRequest if !document.pull_requests.open.is_empty() => {
             document.pull_requests.open[0].updated_at = newest;
@@ -90,7 +88,7 @@ fn variant(name: &str, attention: bool, lead: Lead, minutes: i64, keep: usize) -
     document.repository.root_path = format!("/demo/{name}");
     document.pull_requests.open.truncate(keep);
     document.issues.truncate(keep);
-    date(&mut document, lead, fixture_now() - Duration::minutes(minutes));
+    date(&mut document, lead, fixture_now() - SignedDuration::from_mins(minutes));
     document
 }
 
@@ -225,7 +223,7 @@ impl StatusSource for HostedSource {
             )],
             _ => Vec::new(),
         };
-        let at = |minutes: i64| (fixture_now() - Duration::minutes(minutes)).to_rfc3339();
+        let at = |minutes: i64| (fixture_now() - SignedDuration::from_mins(minutes)).to_string();
         let board = (name != "minibot").then(|| WorkBoard {
             generated_at: at(4),
             columns: dashboard_core::work::STATUSES

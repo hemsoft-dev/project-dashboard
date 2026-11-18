@@ -3,7 +3,7 @@ use crate::{
     activity,
     pmd::{Hosted, WorkItem},
 };
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -76,11 +76,11 @@ pub struct Source {
     pub stale_after_seconds: i64,
 }
 impl Source {
-    pub fn state_at(&self, now: DateTime<Utc>) -> &str {
+    pub fn state_at(&self, now: Timestamp) -> &str {
         if self.state == "fresh" {
             if let Some(at) = self.last_success_at.as_deref().and_then(activity::parse_time)
                 && self.stale_after_seconds > 0
-                && (now - at).num_seconds() > self.stale_after_seconds
+                && activity::seconds_since(at, now) > self.stale_after_seconds
             {
                 return "stale";
             }
@@ -95,10 +95,10 @@ impl Source {
             &self.state
         }
     }
-    pub fn tooltip(&self, name: &str, now: DateTime<Utc>) -> String {
+    pub fn tooltip(&self, name: &str, now: Timestamp) -> String {
         let local = |at: Option<&str>| {
             at.and_then(activity::parse_time)
-                .map(|t| activity::time_in(t, &chrono::Local))
+                .map(activity::local_time)
                 .unwrap_or_else(|| "not observed".into())
         };
         format!(
@@ -154,14 +154,14 @@ pub struct Readiness {
     pub sources_unavailable: bool,
 }
 impl Readiness {
-    pub fn stale(&self, now: DateTime<Utc>) -> bool {
+    pub fn stale(&self, now: Timestamp) -> bool {
         self.sources_unavailable
             || self.sources.values().any(|s| s.state_at(now) != "fresh")
             || self.dispatch_unavailable
             || self.dispatch.as_ref().is_some_and(|d| d.stale)
     }
 }
-pub fn oldest_waiting(hosted: &Hosted) -> Option<(&WorkItem, DateTime<Utc>)> {
+pub fn oldest_waiting(hosted: &Hosted) -> Option<(&WorkItem, Timestamp)> {
     let work: Vec<_> = if hosted.work.is_empty() {
         if hosted.board.as_ref().is_some_and(|b| {
             b.columns
@@ -185,13 +185,13 @@ pub fn oldest_waiting(hosted: &Hosted) -> Option<(&WorkItem, DateTime<Utc>)> {
         .filter_map(|w| Some((w, w.detail.waiting_since.as_deref().and_then(activity::parse_time)?)))
         .min_by(|(a, at), (b, bt)| at.cmp(bt).then_with(|| a.id.cmp(&b.id)))
 }
-pub fn waiting_tooltip(item: &WorkItem, since: DateTime<Utc>) -> String {
+pub fn waiting_tooltip(item: &WorkItem, since: Timestamp) -> String {
     format!(
         "{} #{}: {}\nWaiting since {}\n{}",
         if item.kind == "pr" { "PR" } else { "Issue" },
         item.number,
         item.title,
-        activity::time_in(since, &chrono::Local),
+        activity::local_time(since),
         item.detail
             .waiting_reason
             .as_deref()

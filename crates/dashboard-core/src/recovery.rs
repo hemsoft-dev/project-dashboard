@@ -1,16 +1,17 @@
 //! Transport recovery is independent of the configured periodic refresh.
 use crate::{source::FetchError, status::StatusDocument};
-use chrono::{DateTime, Local};
+use jiff::Timestamp;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Recovery {
-    pub last_success: Option<DateTime<Local>>,
+    /// When the last refresh succeeded, on the wall clock; shown in this computer's time zone.
+    pub last_success: Option<Timestamp>,
     pub retry_at: Option<Instant>,
     failures: usize,
 }
 impl Recovery {
-    pub fn record(&mut self, result: &Result<StatusDocument, FetchError>, now: Instant, wall: DateTime<Local>) {
+    pub fn record(&mut self, result: &Result<StatusDocument, FetchError>, now: Instant, wall: Timestamp) {
         let transport_failure = match result {
             Err(error) => error.is_transient(),
             Ok(doc) => doc.hosted.as_ref().is_some_and(|hosted| {

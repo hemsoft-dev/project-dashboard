@@ -71,12 +71,12 @@ pub struct WorkItem {
 }
 impl Hosted {
     /// When pmd last regenerated this status: when the repository last changed.
-    pub fn changed(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+    pub fn changed(&self) -> Option<jiff::Timestamp> {
         crate::activity::parse_time(&self.generated_at)
     }
 
     /// When pmd last confirmed this status, if known.
-    pub fn checked(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+    pub fn checked(&self) -> Option<jiff::Timestamp> {
         self.checked_at.as_deref().and_then(crate::activity::parse_time)
     }
 
@@ -385,7 +385,7 @@ impl ReadApi {
     }
     fn work(&self, slug: &str) -> Result<(WorkBoard, Vec<WorkItem>), FetchError> {
         let board: WorkBoard = self.get("v1/board", &[("project", slug)])?;
-        if chrono::DateTime::parse_from_rfc3339(&board.generated_at).is_err() {
+        if crate::activity::parse_time(&board.generated_at).is_none() {
             return Err(FetchError::Malformed);
         }
         for column in &board.columns {
@@ -467,7 +467,7 @@ impl Pmd {
         if envelope.project != project.slug {
             return Err(FetchError::IdentityMismatch);
         }
-        if chrono::DateTime::parse_from_rfc3339(&envelope.generated_at).is_err() {
+        if crate::activity::parse_time(&envelope.generated_at).is_none() {
             return Err(FetchError::Malformed);
         }
         for field in [
@@ -553,9 +553,13 @@ impl Pmd {
 /// itself. `None` if `/healthz` fails or pmd hasn't swept since it started; the status still loads.
 fn checked_at(api: &ReadApi, generated_at: &str) -> Option<String> {
     let health: Health = api.get("healthz", &[]).ok()?;
-    let swept = chrono::Utc::now() - chrono::Duration::seconds(health.sweep_age_seconds.filter(|age| *age >= 0)?);
-    let generated = chrono::DateTime::parse_from_rfc3339(generated_at).ok()?.to_utc();
-    Some(swept.max(generated).to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+    let age = health.sweep_age_seconds.filter(|age| *age >= 0)?;
+    let generated = crate::activity::parse_time(generated_at)?;
+    // A sweep from before the earliest representable time is older than the status, so the status is the last check.
+    let checked = jiff::Timestamp::now()
+        .checked_sub(jiff::SignedDuration::from_secs(age))
+        .map_or(generated, |swept| swept.max(generated));
+    Some(checked.strftime("%Y-%m-%dT%H:%M:%SZ").to_string())
 }
 impl StatusSource for Pmd {
     fn fetch(&self, checkout: &Path, _: bool) -> Result<StatusDocument, FetchError> {

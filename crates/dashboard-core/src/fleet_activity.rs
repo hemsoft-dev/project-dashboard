@@ -1,6 +1,6 @@
 //! Runtime observations are independent of dispatch allocation and version probes.
+use crate::activity::seconds_since;
 use crate::{pmd::ReadApi, priority::Pmd, source::FetchError};
-use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -18,7 +18,7 @@ pub struct Session {
 #[serde(rename_all = "camelCase")]
 pub struct Machine {
     pub name: String,
-    pub observed_at: Option<DateTime<Utc>>,
+    pub observed_at: Option<jiff::Timestamp>,
     pub state: String,
     pub reason: Option<String>,
     pub active_count: Option<u64>,
@@ -27,20 +27,17 @@ pub struct Machine {
 }
 
 impl Machine {
-    pub fn current(&self, now: DateTime<Utc>) -> bool {
+    pub fn current(&self, now: jiff::Timestamp) -> bool {
         matches!(self.state.as_str(), "ok" | "partial")
             && self.observed_at.is_some_and(|at| {
-                let age = now.signed_duration_since(at).num_seconds();
+                let age = seconds_since(at, now);
                 (-15..=90).contains(&age)
             })
     }
 
-    pub fn count_label(&self, now: DateTime<Utc>) -> String {
+    pub fn count_label(&self, now: jiff::Timestamp) -> String {
         if !self.current(now) {
-            return if self
-                .observed_at
-                .is_some_and(|at| now.signed_duration_since(at).num_seconds() > 90)
-            {
+            return if self.observed_at.is_some_and(|at| seconds_since(at, now) > 90) {
                 "Stale".into()
             } else {
                 "Unavailable".into()
@@ -53,7 +50,7 @@ impl Machine {
         }
     }
 
-    pub fn work_label(&self, now: DateTime<Utc>, failed_refresh: bool) -> String {
+    pub fn work_label(&self, now: jiff::Timestamp, failed_refresh: bool) -> String {
         let current = self.current(now) && !failed_refresh;
         if self.sessions.is_empty() {
             return if current && self.state == "ok" && self.active_count == Some(0) {
@@ -88,7 +85,7 @@ impl Machine {
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub schema: u64,
-    pub observed_at: Option<DateTime<Utc>>,
+    pub observed_at: Option<jiff::Timestamp>,
     pub machines: Vec<Machine>,
 }
 
@@ -109,7 +106,7 @@ mod tests {
 
     #[test]
     fn monitoring_partial_and_unavailable_never_become_idle_zero() {
-        let now = Utc::now();
+        let now = jiff::Timestamp::now();
         let mut machine = Machine {
             observed_at: Some(now),
             state: "partial".into(),
@@ -131,6 +128,6 @@ mod tests {
         machine.active_count = Some(0);
         machine.sessions.clear();
         assert_eq!(machine.work_label(now, false), "None active");
-        assert_eq!(machine.count_label(now + chrono::Duration::seconds(91)), "Stale");
+        assert_eq!(machine.count_label(now + jiff::SignedDuration::from_secs(91)), "Stale");
     }
 }

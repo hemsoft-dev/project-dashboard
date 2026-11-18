@@ -1,6 +1,6 @@
 //! Fleet observations are independent of registration and project status.
+use crate::activity::seconds_since;
 use crate::{pmd::ReadApi, priority::Pmd, source::FetchError};
-use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -15,8 +15,8 @@ pub struct Observation {
     pub client_version: Option<String>,
     pub client_status: Option<String>,
     pub latest_version: Option<String>,
-    pub checked_at: Option<DateTime<Utc>>,
-    pub attempted_at: Option<DateTime<Utc>>,
+    pub checked_at: Option<jiff::Timestamp>,
+    pub attempted_at: Option<jiff::Timestamp>,
     pub error: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize)]
@@ -40,7 +40,7 @@ pub struct Snapshot {
     pub machines: Vec<Machine>,
     pub observations: Vec<Observation>,
     pub loads: Vec<Load>,
-    pub fetched_at: Option<DateTime<Utc>>,
+    pub fetched_at: Option<jiff::Timestamp>,
     pub assignments: Vec<crate::backlog::Assignment>,
     pub truncated: bool,
 }
@@ -76,19 +76,19 @@ impl Snapshot {
             machines: machines.machines,
             observations: health.machines,
             loads: capacity.machines,
-            fetched_at: Some(Utc::now()),
+            fetched_at: Some(jiff::Timestamp::now()),
             assignments: work.assignments,
             truncated: work.truncated,
         })
     }
 }
 impl Observation {
-    pub fn stale(&self, now: DateTime<Utc>) -> bool {
+    pub fn stale(&self, now: jiff::Timestamp) -> bool {
         self.attempted_at.is_none_or(|at| {
-            now.signed_duration_since(at).num_seconds() > 600 || at > now + chrono::Duration::minutes(1)
+            seconds_since(at, now) > 600 || now.duration_since(at) < -jiff::SignedDuration::from_mins(1)
         })
     }
-    pub fn connectivity(&self, now: DateTime<Utc>) -> &'static str {
+    pub fn connectivity(&self, now: jiff::Timestamp) -> &'static str {
         if self.stale(now) {
             "Stale"
         } else {
@@ -99,17 +99,14 @@ impl Observation {
             }
         }
     }
-    pub fn server_status(&self, now: DateTime<Utc>) -> &'static str {
+    pub fn server_status(&self, now: jiff::Timestamp) -> &'static str {
         if self.stale(now) {
             return "Stale";
         }
         if self.probe_ok != Some(true) {
             return "Unknown · probe failed";
         }
-        if self
-            .checked_at
-            .is_none_or(|at| now.signed_duration_since(at).num_seconds() > 600)
-        {
+        if self.checked_at.is_none_or(|at| seconds_since(at, now) > 600) {
             return "Stale";
         }
         match (&self.server_version, &self.latest_version) {
@@ -131,7 +128,7 @@ mod tests {
     use super::*;
     #[test]
     fn registration_does_not_imply_online() {
-        let now = Utc::now();
+        let now = jiff::Timestamp::now();
         let mut o = Observation {
             attempted_at: Some(now),
             ..Default::default()
@@ -147,7 +144,7 @@ mod tests {
         o.server_version = Some("1".into());
         o.latest_version = Some("1".into());
         assert_eq!(o.server_status(now), "Current");
-        assert_eq!(o.server_status(now + chrono::Duration::minutes(11)), "Stale");
+        assert_eq!(o.server_status(now + jiff::SignedDuration::from_mins(11)), "Stale");
     }
 }
 

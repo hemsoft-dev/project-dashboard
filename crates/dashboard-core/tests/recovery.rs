@@ -14,17 +14,17 @@ fn transport_backoff_caps_and_success_resets_it() {
     let mut recovery = Recovery::default();
     let mut now = Instant::now();
     for seconds in [5, 10, 20, 60, 60, 60] {
-        recovery.record(&Err(FetchError::Timeout), now, chrono::Local::now());
+        recovery.record(&Err(FetchError::Timeout), now, jiff::Timestamp::now());
         assert!(!recovery.due(now + Duration::from_secs(seconds - 1)));
         now += Duration::from_secs(seconds);
         assert!(recovery.due(now));
     }
-    recovery.record(&Ok(good()), now, chrono::Local::now());
+    recovery.record(&Ok(good()), now, jiff::Timestamp::now());
     assert!(recovery.last_success.is_some());
     assert!(!recovery.due(now + Duration::from_secs(600)));
-    recovery.record(&Err(FetchError::Connect), now, chrono::Local::now());
+    recovery.record(&Err(FetchError::Connect), now, jiff::Timestamp::now());
     assert_eq!(recovery.retry_at, Some(now + Duration::from_secs(5)));
-    recovery.record(&Err(FetchError::Http(503)), now, chrono::Local::now());
+    recovery.record(&Err(FetchError::Http(503)), now, jiff::Timestamp::now());
     assert_eq!(recovery.retry_at, None);
 }
 
@@ -129,7 +129,7 @@ fn partial_transport_failures_back_off_until_the_whole_read_succeeds() {
     use dashboard_core::source::TransportError;
     let mut recovery = Recovery::default();
     let mut now = Instant::now();
-    recovery.record(&Ok(hosted_good()), now, chrono::Local::now());
+    recovery.record(&Ok(hosted_good()), now, jiff::Timestamp::now());
     let last_success = recovery.last_success;
     for (transport, seconds) in [
         (TransportError::Timeout, 5),
@@ -141,16 +141,16 @@ fn partial_transport_failures_back_off_until_the_whole_read_succeeds() {
         let hosted = partial.hosted.as_mut().unwrap();
         hosted.work_transport_error = Some(transport);
         hosted.work_error = Some("transport failed".into());
-        recovery.record(&Ok(partial), now, chrono::Local::now());
+        recovery.record(&Ok(partial), now, jiff::Timestamp::now());
         assert_eq!(recovery.last_success, last_success);
         assert_eq!(recovery.retry_at, Some(now + Duration::from_secs(seconds)));
         now += Duration::from_secs(seconds);
         assert!(recovery.due(now));
     }
-    recovery.record(&Ok(hosted_good()), now, chrono::Local::now());
+    recovery.record(&Ok(hosted_good()), now, jiff::Timestamp::now());
     assert_eq!(recovery.retry_at, None);
     let mut http = hosted_good();
     http.hosted.as_mut().unwrap().work_error = Some(FetchError::Http(503).to_string());
-    recovery.record(&Ok(http), now, chrono::Local::now());
+    recovery.record(&Ok(http), now, jiff::Timestamp::now());
     assert_eq!(recovery.retry_at, None);
 }

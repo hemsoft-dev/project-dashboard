@@ -4158,8 +4158,8 @@ impl StatusSource for ReadinessSource {
         let now = demo::fixture_now();
         let source = Source {
             state: "fresh".into(),
-            last_success_at: Some(now.to_rfc3339()),
-            last_attempt_at: Some(now.to_rfc3339()),
+            last_success_at: Some(now.to_string()),
+            last_attempt_at: Some(now.to_string()),
             stale_after_seconds: 3600,
             ..Default::default()
         };
@@ -4183,7 +4183,7 @@ impl StatusSource for ReadinessSource {
         if name == "empty_backlog" {
             let github = h.readiness.sources.get_mut("GitHub").unwrap();
             github.state = "stale".into();
-            github.last_success_at = Some((now - chrono::Duration::hours(2)).to_rfc3339());
+            github.last_success_at = Some((now - jiff::SignedDuration::from_hours(2)).to_string());
             github.reason = "observation_expired".into();
         }
         if let Some(reason) = &mut h.readiness.dispatch {
@@ -4212,7 +4212,7 @@ impl StatusSource for ReadinessSource {
                 ..Default::default()
             };
         }
-        h.work=vec![serde_json::from_value(serde_json::json!({"id":"oldest","project":name,"kind":"issue","number":57,"title":"Approve the signing setup","url":format!("https://github.com/hemsoft-dev/{name}/issues/57"),"status":"waiting_on_franz","waitingSince":(now-chrono::Duration::days(6)).to_rfc3339(),"waitingReason":"manual:signing approval","ghState":"open"})).unwrap()];
+        h.work=vec![serde_json::from_value(serde_json::json!({"id":"oldest","project":name,"kind":"issue","number":57,"title":"Approve the signing setup","url":format!("https://github.com/hemsoft-dev/{name}/issues/57"),"status":"waiting_on_franz","waitingSince":(now-jiff::SignedDuration::from_hours(6 * 24)).to_string(),"waitingReason":"manual:signing approval","ghState":"open"})).unwrap()];
         if !matches!(name, "held" | "waiting_on_franz" | "unavailable") {
             h.work.clear();
         }
@@ -4296,7 +4296,7 @@ async fn project_rows_show_dispatch_reasons_waiting_links_and_source_marker(cx: 
 
 pub(crate) fn fleet_status_fixture() -> dashboard_core::fleet_status::Snapshot {
     use dashboard_core::fleet_status::{Load, Machine, Observation, Snapshot};
-    let now = chrono::Utc::now();
+    let now = jiff::Timestamp::now();
     let machines = [
         ("mini", "linux"),
         ("home", "windows"),
@@ -4330,7 +4330,7 @@ pub(crate) fn fleet_status_fixture() -> dashboard_core::fleet_status::Snapshot {
             update_available: Some(i != 0),
             checked_at: (i != 3).then_some(now),
             attempted_at: Some(if i == 2 {
-                now - chrono::Duration::minutes(20)
+                now - jiff::SignedDuration::from_mins(20)
             } else {
                 now
             }),
@@ -4362,7 +4362,7 @@ pub(crate) fn fleet_status_fixture() -> dashboard_core::fleet_status::Snapshot {
 
 pub(crate) fn fleet_activity_fixture() -> dashboard_core::fleet_activity::Snapshot {
     use dashboard_core::fleet_activity::{Machine, Session, Snapshot};
-    let now = chrono::Utc::now();
+    let now = jiff::Timestamp::now();
     let session = |title: &str, status: &str| Session {
         title: title.into(),
         runtime_status: status.into(),
@@ -4420,7 +4420,7 @@ fn activity_http_failure_keeps_version_capacity_and_last_observation(cx: &mut Te
     use std::sync::atomic::{AtomicBool, Ordering};
     let fail = Arc::new(AtomicBool::new(false));
     let broken = fail.clone();
-    let stamp = chrono::Utc::now().to_rfc3339();
+    let stamp = jiff::Timestamp::now().to_string();
     let server = pmd_http::Server::with_auth(move |path, token| {
         let body = match path {
             "/v1/assignments?limit=500&state=running" => serde_json::json!({"assignments":[],"truncated":false}),
@@ -4884,7 +4884,7 @@ fn fleet_timer_is_independent_selected_only_and_retains_real_ages(cx: &mut TestA
     use std::sync::atomic::{AtomicUsize, Ordering};
     let mode = Arc::new(AtomicUsize::new(0));
     let response_mode = mode.clone();
-    let stamp = chrono::Utc::now();
+    let stamp = jiff::Timestamp::now();
     let server = pmd_http::Server::with_auth(move |path, token| {
         let body = match path {
             "/v1/assignments?limit=500&state=running" => serde_json::json!({"assignments":[],"truncated":false}),
@@ -4900,9 +4900,9 @@ fn fleet_timer_is_independent_selected_only_and_retains_real_ages(cx: &mut TestA
                     };
                 }
                 let observed = if mode == 1 {
-                    stamp - chrono::Duration::seconds(91)
+                    stamp - jiff::SignedDuration::from_secs(91)
                 } else {
-                    chrono::Utc::now()
+                    jiff::Timestamp::now()
                 };
                 serde_json::json!({"schema":1,"observedAt":observed,"machines":[{"name":"mini","observedAt":observed,"state":"ok","activeCount":1,"chiefActive":false,"sessions":[{"environment":"","threadId":"timer","title":"Timer work","project":"dashboard","runtimeStatus":"working","role":"primary"}]}]})
             }
@@ -4941,7 +4941,7 @@ fn fleet_timer_is_independent_selected_only_and_retains_real_ages(cx: &mut TestA
             );
             cx.update(|cx| {
                 assert_eq!(
-                    live.view.read(cx).fleet_activity.machines[0].count_label(chrono::Utc::now()),
+                    live.view.read(cx).fleet_activity.machines[0].count_label(jiff::Timestamp::now()),
                     "1 active"
                 )
             });

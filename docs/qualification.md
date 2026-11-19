@@ -14,7 +14,8 @@ desktop window, the user's running app or the real pmd.
   - 8 checkouts, each a folder with its own `origin` (`hemsoft-dev/repo-0` to `repo-7`).
   - A loopback pmd that serves each project's status (4716 B), a Board and work list of 20 items (4189 B), and the
     Fleet routes.
-  - A live `Pmd` source, priorities and write backend, as in the app. Config and cache live in a temporary folder.
+  - The live `Pmd` status source and priorities, as in the app. Writes are off (the tests' `write::Off` backend), so
+    the Manage dialogs' write path isn't part of the workload. Config and cache live in a temporary folder.
 - **One cycle:**
   1. A user refresh of every card.
   2. A refresh while pmd answers status reads with 503: every card shows the failure and keeps its last good data.

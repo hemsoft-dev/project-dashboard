@@ -199,7 +199,9 @@ pub fn read(
     }
     reconcile(plan, &mutants)?;
     let root = format!("{}/", prefix.trim_end_matches('/'));
-    for m in &mut mutants {
+    // An exclusion settles whether a result counts, never a timeout: a hang fails the gate wherever it happens (SFL on
+    // #114).
+    for m in mutants.iter_mut().filter(|m| m.class != "timeout") {
         if let Some(reason) = excluded(m, functions, &root, &policy.equivalent) {
             m.class = "excluded".to_string();
             m.reason = Some(reason);
@@ -524,6 +526,29 @@ mod tests {
         assert_eq!(r.mutants[3].class, "missed");
     }
 
+    #[test]
+    fn a_timeout_in_excluded_code_still_fails_the_gate() {
+        // SFL on #114, round 2: the platform exclusion turned a timeout into "excluded", so the gate never saw it.
+        let equivalent = Equivalent {
+            file: FILE.into(),
+            mutant: "replace == with != in send".into(),
+            reason: "no behavior change".into(),
+        };
+        let p = policy(0.0, vec![equivalent]);
+        let text = outcomes(
+            "Success",
+            &[
+                ("replace acl with ()", 70, "Timeout"),
+                ("replace == with != in send", 20, "Timeout"),
+                ("replace + with - in send", 10, "CaughtMutant"),
+            ],
+            None,
+        );
+        let r = report(&text, &p, Mode::Full).unwrap();
+        assert_eq!((r.counts.timeout, r.counts.excluded, r.counts.caught), (2, 0, 1));
+        assert!(r.mutants.iter().all(|m| m.reason.is_none()));
+        assert_eq!(check(&r, &p), ["2 mutants timed out; a timeout is never a pass"]);
+    }
     #[test]
     fn an_incomplete_run_is_an_error_never_a_report() {
         let p = policy(0.0, vec![]);

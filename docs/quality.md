@@ -144,7 +144,8 @@ A run is **incomplete**, and can't pass, when any of these holds:
 - cargo-mutants exited with anything but 0, 2, 3 or 4 (an internal error or a usage error);
 - a non-empty diff produced no outcomes.
 
-Any timeout fails the gate. A test that hangs under a mutant counts against the tests, never for them.
+Any timeout fails the gate, including one in excluded code: an exclusion decides whether a result counts, never hides a
+timeout. A test that hangs under a mutant counts against the tests, never for them.
 
 ## The gates
 

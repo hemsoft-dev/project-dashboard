@@ -41,8 +41,9 @@ LCOV file and both reports. The report's `revision` is the commit the job checke
   and a function's nested `fn`s. `#[path]` modules are followed from the declaring file's folder. An unknown `cfg`
   predicate, or a `#[path]` inside an inline `mod` block, stops the run instead of guessing.
 - **Coverage basis.** Lines, from LLVM source-based coverage on the stable toolchain: a function's coverage is the
-  share of its own instrumented lines that ran at least once. Branch coverage needs a nightly compiler, so it isn't
-  collected; #110 tracks adding it. A line holding both arms of an `if` counts as covered when either runs.
+  share of its own instrumented lines that ran at least once. A line holding both arms of an `if` counts as covered
+  when either runs. Branch coverage needs a nightly compiler, so the gate doesn't use it; a separate job reports it
+  (see [Branch coverage](#branch-coverage)).
 - **Complexity.** 1, plus one for each `if`, `while`, `for`, `?`, `let ... else`, `&&`, `||`, match guard and match
   arm after the first. Closures count toward the function that holds them. A nested `fn` is its own function.
 - **CRAP** = complexity² × (1 − coverage)³ + complexity, with coverage from 0 to 1. A fully covered function scores its
@@ -87,6 +88,46 @@ Do it in the pull request that changes the numbers, so the diff shows each moved
 
 Lowering the floor, or accepting a higher score for a function above 30, needs its reason in the pull request
 description. CI reports belong to whoever changed the code they measure: a failing gate is that pull request's to fix.
+
+## Branch coverage
+
+Line coverage counts a line holding both arms of an `if`, or both sides of an `&&`, as covered when either runs.
+Branch coverage tells them apart. It is reported beside line coverage, and it is not gated (#110).
+
+**Decision: a separate nightly job, not a wait for stable.** Checked on 2026-11-19: stable rustc 1.100.0
+(2026-11-09) rejects `-Z coverage-options=branch` ("the option `Z` is only accepted on the nightly compiler"), and
+`-C instrument-coverage` has no branch option. cargo-llvm-cov 0.9.1's `--branch` passes that flag, so branch coverage
+needs a nightly compiler. The `branch-coverage` job in `ci.yml` runs on `nightly-2026-10-22`
+(rustc 1.101.0-nightly 1a2c4797e, `BRANCH_TOOLCHAIN`). The build, the required checks and the line-coverage gate
+stay on stable and rustc 1.99.0. The job isn't required; it fails only when it can't make the report. Re-check stable
+when moving `COVERAGE_TOOLCHAIN`, and move the gate's basis to branches only through a pull request that adds a branch
+baseline under the update policy above.
+
+```sh
+rustup toolchain install nightly-2026-10-22 --profile minimal --component llvm-tools-preview
+CARGO_TARGET_DIR=target/core-branch-coverage cargo +nightly-2026-10-22 llvm-cov -p dashboard-core --locked --branch \
+  --lcov --output-path target/branch-quality/core-linux.lcov
+cargo run -p quality --locked -- crap --src crates/dashboard-core/src --lcov target/branch-quality/core-linux.lcov \
+  --platform linux --revision "$(git rev-parse HEAD)" --report-only --require-branches --out target/branch-quality
+```
+
+`--report-only` checks no baseline and exits 0 once the report is written. Line numbers from the nightly differ from
+rustc 1.99.0's, so these line figures aren't comparable with the gated ones. `--require-branches` makes an LCOV
+without `BRDA` records an error (exit 2), so a nightly that stopped collecting branches can't produce an empty
+branch column. The job uploads `core-branches-<head sha>` and writes the Markdown to the run summary.
+
+What the branch counts mean:
+
+- **Branches** are LLVM's: each `if` and `while` condition, match guard, `&&` and `||` has a true and a false branch.
+  Match arms aren't branches in LLVM's count, so a function that is one `match`, such as `Kind::label`, has none.
+- **Per function**, the report gives branches taken of the total (`branches` in the JSON) and the lines holding an
+  untaken branch (`untaken_lines`). The Markdown adds a "Branches taken" column to the worst table and lists every
+  function with an untaken branch.
+- **Unrun functions.** LLVM writes no branch record for a function that never ran, so its branches are unknown: the
+  report shows "not run" (`branches: null`) and leaves it out of the branch total, whose line says how many such
+  functions there are. Their line coverage is already 0%.
+- **Fixture.** `crates/quality/tests/fixtures/branches` holds a source file and real nightly output for it. The `else`
+  of `pick` never runs while its line does: line coverage 100% for that function, one of two branches taken.
 
 # Mutation testing for dashboard-core
 

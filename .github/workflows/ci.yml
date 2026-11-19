@@ -17,14 +17,23 @@ permissions:
 jobs:
   # Fails on any RustSec advisory in Cargo.lock that deny.toml doesn't accept. It reads the lockfile and fetches the
   # public advisory database and crate index; it uploads nothing. Once is enough: the check covers every target.
+  # It also fails on a workflow action that isn't pinned to a full commit (#103, docs/action-pins.md).
   advisories:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+
+      # Offline: parses the workflow files as YAML (PyYAML, from Ubuntu's archive if the image lacks it). The tests
+      # include a fixture with `actions/checkout@v4` that must fail.
+      - name: Action pins
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || { sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-yaml; }
+          python3 -m unittest discover -s scripts -p 'test_check_action_pins.py' -v
+          python3 scripts/check_action_pins.py
 
       # This commit of the action is v2.1.1, whose Dockerfile pins cargo-deny 0.20.2.
       - name: Advisories (cargo-deny 0.20.2)
@@ -44,7 +53,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
@@ -67,7 +76,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # GPUI's X11 and Wayland backends link these; Mesa's software Vulkan (lavapipe) renders the screenshots.
       - name: Install Linux build dependencies
@@ -84,7 +93,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Format Check
         run: cargo fmt --all --check
@@ -105,7 +114,7 @@ jobs:
 
       - name: Upload screenshots
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: captures
           path: captures/

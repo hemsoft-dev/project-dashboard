@@ -1,3 +1,4 @@
 /target/
 # Screenshots written by the capture test (CAPTURE_DIR=...).
 /captures/
+__pycache__/

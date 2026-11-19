@@ -12,9 +12,12 @@ A tag such as `@v4` can be moved upstream, which changes the code a job runs (in
 ## The check
 
 `scripts/check_action_pins.py` fails on any reference that isn't a full lowercase 40-character SHA with a `# vX.Y.Z`
-comment. Local actions (`./...`) and containers pinned by `sha256` digest pass. Quoted keys and values (`"uses":`)
-are checked like plain ones. A `uses` the line reader can't follow fails rather than going unread: the flow form
-`{ uses: ... }`, a value on the next line or in a block, an alias, or a double-quoted key with an escape.
+comment. Local actions (`./...`) and containers pinned by `sha256` digest pass. It parses each workflow as YAML with
+PyYAML, so every spelling of the key GitHub reads is checked: quoted, escaped (`"\u0075ses"`), in a flow mapping,
+with the value on the next line, or through an alias. A block or list value, or a file that isn't valid YAML, fails.
+YAML drops comments, so the release comment is read from the raw line after the value.
+
+It needs PyYAML: `python3-yaml` on Ubuntu (CI installs it if the image lacks it), `pip install pyyaml` elsewhere.
 
 ```sh
 python scripts/check_action_pins.py            # offline; CI runs this in the required advisories job

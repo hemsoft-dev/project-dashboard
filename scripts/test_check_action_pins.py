@@ -99,14 +99,25 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("not pinned to a sha256 digest", out)
 
-    def test_an_unrecognized_uses_form_fails_rather_than_passing_unread(self):
-        body = "jobs:\n  a:\n    steps:\n      - { uses: actions/checkout@v4 }\n"
-        code, out = self.check(body)
-        self.assertEqual(code, 1)
-        self.assertIn("unrecognized `uses:` form", out)
+    def test_every_yaml_spelling_of_a_uses_key_is_checked(self):
+        # SFL on #109, rounds 1 and 2: quoted keys, then an escaped key in a flow mapping, passed a line reader unread.
+        # The check parses YAML, so each of these is the same `uses` key GitHub reads.
+        pinned = f"      - uses: actions/checkout@{SHA} # v4.4.0\n"
+        for step in [
+            "      - { uses: actions/checkout@v4 }",
+            '      - {"\\u0075ses": actions/checkout@v4}',
+            '      - "\\u0075ses": actions/checkout@v4',
+            "      - 'uses' : actions/checkout@v4",
+            "      - uses:\n          actions/checkout@v4",
+            "      - uses: *mutable",
+        ]:
+            with self.subTest(step=step):
+                body = f"x-anchor: &mutable actions/checkout@v4\njobs:\n  a:\n    steps:\n{pinned}{step}\n"
+                code, out = self.check(body)
+                self.assertEqual(code, 1, out)
+                self.assertIn("mutable ref 'v4'", out)
 
     def test_a_quoted_key_is_still_checked(self):
-        # SFL's finding on #109: a quoted `uses` key matched neither pattern, so a mutable ref passed unread.
         for key in ['"uses"', "'uses'", "uses ", '"uses" ']:
             with self.subTest(key=key):
                 code, out = self.check(f"jobs:\n  a:\n    steps:\n      - {key}: actions/checkout@v4\n")
@@ -115,21 +126,17 @@ class CheckTests(unittest.TestCase):
                 code, out = self.check(f"jobs:\n  a:\n    steps:\n      - {key}: actions/checkout@{SHA} # v4.4.0\n")
                 self.assertEqual(code, 0, out)
 
-    def test_keys_and_values_the_reader_cannot_follow_fail(self):
-        pinned = f"      - uses: actions/checkout@{SHA} # v4.4.0\n"
-        for line, reason in [
-            ('      - "\\u0075ses": actions/checkout@v4', "unrecognized `uses:` form"),  # an escape that spells uses
-            ("      - uses:", "unrecognized `uses:` form"),  # the value on the next line
-            ("      - uses: >-", "no ref"),  # a folded block value
-            ("      - uses: *checkout", "no ref"),  # an alias
-        ]:
-            with self.subTest(line=line):
-                # A pinned step beside it, so the file has a reference and only this line can fail it.
-                code, out = self.check(f"jobs:\n  a:\n    steps:\n{pinned}{line}\n        actions/checkout@v4\n")
+    def test_a_block_or_structured_value_fails(self):
+        for step in ["      - uses: >-\n          actions/checkout@v4", "      - uses: [actions/checkout@v4]"]:
+            with self.subTest(step=step):
+                code, out = self.check(f"jobs:\n  a:\n    steps:\n{step}\n")
                 self.assertEqual(code, 1, out)
-                self.assertIn(f"ci.yml:5 ", out)
-                self.assertIn(reason, out)
+                self.assertIn("not a plain action reference", out)
 
+    def test_a_file_that_is_not_yaml_fails(self):
+        code, out = self.check(workflow(f"actions/checkout@{SHA} # v4.4.0") + "  broken: [\n")
+        self.assertEqual(code, 1, out)
+        self.assertIn("not valid YAML", out)
     def test_comments_and_prose_are_not_references(self):
         body = workflow(f"actions/checkout@{SHA} # v4.4.0") + "      # uses: actions/checkout@v4 in a comment\n"
         body += "      - run: echo 'this step uses no action'\n"

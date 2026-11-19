@@ -27,9 +27,11 @@ jobs:
         with:
           persist-credentials: false
 
-      # Offline: reads the workflow files only. The tests include a fixture with `actions/checkout@v4` that must fail.
+      # Offline: parses the workflow files as YAML (PyYAML, from Ubuntu's archive if the image lacks it). The tests
+      # include a fixture with `actions/checkout@v4` that must fail.
       - name: Action pins
         run: |
+          python3 -c 'import yaml' 2>/dev/null || { sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-yaml; }
           python3 -m unittest discover -s scripts -p 'test_check_action_pins.py' -v
           python3 scripts/check_action_pins.py
 

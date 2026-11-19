@@ -23,11 +23,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-# `uses:` as a mapping key, optionally after the `- ` of a list item. YAML allows the key and the value to be quoted
-# (`"uses": "a/b@sha"`), so both may be.
-USES = re.compile(
-    r"""^\s*(?:-\s+)?(?P<kq>['"]?)uses(?P=kq)\s*:\s*(?P<quote>['"]?)(?P<ref>[^'"\s#]+)(?P=quote)\s*(?:#\s*(?P<comment>.*?))?\s*$"""
-)
+try:
+    import yaml  # PyYAML: python3-yaml on Ubuntu, `pip install pyyaml` elsewhere
+except ImportError:  # pragma: no cover - exercised by hand
+    print("error   check_action_pins.py needs PyYAML (python3-yaml, or pip install pyyaml)", file=sys.stderr)
+    sys.exit(2)
+
 PINNED = re.compile(r"^(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?P<path>/[^@]+)?@(?P<sha>[0-9a-f]{40})$")
 VERSION = re.compile(r"^v\d+(?:\.\d+){0,2}$")
 DIGEST = re.compile(r"^docker://[^@\s]+@sha256:[0-9a-f]{64}$")
@@ -49,31 +50,62 @@ class Use:
         return f"{self.file.as_posix()}:{self.line}"
 
 
-# Any other line that could be a `uses` key: bare or quoted, in a flow mapping, or with a space before the colon.
-ANY_USES = re.compile(r"""(?:^|[\s{,-])(?P<kq>['"]?)uses(?P=kq)\s*:""")
-# A double-quoted key with an escape can spell `uses` without the letters (`"uses"`), so it can't be read safely.
-ESCAPED_KEY = re.compile(r"""^\s*(?:-\s+)?"[^"]*\\[^"]*"\s*:""")
 UNPARSED = "<unparsed>"
+COMMENT = re.compile(r"#\s*(?P<comment>\S.*?)\s*$")
+
+
+class WorkflowError(Exception):
+    """A workflow file that doesn't parse as YAML."""
 
 
 def find_uses(path: Path) -> list[Use]:
-    out = []
-    for number, text in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        if text.lstrip().startswith("#"):
-            continue
-        m = USES.match(text)
-        if m:
-            out.append(Use(path, number, m["ref"], m["comment"] or None))
-        elif ANY_USES.search(text.split("#", 1)[0]) or ESCAPED_KEY.match(text):
-            # A form this line reader doesn't follow, such as `{ uses: ... }`, fails rather than passing unread.
-            out.append(Use(path, number, UNPARSED, text.strip()))
-    return out
+    """Every `uses` key in the file, found by parsing it as YAML.
 
+    The parser decodes keys the way GitHub does, so a quoted, escaped or flow-mapping spelling (`{"\\u0075ses": ...}`)
+    is still a `uses` key. An earlier line-by-line reader missed such spellings (SFL on #109). The raw line is read only
+    for the `# vX.Y.Z` comment after the value, which YAML drops.
+    """
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    try:
+        documents = list(yaml.compose_all(text, Loader=yaml.SafeLoader))
+    except yaml.YAMLError as err:
+        raise WorkflowError(f"{path.as_posix()}: not valid YAML: {err}") from err
+    out: list[Use] = []
+    seen: set[int] = set()
+
+    def walk(node) -> None:
+        if node is None or id(node) in seen:  # an alias is the anchored node itself
+            return
+        seen.add(id(node))
+        if isinstance(node, yaml.MappingNode):
+            for key, value in node.value:
+                if isinstance(key, yaml.ScalarNode) and key.value == "uses":
+                    out.append(use_of(value))
+                walk(key)
+                walk(value)
+        elif isinstance(node, yaml.SequenceNode):
+            for item in node.value:
+                walk(item)
+
+    def use_of(value) -> Use:
+        line = value.start_mark.line + 1
+        if not isinstance(value, yaml.ScalarNode) or value.style in ("|", ">"):
+            # A list, a mapping or a block scalar isn't an action reference GitHub accepts; fail rather than guess.
+            return Use(path, line, UNPARSED, None)
+        end = value.end_mark
+        rest = lines[end.line][end.column:] if end.line < len(lines) else ""
+        m = COMMENT.search(rest)
+        return Use(path, line, value.value.strip(), m["comment"] if m else None)
+
+    for document in documents:
+        walk(document)
+    return out
 
 def problem(use: Use) -> str | None:
     """Why a reference fails, or None when it is immutable and labelled."""
     if use.ref == UNPARSED:
-        return "unrecognized `uses:` form; write it as `uses: owner/repo@<sha> # vX.Y.Z` on its own line"
+        return "not a plain action reference; write it as `uses: owner/repo@<sha> # vX.Y.Z`"
     if use.ref.startswith("./"):
         return None
     if use.ref.startswith("docker://"):
@@ -129,7 +161,13 @@ def check(root: Path, files: list[Path], online: bool, out=sys.stdout) -> int:
     failures = 0
     count = 0
     for path in files:
-        for use in find_uses(path):
+        try:
+            uses = find_uses(path)
+        except WorkflowError as err:
+            failures += 1
+            print(f"error   {err}", file=out)
+            continue
+        for use in uses:
             count += 1
             shown = Use(path.relative_to(root) if path.is_relative_to(root) else path, use.line, use.ref, use.comment)
             reason = problem(use)

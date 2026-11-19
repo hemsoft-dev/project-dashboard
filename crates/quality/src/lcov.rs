@@ -1,13 +1,23 @@
-//! Line hit counts from an LCOV file, as `cargo llvm-cov --lcov` writes it.
+//! Line and branch hit counts from an LCOV file, as `cargo llvm-cov --lcov` writes it.
 
 use std::collections::BTreeMap;
 use std::fmt;
 
-/// Hit counts per instrumented line, per source file. A line that isn't instrumented (a blank line, a brace, a
-/// comment) has no entry: it is neither covered nor uncovered.
+/// One source file's coverage.
+#[derive(Debug, Default)]
+pub struct FileCoverage {
+    /// Hit counts per instrumented line. A line that isn't instrumented (a blank line, a brace, a comment) has no
+    /// entry: it is neither covered nor uncovered.
+    pub lines: BTreeMap<usize, u64>,
+    /// How often each branch was taken, keyed by its line, block and branch number (`BRDA`). Only a compiler that
+    /// collects branch coverage writes these (`cargo llvm-cov --branch`, nightly rustc); otherwise this is empty.
+    pub branches: BTreeMap<(usize, u64, u64), u64>,
+}
+
+/// Coverage per source file.
 #[derive(Debug, Default)]
 pub struct Lcov {
-    pub files: BTreeMap<String, BTreeMap<usize, u64>>,
+    pub files: BTreeMap<String, FileCoverage>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -57,9 +67,33 @@ impl Lcov {
                     .files
                     .get_mut(file)
                     .expect("file entry exists")
+                    .lines
                     .entry(number)
                     .or_insert(0);
                 *entry = entry.saturating_add(hits);
+            } else if let Some(rest) = line.strip_prefix("BRDA:") {
+                let file = current.as_ref().ok_or_else(|| err("BRDA: outside a file record"))?;
+                let parts: Vec<&str> = rest.split(',').collect();
+                let [number, block, branch, taken] = parts[..] else {
+                    return Err(err("BRDA needs line, block, branch and taken"));
+                };
+                let number = number.parse::<usize>().map_err(|_| err("bad BRDA line number"))?;
+                let block = block.parse::<u64>().map_err(|_| err("bad BRDA block"))?;
+                let branch = branch.parse::<u64>().map_err(|_| err("bad BRDA branch"))?;
+                // `-`: the block holding the branch never ran, so neither did the branch.
+                let taken = match taken {
+                    "-" => 0,
+                    n => n.parse::<u64>().map_err(|_| err("bad BRDA taken count"))?,
+                };
+                // Repeated like DA lines (one per instantiation): the branch was taken if any instance took it.
+                let entry = out
+                    .files
+                    .get_mut(file)
+                    .expect("file entry exists")
+                    .branches
+                    .entry((number, block, branch))
+                    .or_insert(0);
+                *entry = entry.saturating_add(taken);
             } else if line == "end_of_record" && current.take().is_none() {
                 return Err(err("end_of_record without SF:"));
             }
@@ -79,9 +113,14 @@ impl Lcov {
         Ok(out)
     }
 
-    /// The hit counts for the file whose path ends with `suffix` (a `/`-separated path relative to the repository).
+    /// Whether any file carries branch records: the report was collected with branch coverage.
+    pub fn has_branches(&self) -> bool {
+        self.files.values().any(|f| !f.branches.is_empty())
+    }
+
+    /// The coverage of the file whose path ends with `suffix` (a `/`-separated path relative to the repository).
     /// None when no file matches, or more than one does.
-    pub fn file(&self, suffix: &str) -> Option<&BTreeMap<usize, u64>> {
+    pub fn file(&self, suffix: &str) -> Option<&FileCoverage> {
         let mut found = self
             .files
             .iter()
@@ -102,10 +141,37 @@ mod tests {
         )
         .unwrap();
         let a = lcov.file("src/a.rs").unwrap();
-        assert_eq!(a.get(&1), Some(&0));
-        assert_eq!(a.get(&2), Some(&4));
-        assert_eq!(lcov.file("src/b.rs").unwrap().len(), 1);
+        assert_eq!(a.lines.get(&1), Some(&0));
+        assert_eq!(a.lines.get(&2), Some(&4));
+        assert_eq!(lcov.file("src/b.rs").unwrap().lines.len(), 1);
         assert!(lcov.file("src/c.rs").is_none());
+        assert!(!lcov.has_branches(), "no BRDA, no branch coverage");
+    }
+
+    #[test]
+    fn branch_records_count_per_branch_and_merge_repeated_ones() {
+        // The shape nightly `cargo llvm-cov --branch` writes: line 2 ran, its else branch never did.
+        let lcov = Lcov::parse(
+            "SF:/repo/src/a.rs
+DA:2,1
+BRDA:2,0,0,1
+BRDA:2,0,1,0
+BRDA:6,0,0,-
+BRDA:6,0,0,2
+BRDA:6,0,1,-
+             BRF:4
+BRH:2
+end_of_record
+",
+        )
+        .unwrap();
+        assert!(lcov.has_branches());
+        let a = lcov.file("src/a.rs").unwrap();
+        assert_eq!(a.lines.get(&2), Some(&1));
+        assert_eq!(
+            a.branches.iter().map(|(k, v)| (*k, *v)).collect::<Vec<_>>(),
+            [((2, 0, 0), 1), ((2, 0, 1), 0), ((6, 0, 0), 2), ((6, 0, 1), 0)]
+        );
     }
 
     #[test]

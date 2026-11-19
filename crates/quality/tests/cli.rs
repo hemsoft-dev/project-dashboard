@@ -149,6 +149,108 @@ fn a_new_function_above_the_crap_limit_fails_the_gate() {
     assert!(stdout(&out).contains(&expected), "{}", stdout(&out));
 }
 
+/// `quality crap --report-only` on the branches fixture: real nightly `cargo llvm-cov --branch` output.
+fn branch_report(run: &Run, out: &str, lcov: &Path, extra: &[&str]) -> Output {
+    let src = run.dir.join("crates/branches/src");
+    copy_dir(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/branches/src"),
+        &src,
+    );
+    Command::new(env!("CARGO_BIN_EXE_quality"))
+        .args([
+            "crap",
+            "--platform",
+            "linux",
+            "--revision",
+            REVISION,
+            "--report-only",
+            "--src",
+        ])
+        .arg(&src)
+        .arg("--lcov")
+        .arg(lcov)
+        .arg("--out")
+        .arg(run.dir.join(out))
+        .args(extra)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn an_uncovered_else_shows_as_an_untaken_branch_on_a_covered_line() {
+    let run = Run::new("branches");
+    let lcov = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/branches/branches.lcov");
+    let out = branch_report(&run, "branches", &lcov, &["--require-branches"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let text = stdout(&out);
+    assert!(text.contains("- Line coverage: 66.67% (6 of 9 lines)"), "{text}");
+    assert!(
+        text.contains(
+            "- Branch coverage: 50.00% (2 of 4 branches taken, in the functions that ran; \
+             1 that never ran have no branch records)"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("- Gate: not checked (report only)"), "{text}");
+    assert!(text.contains("nightly rustc -Z coverage-options=branch"), "{text}");
+    // pick's line 7 ran, yet its else branch never did.
+    assert!(text.contains("| 1/2 | 7 | `pick` lib.rs:6 |"), "{text}");
+    assert!(text.contains("| 1/2 | 11 | `both` lib.rs:10 |"), "{text}");
+    assert!(
+        text.contains("| 6.00 | 2 | 0% | not run | `unrun` lib.rs:14 |"),
+        "{text}"
+    );
+
+    let report = run.report("branches");
+    let pick = &report["functions"][0];
+    assert_eq!(pick["name"], "pick");
+    assert_eq!((pick["lines"].as_u64(), pick["covered"].as_u64()), (Some(3), Some(3)));
+    assert_eq!(pick["branches"], serde_json::json!({ "total": 2, "taken": 1 }));
+    assert_eq!(pick["untaken_lines"], serde_json::json!([7]));
+    assert_eq!(report["functions"][2]["name"], "unrun");
+    assert!(report["functions"][2]["branches"].is_null());
+    assert_eq!(
+        report["totals"]["branches"],
+        serde_json::json!({ "total": 4, "taken": 2 })
+    );
+    assert_eq!(report["totals"]["branch_percent"], 50.0);
+}
+
+#[test]
+fn the_branch_job_refuses_an_lcov_without_branch_records() {
+    let run = Run::new("no-branches");
+    let lines_only = run.dir.join("lines-only.lcov");
+    let fixture =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/branches/branches.lcov"))
+            .unwrap();
+    let text: String = fixture
+        .lines()
+        .filter(|l| !l.starts_with("BR"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    std::fs::write(&lines_only, text).unwrap();
+
+    let refused = branch_report(&run, "refused", &lines_only, &["--require-branches"]);
+    assert_eq!(refused.status.code(), Some(2), "{}", stdout(&refused));
+    assert!(stdout(&refused).contains("has no branch records (BRDA)"));
+
+    // Without the switch it reports lines and says branches weren't collected.
+    let lines = branch_report(&run, "lines", &lines_only, &[]);
+    assert_eq!(lines.status.code(), Some(0), "{}", stdout(&lines));
+    assert!(stdout(&lines).contains("- Branch coverage: not collected (no BRDA records in the LCOV)"));
+}
+
+#[test]
+fn report_only_takes_no_baseline() {
+    let run = Run::new("report-only");
+    let lcov = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/branches/branches.lcov");
+    for extra in [&["--write-baseline"][..], &["--baseline", "b.json"][..]] {
+        let out = branch_report(&run, "x", &lcov, extra);
+        assert_eq!(out.status.code(), Some(2), "{extra:?}: {}", stdout(&out));
+        assert!(stdout(&out).contains("--report-only checks no baseline"));
+    }
+}
+
 #[test]
 fn bad_input_is_a_usage_error_not_a_pass() {
     let run = Run::new("bad");

@@ -64,6 +64,12 @@ if ($Mode -eq 'diff') {
 Write-Output "cargo $($arguments -join ' ')"
 & cargo @arguments
 $mutantsExit = $LASTEXITCODE
+# cargo-mutants' own results are 0 (all caught), 2 (missed), 3 (timeout) and 4 (the unmutated baseline failed); the gate
+# reads those from the outcomes. Anything else (1 usage, 70 internal error) means the run didn't finish.
+if ($mutantsExit -notin 0, 2, 3, 4) {
+    Write-Error "cargo-mutants exited ${mutantsExit}: the run is incomplete." -ErrorAction Continue
+    exit 2
+}
 $outcomes = Join-Path $Out 'mutants.out/outcomes.json'
 if (-not (Test-Path $outcomes)) {
     # cargo-mutants writes no outcomes when a non-empty diff holds no mutable code (comments only, say).

@@ -122,10 +122,16 @@ impl std::fmt::Display for ReadError {
 
 impl std::error::Error for ReadError {}
 
-/// Classifies every mutant in `outcomes` (the text of `outcomes.json`). `functions` is the source walk of the crate
-/// root `prefix` (`crates/dashboard-core/src`) for the policy's platform.
+/// Classifies every mutant in `outcomes` (the text of `outcomes.json`), after checking it against `plan` (the text of
+/// `mutants.json`, the mutants cargo-mutants set out to test). `functions` is the source walk of the crate root `prefix`
+/// (`crates/dashboard-core/src`) for the policy's platform.
+///
+/// cargo-mutants rewrites `outcomes.json` after each result and counts `total_mutants` as it goes, so a run that stopped
+/// part way looks whole by its own count (SFL on #114). Completeness is the plan: every planned mutant has exactly one
+/// result, no result is unplanned, and the run recorded its `end_time`.
 pub fn read(
     outcomes: &str,
+    plan: &str,
     functions: &[Function],
     prefix: &str,
     policy: &Policy,
@@ -140,6 +146,11 @@ pub fn read(
     let total = value["total_mutants"]
         .as_u64()
         .ok_or_else(|| ReadError::Json("no total_mutants".into()))? as usize;
+    if !value["end_time"].is_string() {
+        return Err(ReadError::Incomplete(
+            "the run never finished: outcomes.json has no end_time".into(),
+        ));
+    }
     let mut baseline_ok = false;
     let mut mutants = Vec::new();
     for outcome in list {
@@ -186,6 +197,7 @@ pub fn read(
             mutants.len()
         )));
     }
+    reconcile(plan, &mutants)?;
     let root = format!("{}/", prefix.trim_end_matches('/'));
     for m in &mut mutants {
         if let Some(reason) = excluded(m, functions, &root, &policy.equivalent) {
@@ -203,6 +215,43 @@ pub fn read(
     })
 }
 
+/// Every planned mutant has exactly one result and every result was planned.
+fn reconcile(plan: &str, mutants: &[Mutant]) -> Result<(), ReadError> {
+    let plan: Value = serde_json::from_str(plan).map_err(|e| ReadError::Json(format!("mutants.json: {e}")))?;
+    let planned = plan
+        .as_array()
+        .ok_or_else(|| ReadError::Json("mutants.json is not a list".into()))?;
+    let mut expected: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for m in planned {
+        let name = m["name"]
+            .as_str()
+            .ok_or_else(|| ReadError::Json("a planned mutant without a name".into()))?;
+        *expected.entry(name).or_default() += 1;
+    }
+    for m in mutants {
+        match expected.get_mut(m.name.as_str()) {
+            Some(n) if *n > 0 => *n -= 1,
+            _ => {
+                return Err(ReadError::Incomplete(format!(
+                    "{}: a result for a mutant that wasn't planned",
+                    m.name
+                )));
+            }
+        }
+    }
+    let untested: Vec<&str> = expected
+        .iter()
+        .filter(|(_, n)| **n > 0)
+        .map(|(name, _)| *name)
+        .collect();
+    if let Some(first) = untested.first() {
+        return Err(ReadError::Incomplete(format!(
+            "{} planned mutants have no result, such as {first}",
+            untested.len()
+        )));
+    }
+    Ok(())
+}
 fn excluded(m: &Mutant, functions: &[Function], root: &str, equivalent: &[Equivalent]) -> Option<String> {
     let description = m.name.splitn(4, ':').nth(3).map(str::trim).unwrap_or(&m.name);
     if let Some(e) = equivalent.iter().find(|e| e.file == m.file && e.mutant == description) {
@@ -357,6 +406,7 @@ mod tests {
         serde_json::json!({
             "cargo_mutants_version": "27.1.0",
             "total_mutants": total.unwrap_or(mutants.len()),
+            "end_time": "2026-11-19T06:28:02Z",
             "outcomes": list,
         })
         .to_string()
@@ -390,9 +440,26 @@ mod tests {
         }
     }
 
+    /// The plan cargo-mutants would have written for exactly the mutants in `text`.
+    fn plan_of(text: &str) -> String {
+        let value: Value = serde_json::from_str(text).unwrap_or_default();
+        let names: Vec<Value> = value["outcomes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|o| o["scenario"]["Mutant"]["name"].as_str())
+            .map(|name| serde_json::json!({"name": name}))
+            .collect();
+        Value::Array(names).to_string()
+    }
+
     fn report(text: &str, p: &Policy, mode: Mode) -> Result<Report, ReadError> {
+        report_with_plan(text, &plan_of(text), p, mode)
+    }
+
+    fn report_with_plan(text: &str, plan: &str, p: &Policy, mode: Mode) -> Result<Report, ReadError> {
         let functions = [function("send", 1, 50, None), function("acl", 60, 80, Some("windows"))];
-        read(text, &functions, "crates/x/src", p, mode, &"a".repeat(40))
+        read(text, plan, &functions, "crates/x/src", p, mode, &"a".repeat(40))
     }
 
     #[test]
@@ -479,6 +546,40 @@ mod tests {
     }
 
     #[test]
+    fn a_run_that_stopped_part_way_is_incomplete_though_its_own_count_agrees() {
+        // SFL on #114: cargo-mutants counts total_mutants as results land, so only the plan and end_time can tell.
+        let p = policy(0.0, vec![]);
+        let done = [("replace + with - in send", 10, "CaughtMutant")];
+        let text = outcomes("Success", &done, None);
+        let two_planned = serde_json::json!([
+            {"name": format!("{FILE}:10:5: replace + with - in send")},
+            {"name": format!("{FILE}:11:5: replace > with >= in send")},
+        ])
+        .to_string();
+        let err = report_with_plan(&text, &two_planned, &p, Mode::Full).unwrap_err();
+        assert_eq!(
+            err,
+            ReadError::Incomplete(format!(
+                "1 planned mutants have no result, such as {FILE}:11:5: replace > with >= in send"
+            ))
+        );
+
+        let mut unfinished: Value = serde_json::from_str(&text).unwrap();
+        unfinished.as_object_mut().unwrap().remove("end_time");
+        let err = report_with_plan(&unfinished.to_string(), &plan_of(&text), &p, Mode::Full).unwrap_err();
+        assert_eq!(
+            err,
+            ReadError::Incomplete("the run never finished: outcomes.json has no end_time".into())
+        );
+
+        let err = report_with_plan(&text, "[]", &p, Mode::Diff).unwrap_err();
+        assert!(matches!(err, ReadError::Incomplete(e) if e.ends_with("a result for a mutant that wasn't planned")));
+        assert!(matches!(
+            report_with_plan(&text, "{}", &p, Mode::Full),
+            Err(ReadError::Json(_))
+        ));
+    }
+    #[test]
     fn a_full_run_fails_below_the_break_threshold_on_any_timeout_or_with_too_few_mutants() {
         let text = outcomes(
             "Success",
@@ -524,7 +625,8 @@ mod tests {
         );
         // A diff that touches no examined code has nothing to mutate; cargo-mutants then writes no baseline result.
         let none =
-            serde_json::json!({"cargo_mutants_version": "27.1.0", "total_mutants": 0, "outcomes": []}).to_string();
+            serde_json::json!({"cargo_mutants_version": "27.1.0", "total_mutants": 0, "end_time": "x", "outcomes": []})
+                .to_string();
         let r = report(&none, &p, Mode::Diff).unwrap();
         assert_eq!(r.counts.score, 100.0);
         assert!(check(&r, &p).is_empty());

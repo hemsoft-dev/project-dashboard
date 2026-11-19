@@ -119,8 +119,11 @@ fn mutants_command(flags: &Flags) -> Result<bool, String> {
     let policy: Policy = read_json(&flags.path("--policy")?)?;
     let functions = source::functions(&src, policy.platform).map_err(|e| e.to_string())?;
     let text = std::fs::read_to_string(&outcomes_path).map_err(|e| format!("read {}: {e}", outcomes_path.display()))?;
-    let report =
-        mutants::read(&text, &functions, &repo_relative(&src), &policy, mode, &revision).map_err(|e| e.to_string())?;
+    // The plan sits beside the outcomes in cargo-mutants' mutants.out; without it completeness can't be shown.
+    let plan_path = outcomes_path.with_file_name("mutants.json");
+    let plan = std::fs::read_to_string(&plan_path).map_err(|e| format!("read {}: {e}", plan_path.display()))?;
+    let report = mutants::read(&text, &plan, &functions, &repo_relative(&src), &policy, mode, &revision)
+        .map_err(|e| e.to_string())?;
     let failures = mutants::check(&report, &policy);
     std::fs::create_dir_all(&out).map_err(|e| format!("create {}: {e}", out.display()))?;
     let stem = format!("mutants-{}-{}", mode.name(), policy.platform.name());

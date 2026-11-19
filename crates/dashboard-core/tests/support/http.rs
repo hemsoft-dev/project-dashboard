@@ -36,6 +36,13 @@ impl Server {
         let thread = std::thread::spawn(move || {
             let mut connections = Vec::new();
             while !stopped.load(Ordering::SeqCst) {
+                // Join finished connections as they end, so a long run doesn't hold every handle until Drop (#102).
+                let (done, open): (Vec<_>, Vec<_>) =
+                    connections.into_iter().partition(std::thread::JoinHandle::is_finished);
+                for thread in done {
+                    thread.join().unwrap();
+                }
+                connections = open;
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         // Winsock accept inherits the listener's non-blocking mode; read_exact needs blocking I/O.

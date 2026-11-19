@@ -3156,7 +3156,7 @@ async fn cached_hosted_status_keeps_age_and_last_error_then_recovers(cx: &mut Te
 }
 
 #[path = "../../dashboard-core/tests/support/http.rs"]
-mod pmd_http;
+pub(crate) mod pmd_http;
 
 const OLD_TOKEN: &str = "fixture-read-token";
 const NEW_TOKEN: &str = "replacement-read-token";

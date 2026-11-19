@@ -179,6 +179,39 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      # Repeated refresh latency and retained resources in an in-process test window (#102, docs/qualification.md):
+      # the workload must stay within its budgets, and the same workload with a source that leaks a thread and memory
+      # per fetch must fail them. Each run writes its report into a folder emptied first.
+      - name: Refresh qualification
+        shell: pwsh
+        env:
+          PERF_DIR: ${{ github.workspace }}/target/perf
+        run: |
+          $env:PERF_REVISION = (git rev-parse HEAD)
+          if (Test-Path $env:PERF_DIR) { Remove-Item -Recurse -Force $env:PERF_DIR }
+          cargo test -p dashboard-app --locked qualification_repeated -- --ignored --test-threads=1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $env:PERF_FIXTURE = 'leak'
+          cargo test -p dashboard-app --locked qualification_repeated -- --ignored --test-threads=1
+          if ($LASTEXITCODE -eq 0) { Write-Error 'The leaking fixture passed the qualification.'; exit 1 }
+          $leak = Get-ChildItem "$env:PERF_DIR/refresh-*-leak.json" | Get-Content -Raw | ConvertFrom-Json
+          if ($leak.report.revision -ne $env:PERF_REVISION -or $leak.failures.Count -eq 0) {
+            Write-Error 'The leaking fixture failed without a report of its own naming the violations.'
+            exit 1
+          }
+          Write-Output "The leaking fixture failed as it must: $($leak.failures -join '; ')"
+          # The expected failure left a nonzero LASTEXITCODE, which the pwsh wrapper would return.
+          exit 0
+
+      - name: Upload the refresh qualification
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: refresh-qualification-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: target/perf/
+          if-no-files-found: warn
+          retention-days: 30
+
       # The pull-request screenshots (src/captures.rs), rendered offscreen with the build above. Download them from
       # the run's artifacts and attach them to the PR's Validation section.
       - name: Screenshots

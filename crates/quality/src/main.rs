@@ -3,11 +3,14 @@
 //! ```text
 //! quality crap --src crates/dashboard-core/src --lcov core.lcov --platform linux --revision <sha> \
 //!              --baseline crates/quality/baselines/crap-linux.json --out target/quality [--write-baseline]
+//! quality crap --src crates/dashboard-core/src --lcov core-branches.lcov --platform linux --revision <sha> \
+//!              --report-only [--require-branches] --out target/branch-quality
 //! quality mutants --src crates/dashboard-core/src --outcomes mutants.out/outcomes.json --mode full|diff \
 //!                 --revision <sha> --policy crates/quality/baselines/mutants-linux.json --out target/quality
 //! ```
 //!
-//! Exits 0 when the gate passes, 1 when it fails, 2 on a usage or input error.
+//! Exits 0 when the gate passes, 1 when it fails, 2 on a usage or input error. `--report-only` checks no baseline
+//! (the branch-coverage job, #110) and exits 0 once the report is written.
 
 mod crap;
 mod lcov;
@@ -25,6 +28,8 @@ use crate::source::Platform;
 
 const USAGE: &str = "usage: quality crap --src DIR --lcov FILE --platform linux|windows --revision SHA \
 --baseline FILE --out DIR [--write-baseline]
+       quality crap --src DIR --lcov FILE --platform linux|windows --revision SHA --report-only \
+[--require-branches] --out DIR
        quality mutants --src DIR --outcomes FILE --mode full|diff --revision SHA --policy FILE --out DIR";
 
 /// `--name value` pairs and bare `--switch`es after the subcommand.
@@ -86,14 +91,36 @@ fn crap_command(flags: &Flags) -> Result<bool, String> {
     // A malformed revision is reported first, before any missing flag, as the old parser did.
     let revision = flags.revision()?;
     let (src, lcov_path, platform) = (flags.path("--src")?, flags.path("--lcov")?, platform(flags)?);
-    let (baseline_path, out) = (flags.path("--baseline")?, flags.path("--out")?);
+    let report_only = flags.has("--report-only");
+    if report_only && (flags.has("--write-baseline") || flags.values.contains_key("--baseline")) {
+        return Err(format!("--report-only checks no baseline and writes none\n{USAGE}"));
+    }
+    let baseline_path = if report_only {
+        None
+    } else {
+        Some(flags.path("--baseline")?)
+    };
+    let out = flags.path("--out")?;
     let functions = source::functions(&src, platform).map_err(|e| e.to_string())?;
     let text = std::fs::read_to_string(&lcov_path).map_err(|e| format!("read {}: {e}", lcov_path.display()))?;
     let lcov = Lcov::parse(&text).map_err(|e| format!("{}: {e}", lcov_path.display()))?;
+    // The branch-coverage job must not report an empty branch column as if it had measured one.
+    if flags.has("--require-branches") && !lcov.has_branches() {
+        return Err(format!(
+            "{} has no branch records (BRDA); collect it with `cargo llvm-cov --branch` on nightly rustc",
+            lcov_path.display()
+        ));
+    }
     let report = crap::join(&functions, &lcov, &repo_relative(&src), platform, &revision).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&out).map_err(|e| format!("create {}: {e}", out.display()))?;
     let stem = format!("crap-{}", platform.name());
     write(&out.join(format!("{stem}.json")), &json(&report)?)?;
+    let Some(baseline_path) = baseline_path else {
+        let md = crap::markdown(&report, None, 25);
+        write(&out.join(format!("{stem}.md")), &md)?;
+        print!("{md}");
+        return Ok(true);
+    };
     if flags.has("--write-baseline") {
         let baseline = Baseline::from_report(&report);
         write(&baseline_path, &json(&baseline)?)?;
@@ -105,7 +132,7 @@ fn crap_command(flags: &Flags) -> Result<bool, String> {
     }
     let baseline: Baseline = read_json(&baseline_path)?;
     let verdict = crap::check(&report, &baseline);
-    let md = crap::markdown(&report, &verdict, 25);
+    let md = crap::markdown(&report, Some(&verdict), 25);
     write(&out.join(format!("{stem}.md")), &md)?;
     print!("{md}");
     Ok(verdict.passed())
@@ -138,7 +165,7 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<bool, String> {
     match args.next().as_deref() {
         Some("crap") => crap_command(&Flags::parse(
             args,
-            &["--write-baseline"],
+            &["--write-baseline", "--report-only", "--require-branches"],
             &["--src", "--lcov", "--platform", "--revision", "--baseline", "--out"],
         )?),
         Some("mutants") => mutants_command(&Flags::parse(

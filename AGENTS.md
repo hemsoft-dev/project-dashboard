@@ -67,6 +67,7 @@ cargo test --workspace --locked                               # unit tests and h
 cargo deny --locked check advisories                          # needs cargo install cargo-deny --version 0.20.2 --locked
 python scripts/check_action_pins.py                           # every workflow action pinned to a commit (--verify: on GitHub)
 cargo llvm-cov -p dashboard-core --locked --lcov --output-path target/quality/core.lcov   # then `quality crap`, docs/quality.md
+cargo +nightly-2026-10-22 llvm-cov -p dashboard-core --locked --branch --lcov --output-path target/branch-quality/core-linux.lcov   # then `quality crap --report-only`: branch report, not a gate
 pwsh scripts/Invoke-Mutants.ps1 -Mode full                    # mutation gate on Linux (-Mode diff -Base origin/main)
 PERF_DIR=$PWD/target/perf PERF_REVISION=$(git rev-parse HEAD) cargo test -p dashboard-app --locked qualification_repeated -- --ignored --test-threads=1   # docs/qualification.md
 CAPTURE_DIR=$PWD/captures cargo test -p dashboard-app captures -- --ignored   # PNGs (Linux or macOS; absolute path)
@@ -95,7 +96,8 @@ Every change passes these before merge; CI runs them on `ubuntu-latest` and `win
 5. **Standalone core**: on both Ubuntu and Windows, CI runs
    cargo check -p dashboard-core --locked and cargo test -p dashboard-core --locked with separate clean target directories.
    The same jobs measure core line coverage and CRAP per function and fail below the platform's baseline floor, on a new
-   function above CRAP 30, or on a legacy one getting worse ([docs/quality.md](docs/quality.md)).
+   function above CRAP 30, or on a legacy one getting worse ([docs/quality.md](docs/quality.md)). The separate
+   `branch-coverage` job reports core branch coverage on a pinned nightly; it gates nothing and isn't required.
    On pull requests, core (ubuntu-latest) also requires every mutant in the changed lines of core's write, edit,
    board and sort code caught; the full mutation run is the Mutants workflow ([docs/quality.md](docs/quality.md)).
 6. **Refresh qualification**: the rust jobs run a repeated refresh workload in an in-process test window and fail on

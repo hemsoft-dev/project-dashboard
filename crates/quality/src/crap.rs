@@ -15,9 +15,29 @@ use crate::source::{Function, Platform};
 pub const CRAP_LIMIT: f64 = 30.0;
 /// From this score a function is listed for review.
 pub const REVIEW_FROM: f64 = 15.0;
-/// What the coverage numbers count. Branch coverage needs a nightly compiler (`-Z coverage-options=branch`); the
-/// toolchain is stable, so lines are the basis (#100).
+/// What the coverage numbers count when the LCOV has no branch records. Branch coverage needs a nightly compiler
+/// (`-Z coverage-options=branch`); the gated toolchain is stable, so lines are the basis (#100).
 pub const BASIS: &str = "lines (LLVM source-based coverage, stable rustc; no branch coverage)";
+/// The basis when the LCOV carries branch records (the branch-coverage job, #110). Coverage and CRAP still count lines;
+/// branches are reported beside them and never gated.
+pub const BASIS_WITH_BRANCHES: &str = "lines for coverage and CRAP; branches from LCOV BRDA records \
+(LLVM source-based branch coverage, nightly rustc -Z coverage-options=branch), reported and not gated";
+
+/// A function's branches, or a total of them, and how many were taken at least once.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Branches {
+    pub total: usize,
+    pub taken: usize,
+}
+
+impl Branches {
+    fn add(self, other: Self) -> Self {
+        Self {
+            total: self.total + other.total,
+            taken: self.taken + other.taken,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Measured {
@@ -30,6 +50,12 @@ pub struct Measured {
     /// Instrumented lines the function owns, and how many of them ran.
     pub lines: usize,
     pub covered: usize,
+    /// The branches on the function's own lines: `if` and `while` conditions, match guards, `&&` and `||` (LLVM
+    /// counts no match arm). None when excluded, when the LCOV has no branch records, or when the function never ran:
+    /// LLVM writes no branch record for an unrun function.
+    pub branches: Option<Branches>,
+    /// Lines holding a branch that was never taken.
+    pub untaken_lines: Vec<usize>,
     /// 0..1; None when excluded.
     pub coverage: Option<f64>,
     pub crap: Option<f64>,
@@ -46,6 +72,10 @@ pub struct Totals {
     pub covered: usize,
     /// covered / lines × 100, over the measured functions' own lines.
     pub percent: f64,
+    /// The measured functions' branches. None when the LCOV has no branch records.
+    pub branches: Option<Branches>,
+    /// taken / total × 100; None without branch records or without a branch.
+    pub branch_percent: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -95,6 +125,7 @@ pub fn join(
     if functions.is_empty() {
         return Err(JoinError::NoFunctions);
     }
+    let with_branches = lcov.has_branches();
     let mut out = Vec::new();
     for f in functions {
         let mut m = Measured {
@@ -106,18 +137,37 @@ pub fn join(
             complexity: f.complexity,
             lines: 0,
             covered: 0,
+            branches: None,
+            untaken_lines: Vec::new(),
             coverage: None,
             crap: None,
             excluded: f.excluded.as_ref().map(ToString::to_string),
         };
         if m.excluded.is_none() {
             let path = format!("{}/{}", prefix.trim_end_matches('/'), f.file);
-            let hits = lcov.file(&path).ok_or_else(|| JoinError::FileMissing(path.clone()))?;
-            for (_, &count) in hits.range(f.start..=f.end).filter(|(line, _)| f.owns(**line)) {
+            let file = lcov.file(&path).ok_or_else(|| JoinError::FileMissing(path.clone()))?;
+            for (_, &count) in file.lines.range(f.start..=f.end).filter(|(line, _)| f.owns(**line)) {
                 m.lines += 1;
                 if count > 0 {
                     m.covered += 1;
                 }
+            }
+            if with_branches {
+                let mut b = Branches::default();
+                let owned = file
+                    .branches
+                    .range((f.start, 0, 0)..=(f.end, u64::MAX, u64::MAX))
+                    .filter(|((line, _, _), _)| f.owns(*line));
+                for (&(line, _, _), &taken) in owned {
+                    b.total += 1;
+                    if taken > 0 {
+                        b.taken += 1;
+                    } else if m.untaken_lines.last() != Some(&line) {
+                        m.untaken_lines.push(line);
+                    }
+                }
+                // LLVM writes no branch record for a function that never ran, so its branches are unknown, not zero.
+                m.branches = (m.covered > 0 || b.total > 0).then_some(b);
             }
             // A built function with no instrumented line never ran: zero, not unknown.
             let coverage = if m.lines == 0 {
@@ -133,6 +183,12 @@ pub fn join(
     let measured: Vec<&Measured> = out.iter().filter(|m| m.excluded.is_none()).collect();
     let lines: usize = measured.iter().map(|m| m.lines).sum();
     let covered: usize = measured.iter().map(|m| m.covered).sum();
+    let branches = with_branches.then(|| {
+        measured
+            .iter()
+            .filter_map(|m| m.branches)
+            .fold(Branches::default(), Branches::add)
+    });
     let totals = Totals {
         functions: out.len(),
         measured: measured.len(),
@@ -144,11 +200,15 @@ pub fn join(
         } else {
             round2(covered as f64 * 100.0 / lines as f64)
         },
+        branches,
+        branch_percent: branches
+            .filter(|b| b.total > 0)
+            .map(|b| round2(b.taken as f64 * 100.0 / b.total as f64)),
     };
     Ok(Report {
         platform,
         revision: revision.to_string(),
-        basis: BASIS.to_string(),
+        basis: if with_branches { BASIS_WITH_BRANCHES } else { BASIS }.to_string(),
         totals,
         functions: out,
     })
@@ -241,7 +301,8 @@ pub fn check(report: &Report, baseline: &Baseline) -> Verdict {
     v
 }
 
-pub fn markdown(report: &Report, verdict: &Verdict, worst: usize) -> String {
+/// The report as Markdown. `verdict` is None for a report-only run, which checks no baseline.
+pub fn markdown(report: &Report, verdict: Option<&Verdict>, worst: usize) -> String {
     let t = &report.totals;
     let mut s = String::new();
     let _ = writeln!(s, "# dashboard-core CRAP report ({})\n", report.platform.name());
@@ -257,7 +318,34 @@ pub fn markdown(report: &Report, verdict: &Verdict, worst: usize) -> String {
         "- Line coverage: {:.2}% ({} of {} lines)",
         t.percent, t.covered, t.lines
     );
-    let _ = writeln!(s, "- Gate: {}\n", if verdict.passed() { "pass" } else { "FAIL" });
+    // Measured functions LLVM wrote no branch record for, because they never ran.
+    let unrun = report
+        .functions
+        .iter()
+        .filter(|m| t.branches.is_some() && m.excluded.is_none() && m.branches.is_none())
+        .count();
+    match (t.branches, t.branch_percent) {
+        (Some(b), Some(p)) => {
+            let _ = writeln!(
+                s,
+                "- Branch coverage: {p:.2}% ({} of {} branches taken, in the functions that ran; \
+                 {unrun} that never ran have no branch records)",
+                b.taken, b.total
+            );
+        }
+        (Some(_), None) => {
+            let _ = writeln!(s, "- Branch coverage: no branches in the measured functions");
+        }
+        (None, _) => {
+            let _ = writeln!(s, "- Branch coverage: not collected (no BRDA records in the LCOV)");
+        }
+    }
+    let gate = match verdict {
+        Some(v) if v.passed() => "pass",
+        Some(_) => "FAIL",
+        None => "not checked (report only)",
+    };
+    let _ = writeln!(s, "- Gate: {gate}\n");
     let section = |s: &mut String, title: &str, items: &[String]| {
         let _ = writeln!(s, "## {title} ({})\n", items.len());
         for i in items {
@@ -265,17 +353,24 @@ pub fn markdown(report: &Report, verdict: &Verdict, worst: usize) -> String {
         }
         let _ = writeln!(s);
     };
-    section(&mut s, "Failures", &verdict.failures);
-    section(
-        &mut s,
-        &format!("Legacy above {CRAP_LIMIT}, not increased"),
-        &verdict.legacy,
-    );
-    section(
-        &mut s,
-        &format!("Review queue, CRAP {REVIEW_FROM}..{CRAP_LIMIT}"),
-        &verdict.review,
-    );
+    if let Some(verdict) = verdict {
+        section(&mut s, "Failures", &verdict.failures);
+        section(
+            &mut s,
+            &format!("Legacy above {CRAP_LIMIT}, not increased"),
+            &verdict.legacy,
+        );
+        section(
+            &mut s,
+            &format!("Review queue, CRAP {REVIEW_FROM}..{CRAP_LIMIT}"),
+            &verdict.review,
+        );
+    }
+    let branches = |m: &Measured| match m.branches {
+        Some(b) => format!("{}/{}", b.taken, b.total),
+        None if t.branches.is_some() && m.excluded.is_none() => "not run".to_string(),
+        None => "—".to_string(),
+    };
     let mut ranked: Vec<&Measured> = report.functions.iter().filter(|m| m.crap.is_some()).collect();
     ranked.sort_by(|a, b| {
         b.crap
@@ -285,20 +380,47 @@ pub fn markdown(report: &Report, verdict: &Verdict, worst: usize) -> String {
     });
     let _ = writeln!(
         s,
-        "## Worst {}\n\n| CRAP | Complexity | Coverage | Function |\n| ---: | ---: | ---: | --- |",
+        "## Worst {}\n\n| CRAP | Complexity | Coverage | Branches taken | Function |\n| ---: | ---: | ---: | ---: | --- |",
         worst.min(ranked.len())
     );
     for m in ranked.iter().take(worst) {
         let _ = writeln!(
             s,
-            "| {:.2} | {} | {:.0}% | `{}` {}:{} |",
+            "| {:.2} | {} | {:.0}% | {} | `{}` {}:{} |",
             m.crap.unwrap_or(0.0),
             m.complexity,
             m.coverage.unwrap_or(0.0) * 100.0,
+            branches(m),
             m.name,
             m.file,
             m.start
         );
+    }
+    if t.branches.is_some() {
+        // Every function with a branch never taken, most untaken first.
+        let mut untaken: Vec<&Measured> = report
+            .functions
+            .iter()
+            .filter(|m| !m.untaken_lines.is_empty())
+            .collect();
+        untaken.sort_by_key(|m| (std::cmp::Reverse(m.branches.map_or(0, |b| b.total - b.taken)), &m.key));
+        let _ = writeln!(
+            s,
+            "\n## Untaken branches ({} functions)\n\n| Branches taken | Lines | Function |\n| ---: | --- | --- |",
+            untaken.len()
+        );
+        for m in untaken {
+            let lines: Vec<String> = m.untaken_lines.iter().map(ToString::to_string).collect();
+            let _ = writeln!(
+                s,
+                "| {} | {} | `{}` {}:{} |",
+                branches(m),
+                lines.join(", "),
+                m.name,
+                m.file,
+                m.start
+            );
+        }
     }
     let excluded: Vec<String> = report
         .functions
@@ -333,9 +455,17 @@ mod tests {
     }
 
     fn lcov(lines: &[(usize, u64)]) -> Lcov {
+        lcov_with_branches(lines, &[])
+    }
+
+    /// Branches as (line, taken) pairs, numbered in order.
+    fn lcov_with_branches(lines: &[(usize, u64)], branches: &[(usize, u64)]) -> Lcov {
         let mut text = String::from("SF:/repo/crates/x/src/lib.rs\n");
         for (l, n) in lines {
             text += &format!("DA:{l},{n}\n");
+        }
+        for (i, (l, n)) in branches.iter().enumerate() {
+            text += &format!("BRDA:{l},0,{i},{n}\n");
         }
         Lcov::parse(&(text + "end_of_record\n")).unwrap()
     }
@@ -505,10 +635,99 @@ mod tests {
     #[test]
     fn the_markdown_names_the_revision_basis_and_failures() {
         let r = report(&[function("big", 1, 1, 6)], &[(1, 0)]);
-        let md = markdown(&r, &check(&r, &baseline(0.0, &[])), 5);
+        let md = markdown(&r, Some(&check(&r, &baseline(0.0, &[]))), 5);
         assert!(md.contains(&format!("- Revision: `{}`", "a".repeat(40))));
         assert!(md.contains("no branch coverage"));
+        assert!(md.contains("- Branch coverage: not collected (no BRDA records in the LCOV)"));
         assert!(md.contains("- Gate: FAIL"));
-        assert!(md.contains("| 42.00 | 6 | 0% | `big` lib.rs:1 |"));
+        assert!(md.contains("## Failures (1)"));
+        assert!(md.contains("| 42.00 | 6 | 0% | — | `big` lib.rs:1 |"), "{md}");
+        assert!(!md.contains("Untaken branches"));
+        assert_eq!(
+            (r.functions[0].branches, r.totals.branches, r.totals.branch_percent),
+            (None, None, None)
+        );
+    }
+
+    #[test]
+    fn branches_count_per_function_and_an_untaken_else_shows_though_its_line_ran() {
+        let mut outer = function("outer", 1, 10, 3);
+        outer.nested = vec![(4, 6)];
+        let mut gone = function("gone", 50, 51, 1);
+        gone.excluded = Some(Excluded::NotBuilt("windows".into()));
+        let fs = [
+            outer,
+            function("helper", 4, 6, 2),
+            function("plain", 20, 21, 1),
+            function("never", 40, 42, 2),
+            gone,
+        ];
+        // Line 2 ran and holds an if/else whose else never did; helper's line 5 took both; line 30 is no function's.
+        // `never` didn't run, and LLVM writes no branch record for it.
+        let lcov = lcov_with_branches(
+            &[(2, 1), (5, 1), (20, 1), (41, 0)],
+            &[(2, 1), (2, 0), (5, 3), (5, 1), (30, 0)],
+        );
+        let r = join(&fs, &lcov, "crates/x/src", Platform::Linux, "x").unwrap();
+        assert_eq!(r.basis, BASIS_WITH_BRANCHES);
+        let (o, h, p) = (&r.functions[0], &r.functions[1], &r.functions[2]);
+        assert_eq!((r.functions[3].branches, r.functions[4].branches), (None, None));
+        assert_eq!(
+            (o.coverage, o.branches),
+            (Some(1.0), Some(Branches { total: 2, taken: 1 }))
+        );
+        assert_eq!(o.untaken_lines, [2]);
+        assert_eq!(
+            (h.branches, h.untaken_lines.len()),
+            (Some(Branches { total: 2, taken: 2 }), 0)
+        );
+        assert_eq!(p.branches, Some(Branches::default()));
+        assert_eq!(r.totals.branches, Some(Branches { total: 4, taken: 3 }));
+        assert_eq!(r.totals.branch_percent, Some(75.0));
+        // CRAP still counts lines: outer's line ran, so it scores its complexity.
+        assert_eq!(o.crap, Some(3.0));
+
+        let md = markdown(&r, None, 5);
+        assert!(
+            md.contains(
+                "- Branch coverage: 75.00% (3 of 4 branches taken, in the functions that ran; \
+                 1 that never ran have no branch records)"
+            ),
+            "{md}"
+        );
+        assert!(md.contains("| 6.00 | 2 | 0% | not run | `never` lib.rs:40 |"), "{md}");
+        assert!(md.contains("- Gate: not checked (report only)"), "{md}");
+        assert!(
+            !md.contains("## Failures"),
+            "a report-only run checks no baseline: {md}"
+        );
+        assert!(md.contains("| 3.00 | 3 | 100% | 1/2 | `outer` lib.rs:1 |"), "{md}");
+        assert!(md.contains("## Untaken branches (1 functions)"), "{md}");
+        assert!(md.contains("| 1/2 | 2 | `outer` lib.rs:1 |"), "{md}");
+    }
+
+    #[test]
+    fn untaken_lines_are_listed_once_each_and_the_most_untaken_function_first() {
+        let fs = [function("one", 1, 3, 1), function("two", 10, 12, 1)];
+        let lcov = lcov_with_branches(&[(1, 1), (10, 1)], &[(1, 0), (1, 0), (3, 0), (3, 1), (10, 0), (11, 1)]);
+        let r = join(&fs, &lcov, "crates/x/src", Platform::Linux, "x").unwrap();
+        assert_eq!(r.functions[0].untaken_lines, [1, 3]);
+        let md = markdown(&r, None, 5);
+        let (one, two) = (
+            md.find("| 1/4 | 1, 3 | `one`").unwrap(),
+            md.find("| 1/2 | 10 | `two`").unwrap(),
+        );
+        assert!(one < two, "{md}");
+    }
+
+    #[test]
+    fn branch_records_with_no_branch_in_any_measured_function_have_no_percentage() {
+        let lcov = lcov_with_branches(&[(1, 1)], &[(30, 1)]);
+        let r = join(&[function("f", 1, 2, 1)], &lcov, "crates/x/src", Platform::Linux, "x").unwrap();
+        assert_eq!(
+            (r.totals.branches, r.totals.branch_percent),
+            (Some(Branches::default()), None)
+        );
+        assert!(markdown(&r, None, 5).contains("- Branch coverage: no branches in the measured functions"));
     }
 }

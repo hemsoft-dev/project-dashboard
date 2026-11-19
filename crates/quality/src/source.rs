@@ -185,7 +185,7 @@ impl Walk {
                     let Some(ex) = self.gate(scope.file, &f.attrs, &excluded)? else {
                         continue;
                     };
-                    self.push(scope, None, &f.sig.ident.to_string(), f.span(), &f.block, ex);
+                    self.push(scope, None, &f.sig.ident.to_string(), f.span(), &f.block, ex)?;
                 }
                 Item::Impl(imp) => {
                     let Some(ex) = self.gate(scope.file, &imp.attrs, &excluded)? else {
@@ -201,7 +201,7 @@ impl Walk {
                             let Some(ex) = self.gate(scope.file, &m.attrs, &ex)? else {
                                 continue;
                             };
-                            self.push(scope, Some(&owner), &m.sig.ident.to_string(), m.span(), &m.block, ex);
+                            self.push(scope, Some(&owner), &m.sig.ident.to_string(), m.span(), &m.block, ex)?;
                         }
                     }
                 }
@@ -223,7 +223,7 @@ impl Walk {
                                 m.span(),
                                 body,
                                 ex,
-                            );
+                            )?;
                         }
                     }
                 }
@@ -375,7 +375,7 @@ impl Walk {
         span: Span,
         body: &syn::Block,
         excluded: Option<Excluded>,
-    ) {
+    ) -> Result<(), SourceError> {
         let mut counter = Complexity {
             count: 1,
             ..Complexity::default()
@@ -395,21 +395,22 @@ impl Walk {
             end: span.end().line,
             nested: counter.nested.clone(),
             complexity: counter.count,
-            excluded,
+            excluded: excluded.clone(),
         });
-        // Nested function items are functions of their own, measured separately.
-        let nested_items = counter.items;
-        for f in nested_items {
-            let Ok(Some(ex)) = self.gate(scope.file, &f.attrs, &None) else {
-                continue;
+        // Nested function items are functions of their own, measured separately. One inside a function the platform
+        // doesn't build isn't built either, and a cfg this reader can't evaluate stops the run as it does elsewhere.
+        for f in counter.items {
+            let Some(ex) = self.gate(scope.file, &f.attrs, &excluded)? else {
+                continue; // test-only
             };
             let inner = Scope {
                 file: scope.file,
                 rel: scope.rel.clone(),
                 path: [scope.path.clone(), vec![name.to_string()]].concat(),
             };
-            self.push(&inner, None, &f.sig.ident.to_string(), f.span(), &f.block, ex);
+            self.push(&inner, None, &f.sig.ident.to_string(), f.span(), &f.block, ex)?;
         }
+        Ok(())
     }
 }
 
@@ -603,6 +604,56 @@ mod tests {
                 .to_string()
                 .starts_with("parse ")
         );
+    }
+
+    #[test]
+    fn a_nested_function_inherits_its_parents_exclusion() {
+        // SFL on #111: the nested walk dropped the parent's cfg, so a Windows-only helper read as unrun on Linux.
+        let dir = tempdir("nested-cfg");
+        std::fs::write(
+            dir.join("lib.rs"),
+            "#[cfg(windows)]\npub fn outer() -> u8 {\n    fn helper(x: u8) -> u8 {\n        if x > 0 { x } else { 1 }\n    }\n    helper(2)\n}\n",
+        )
+        .unwrap();
+        let linux: BTreeMap<String, Function> = functions(&dir, Platform::Linux)
+            .unwrap()
+            .into_iter()
+            .map(|f| (f.key.clone(), f))
+            .collect();
+        let excluded = Some(Excluded::NotBuilt("windows".into()));
+        assert_eq!(linux["lib.rs::outer"].excluded, excluded);
+        assert_eq!(linux["lib.rs::outer::helper"].excluded, excluded);
+        let windows = functions(&dir, Platform::Windows).unwrap();
+        assert!(windows.iter().all(|f| f.excluded.is_none()));
+    }
+
+    #[test]
+    fn a_nested_function_with_an_unknown_cfg_stops_the_run() {
+        // SFL on #111: the nested walk skipped a cfg it couldn't evaluate, so the helper went unmeasured.
+        let dir = tempdir("nested-unknown");
+        std::fs::write(
+            dir.join("lib.rs"),
+            "pub fn outer() {\n    #[cfg(target_arch = \"x86_64\")]\n    fn helper() {}\n    helper()\n}\n",
+        )
+        .unwrap();
+        let err = functions(&dir, Platform::Linux).unwrap_err().to_string();
+        assert!(err.contains("can't evaluate cfg(target_arch = \"x86_64\")"), "{err}");
+    }
+
+    #[test]
+    fn a_test_only_nested_function_is_still_left_out() {
+        let dir = tempdir("nested-test");
+        std::fs::write(
+            dir.join("lib.rs"),
+            "pub fn outer() {\n    #[cfg(test)]\n    fn helper() {}\n}\n",
+        )
+        .unwrap();
+        let keys: Vec<String> = functions(&dir, Platform::Linux)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.key)
+            .collect();
+        assert_eq!(keys, ["lib.rs::outer"]);
     }
 
     pub(crate) fn tempdir(name: &str) -> PathBuf {

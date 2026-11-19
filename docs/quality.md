@@ -35,7 +35,9 @@ LCOV file and both reports. The report's `revision` is the commit the job checke
   platform doesn't build is reported as excluded with its `cfg`, never as uncovered. On Linux that is the Windows ACL
   code in `config.rs` and `write.rs` (14 functions at the baseline); on Windows it is the Linux mode-bits code (7).
   Each is measured on the other platform. `owner_only_file` under `cfg(not(any(unix, windows)))` is built on
-  neither and stays excluded on both. An unknown `cfg` predicate stops the run instead of guessing.
+  neither and stays excluded on both. A `cfg` reaches everything under it: a file's `#![cfg(...)]`, a module's,
+  and a function's nested `fn`s. `#[path]` modules are followed from the declaring file's folder. An unknown `cfg`
+  predicate, or a `#[path]` inside an inline `mod` block, stops the run instead of guessing.
 - **Coverage basis.** Lines, from LLVM source-based coverage on the stable toolchain: a function's coverage is the
   share of its own instrumented lines that ran at least once. Branch coverage needs a nightly compiler, so it isn't
   collected; #110 tracks adding it. A line holding both arms of an `if` counts as covered when either runs.

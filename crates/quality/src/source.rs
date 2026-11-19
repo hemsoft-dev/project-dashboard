@@ -96,6 +96,8 @@ pub enum SourceError {
     MissingModule(PathBuf, String),
     /// A `cfg` predicate this reader can't evaluate. It fails rather than guess whether the code is built.
     UnknownCfg(PathBuf, usize, String),
+    /// A `#[path]` this reader doesn't resolve: one inside an inline `mod` block, or not a string.
+    UnsupportedPath(PathBuf, String),
 }
 
 impl fmt::Display for SourceError {
@@ -108,6 +110,7 @@ impl fmt::Display for SourceError {
             }
             Self::MissingModule(p, m) => write!(f, "{}: no file for `mod {m};`", p.display()),
             Self::UnknownCfg(p, line, c) => write!(f, "{}:{line}: can't evaluate cfg({c})", p.display()),
+            Self::UnsupportedPath(p, m) => write!(f, "{}: can't follow the #[path] on `mod {m};`", p.display()),
         }
     }
 }
@@ -143,6 +146,8 @@ struct Scope<'a> {
     file: &'a Path,
     rel: String,
     path: Vec<String>,
+    /// Inside an inline `mod name { ... }` block in `file`.
+    inline: bool,
 }
 
 impl Walk {
@@ -165,10 +170,12 @@ impl Walk {
             file: path,
             rel,
             path: modules.to_vec(),
+            inline: false,
         };
-        if self.is_test(path, &parsed.attrs)? {
-            return Ok(());
-        }
+        // The file's inner attributes (`#![cfg(windows)]`) gate everything in it, as an outer cfg on its `mod` would.
+        let Some(excluded) = self.gate(path, &parsed.attrs, &excluded)? else {
+            return Ok(()); // test-only
+        };
         self.items(&parsed.items, &scope, dir, excluded)
     }
 
@@ -241,8 +248,13 @@ impl Walk {
                                 file: scope.file,
                                 rel: scope.rel.clone(),
                                 path: modules,
+                                inline: true,
                             };
                             self.items(inner, &inner_scope, &child_dir, ex)?;
+                        }
+                        None if m.attrs.iter().any(|a| a.path().is_ident("path")) => {
+                            let (file, next_dir) = self.path_attr(scope, &m.attrs, &name)?;
+                            self.file(&file, &next_dir, &modules, ex)?;
                         }
                         None => {
                             let flat = dir.join(format!("{name}.rs"));
@@ -262,6 +274,36 @@ impl Walk {
             }
         }
         Ok(())
+    }
+
+    /// The file a `#[path = "..."]` names, relative to the declaring file's folder as rustc reads it, and the folder its
+    /// own child modules live in (such a file acts as a `mod.rs`). Inside an inline `mod` block rustc resolves it
+    /// differently, so that is an error rather than a guess.
+    fn path_attr(&self, scope: &Scope, attrs: &[Attribute], name: &str) -> Result<(PathBuf, PathBuf), SourceError> {
+        let unsupported = || SourceError::UnsupportedPath(scope.file.to_path_buf(), name.to_string());
+        if scope.inline {
+            return Err(unsupported());
+        }
+        let attr = attrs
+            .iter()
+            .find(|a| a.path().is_ident("path"))
+            .ok_or_else(unsupported)?;
+        let Meta::NameValue(nv) = &attr.meta else {
+            return Err(unsupported());
+        };
+        let Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(s), ..
+        }) = &nv.value
+        else {
+            return Err(unsupported());
+        };
+        let base = scope.file.parent().ok_or_else(unsupported)?;
+        let file = base.join(s.value());
+        if !file.is_file() {
+            return Err(SourceError::MissingModule(scope.file.to_path_buf(), name.to_string()));
+        }
+        let next = file.parent().ok_or_else(unsupported)?.to_path_buf();
+        Ok((file, next))
     }
 
     /// `None` when the item is test code (skip it entirely); otherwise its exclusion, if the platform doesn't build it.
@@ -407,6 +449,7 @@ impl Walk {
                 file: scope.file,
                 rel: scope.rel.clone(),
                 path: [scope.path.clone(), vec![name.to_string()]].concat(),
+                inline: scope.inline,
             };
             self.push(&inner, None, &f.sig.ident.to_string(), f.span(), &f.block, ex)?;
         }
@@ -638,6 +681,83 @@ mod tests {
         .unwrap();
         let err = functions(&dir, Platform::Linux).unwrap_err().to_string();
         assert!(err.contains("can't evaluate cfg(target_arch = \"x86_64\")"), "{err}");
+    }
+
+    #[test]
+    fn a_files_inner_cfg_excludes_everything_in_it() {
+        // SFL on #111, round 2: `#![cfg(windows)]` at the top of a module file was checked only for test code.
+        let dir = tempdir("inner-cfg");
+        std::fs::write(
+            dir.join("lib.rs"),
+            "mod platform;\nmod inline {\n    #![cfg(target_os = \"linux\")]\n    pub fn g() {}\n}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("platform.rs"), "#![cfg(windows)]\npub fn f() {}\n").unwrap();
+        let linux: BTreeMap<String, Function> = functions(&dir, Platform::Linux)
+            .unwrap()
+            .into_iter()
+            .map(|f| (f.key.clone(), f))
+            .collect();
+        assert_eq!(
+            linux["platform.rs::platform::f"].excluded,
+            Some(Excluded::NotBuilt("windows".into()))
+        );
+        assert_eq!(linux["lib.rs::inline::g"].excluded, None);
+        let windows: BTreeMap<String, Function> = functions(&dir, Platform::Windows)
+            .unwrap()
+            .into_iter()
+            .map(|f| (f.key.clone(), f))
+            .collect();
+        assert_eq!(windows["platform.rs::platform::f"].excluded, None);
+        assert_eq!(
+            windows["lib.rs::inline::g"].excluded,
+            Some(Excluded::NotBuilt("target_os = \"linux\"".into()))
+        );
+
+        std::fs::write(dir.join("platform.rs"), "#![cfg(test)]\npub fn f() {}\n").unwrap();
+        assert!(
+            functions(&dir, Platform::Linux).unwrap().iter().all(|f| f.name != "f"),
+            "a test-only file is left out"
+        );
+    }
+
+    #[test]
+    fn a_path_attribute_is_followed_from_the_declaring_files_folder() {
+        let dir = tempdir("path-attr");
+        std::fs::create_dir_all(dir.join("platform/impls")).unwrap();
+        std::fs::write(dir.join("lib.rs"), "#[path = \"platform/impls/linux.rs\"]\nmod os;\n").unwrap();
+        std::fs::write(dir.join("platform/impls/linux.rs"), "pub fn f() {}\nmod child;\n").unwrap();
+        // A #[path] file acts as a mod.rs: its children sit beside it.
+        std::fs::write(dir.join("platform/impls/child.rs"), "pub fn g() {}\n").unwrap();
+        let keys: Vec<String> = functions(&dir, Platform::Linux)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.key)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "platform/impls/linux.rs::os::f",
+                "platform/impls/child.rs::os::child::g"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_path_it_cannot_follow_is_an_error() {
+        let dir = tempdir("path-bad");
+        std::fs::write(
+            dir.join("lib.rs"),
+            "mod outer {\n    #[path = \"x.rs\"]\n    mod inner;\n}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("x.rs"), "pub fn f() {}\n").unwrap();
+        let err = functions(&dir, Platform::Linux).unwrap_err().to_string();
+        assert!(err.contains("can't follow the #[path] on `mod inner;`"), "{err}");
+
+        std::fs::write(dir.join("lib.rs"), "#[path = \"missing.rs\"]\nmod gone;\n").unwrap();
+        let err = functions(&dir, Platform::Linux).unwrap_err().to_string();
+        assert!(err.contains("no file for `mod gone;`"), "{err}");
     }
 
     #[test]

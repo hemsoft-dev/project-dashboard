@@ -13,7 +13,7 @@ use crate::source::{Function, Platform};
 
 /// Above this a new function fails the gate.
 pub const CRAP_LIMIT: f64 = 30.0;
-/// Above this a function is listed for review.
+/// From this score a function is listed for review.
 pub const REVIEW_FROM: f64 = 15.0;
 /// What the coverage numbers count. Branch coverage needs a nightly compiler (`-Z coverage-options=branch`); the
 /// toolchain is stable, so lines are the basis (#100).
@@ -185,7 +185,7 @@ impl Baseline {
 #[derive(Debug, Default, PartialEq)]
 pub struct Verdict {
     pub failures: Vec<String>,
-    /// Functions scoring above REVIEW_FROM and at most CRAP_LIMIT.
+    /// Functions scoring from REVIEW_FROM to CRAP_LIMIT.
     pub review: Vec<String>,
     /// Functions above CRAP_LIMIT that the baseline already had at or above their score.
     pub legacy: Vec<String>,
@@ -234,7 +234,7 @@ pub fn check(report: &Report, baseline: &Baseline) -> Verdict {
                 Some(&was) => v.failures.push(format!("{at}: above {CRAP_LIMIT}, was {was:.2}")),
                 None => v.failures.push(format!("{at}: new function above {CRAP_LIMIT}")),
             }
-        } else if score > REVIEW_FROM {
+        } else if score >= REVIEW_FROM {
             v.review.push(at);
         }
     }
@@ -434,6 +434,15 @@ mod tests {
         assert_eq!(v.legacy.len(), 1);
         assert!(v.legacy[0].starts_with("legacy (lib.rs:1, complexity 6, coverage 0%, CRAP 42.00)"));
         assert_eq!(v.review.len(), 1);
+    }
+
+    #[test]
+    fn a_score_of_exactly_15_is_in_the_review_queue() {
+        // SFL on #111: the queue is documented as 15 to 30, so a fully covered function of complexity 15 is in it.
+        let r = report(&[function("fifteen", 1, 1, 15)], &[(1, 1)]);
+        assert_eq!(r.functions[0].crap, Some(15.0));
+        let v = check(&r, &Baseline::from_report(&r));
+        assert_eq!(v.review.len(), 1, "{v:?}");
     }
 
     #[test]

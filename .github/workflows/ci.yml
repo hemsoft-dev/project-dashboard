@@ -56,6 +56,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+          # The pull request's merge commit and its first parent, the base it merges into: the mutation gate diffs them.
+          fetch-depth: 2
 
       - name: Install Rust toolchain
         shell: bash
@@ -106,6 +108,37 @@ jobs:
         with:
           name: core-crap-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}
           path: target/quality/
+          if-no-files-found: warn
+          retention-days: 30
+
+      # Every mutant in the pull request's changed lines of the examined files must be caught (#101, docs/quality.md).
+      # Linux only: the mutation policy and its platform exclusions are measured there. The full run is mutants.yml.
+      - name: Install cargo-mutants
+        if: runner.os == 'Linux' && github.event_name == 'pull_request'
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-mutants@27.1.0
+
+      - name: Mutants in the changed lines
+        if: runner.os == 'Linux' && github.event_name == 'pull_request'
+        shell: pwsh
+        run: |
+          # The gate itself: an asserting fixture passes it and the same fixture without its assertion fails it.
+          cargo test -p quality --locked --test mutants_fixture -- --ignored
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ./scripts/Invoke-Mutants.ps1 -Mode diff -Base (git rev-parse 'HEAD^1') -Out target/mutants -Jobs 2
+          exit $LASTEXITCODE
+
+      - name: Upload the mutation report
+        if: always() && runner.os == 'Linux' && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mutants-diff-${{ github.event.pull_request.head.sha }}
+          path: |
+            target/mutants/*.md
+            target/mutants/*.json
+            target/mutants/changes.diff
+            target/mutants/mutants.out/
           if-no-files-found: warn
           retention-days: 30
 

@@ -648,9 +648,9 @@ fn refused_connection_is_retryable_but_http_errors_are_not() {
     let checkout = Checkout::new();
     let server = Server::new(response);
     let mut source = checkout.source(&server);
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    source.url = format!("http://{}", listener.local_addr().unwrap());
-    drop(listener);
+    // Port 0: nothing can listen there, so the connection is refused at once. A port freed by dropping a listener
+    // could be handed to another test's server running in parallel (#101).
+    source.url = "http://127.0.0.1:0".to_owned();
     let error = source
         .fetch_with_timeout(&checkout.0, Duration::from_secs(1))
         .unwrap_err();
@@ -838,4 +838,78 @@ fn readiness_reads_only_this_projects_reason_and_retains_values_when_optional_en
     assert_eq!(h.readiness.dispatch, original.dispatch);
     assert_eq!(h.readiness.sources, original.sources);
     assert!(board.cards()[0].error.is_none());
+}
+
+#[test]
+fn a_new_pmd_source_supersedes_every_in_flight_refresh_and_clears_priorities_only_for_another_service() {
+    use dashboard_core::priority::Priorities;
+    let (a, b) = (Checkout::new(), Checkout::new());
+    let server = Server::new(response);
+    let url = server.url.clone();
+    let mut cache = StatusCache::default();
+    let checkouts = [a.0.clone(), b.0.clone()];
+    let mut board = Board::new(&checkouts, &cache);
+    board.sync_pmd_identities(&url, &mut cache);
+    let doc = a.source(&server).fetch(&a.0, false).unwrap();
+    apply(&mut board, &mut cache, &a, Ok(doc.clone()));
+    let projects = format!(r#"{{"projects":[{{"slug":"gh-x","repo":"{REPO}","priority":2,"tracked":true}}]}}"#);
+    board.set_priorities(Priorities::parse(projects.as_bytes()).unwrap());
+    let card = |board: &Board| board.card(&a.0).unwrap().clone();
+    assert_eq!(board.priority(&card(&board)), Some(2));
+    let old = board.start_refresh(&checkouts);
+
+    // The same service with a new credential: in-flight results are superseded, last good data and priorities stay.
+    board.replace_pmd_source(&url, &mut cache);
+    for checkout in [&a, &b] {
+        let late = Outcome {
+            checkout: checkout.0.clone(),
+            result: Ok(doc.clone()),
+        };
+        assert!(
+            !board.apply_started(late, old[&checkout.0], &mut cache),
+            "an old refresh can't land"
+        );
+        assert!(!board.card(&checkout.0).unwrap().refreshing);
+    }
+    assert!(board.card(&a.0).unwrap().document.is_some(), "last good data stays");
+    assert_eq!(board.priority(&card(&board)), Some(2));
+    let new = board.start_refresh(&checkouts);
+    assert_ne!(new[&a.0], new[&b.0], "each card has its own generation");
+    assert!(
+        new.values().min() > old.values().max(),
+        "every new generation is newer than every old one"
+    );
+    let fresh = Outcome {
+        checkout: a.0.clone(),
+        result: Ok(doc.clone()),
+    };
+    assert!(board.apply_started(fresh, new[&a.0], &mut cache));
+
+    // Another service: its priorities don't apply.
+    board.replace_pmd_source("http://127.0.0.1:9", &mut cache);
+    assert_eq!(board.priority(&card(&board)), None);
+}
+
+#[test]
+fn a_cached_document_for_another_repository_is_dropped_on_the_first_sync() {
+    let checkout = Checkout::new();
+    let server = Server::new(response);
+    let mut cache = StatusCache::default();
+    let mut board = Board::new(std::slice::from_ref(&checkout.0), &cache);
+    board.sync_pmd_identities(&server.url, &mut cache);
+    let doc = checkout.source(&server).fetch(&checkout.0, false).unwrap();
+    apply(&mut board, &mut cache, &checkout, Ok(doc));
+    assert!(!cache.is_empty());
+
+    // The checkout now points at another repository. A new board starts from the cache, with no identity yet, and
+    // the cached document is from the same service: only the repository name tells it apart.
+    checkout.origin("other-owner/gh-x");
+    let mut board = Board::new(std::slice::from_ref(&checkout.0), &cache);
+    assert!(board.card(&checkout.0).unwrap().document.is_some());
+    assert_eq!(
+        board.sync_pmd_identities(&server.url, &mut cache),
+        vec![checkout.0.clone()]
+    );
+    assert!(board.card(&checkout.0).unwrap().document.is_none());
+    assert!(cache.is_empty());
 }

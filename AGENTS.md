@@ -67,6 +67,7 @@ cargo test --workspace --locked                               # unit tests and h
 cargo deny --locked check advisories                          # needs cargo install cargo-deny --version 0.20.2 --locked
 python scripts/check_action_pins.py                           # every workflow action pinned to a commit (--verify: on GitHub)
 cargo llvm-cov -p dashboard-core --locked --lcov --output-path target/quality/core.lcov   # then `quality crap`, docs/quality.md
+pwsh scripts/Invoke-Mutants.ps1 -Mode full                    # mutation gate on Linux (-Mode diff -Base origin/main)
 CAPTURE_DIR=$PWD/captures cargo test -p dashboard-app captures -- --ignored   # PNGs (Linux or macOS; absolute path)
 ```
 
@@ -94,6 +95,8 @@ Every change passes these before merge; CI runs them on `ubuntu-latest` and `win
    cargo check -p dashboard-core --locked and cargo test -p dashboard-core --locked with separate clean target directories.
    The same jobs measure core line coverage and CRAP per function and fail below the platform's baseline floor, on a new
    function above CRAP 30, or on a legacy one getting worse ([docs/quality.md](docs/quality.md)).
+   On pull requests, core (ubuntu-latest) also requires every mutant in the changed lines of core's write, edit,
+   board and sort code caught; the full mutation run is the Mutants workflow ([docs/quality.md](docs/quality.md)).
 
 The [main ruleset](https://github.com/hemsoft-dev/project-dashboard/rules/26477626) requires a pull request and
 these exact GitHub Actions check names: advisories, core (ubuntu-latest), core (windows-latest),

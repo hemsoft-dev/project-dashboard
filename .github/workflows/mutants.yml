@@ -1,0 +1,65 @@
+name: Mutants
+
+# The full mutation run for dashboard-core's write, edit, board and sort code (#101, docs/quality.md). Pull requests
+# run the changed-lines gate in CI's core job; this run checks the whole score against the policy's break threshold.
+# It takes about an hour, so it runs after a merge that changes dashboard-core or the gate, weekly, and on demand.
+on:
+  push:
+    branches: [main]
+    paths:
+      - crates/dashboard-core/**
+      - crates/quality/**
+      - scripts/Invoke-Mutants.ps1
+      - .github/workflows/mutants.yml
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+# A newer revision of main supersedes a run still in progress; its own run is the evidence that counts.
+concurrency:
+  group: mutants-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  full:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        shell: bash
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-mutants@27.1.0
+
+      # The gate itself: an asserting fixture passes it and the same fixture without its assertion fails it.
+      - name: Mutation gate fixture
+        run: cargo test -p quality --locked --test mutants_fixture -- --ignored
+
+      - name: Full mutation run
+        shell: pwsh
+        run: |
+          ./scripts/Invoke-Mutants.ps1 -Mode full -Out target/mutants -Jobs 4
+          exit $LASTEXITCODE
+
+      - name: Upload the mutation report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mutants-full-${{ github.sha }}
+          path: |
+            target/mutants/*.md
+            target/mutants/*.json
+            target/mutants/mutants.out/
+          if-no-files-found: warn
+          retention-days: 90

@@ -264,6 +264,15 @@ fn a_turned_off_merged_list_is_disabled_not_unavailable() {
     );
     let merged = doc.section("pullRequests.merged").unwrap();
     assert!(merged.is_disabled() && !merged.is_unavailable());
+    // A turned-off list counts as off, not as how many items it happens to hold.
+    assert_eq!(
+        dashboard_core::Count::of_section(&doc, "pullRequests.merged", 0),
+        dashboard_core::Count::Off
+    );
+    assert_eq!(
+        dashboard_core::Count::of_section(&doc, "pullRequests.merged", 2),
+        dashboard_core::Count::Off
+    );
     assert_eq!(merged.fetched_at, None);
     assert_eq!(doc.pull_requests.merged_limit, 0);
     assert!(doc.unavailable_sections().next().is_none());

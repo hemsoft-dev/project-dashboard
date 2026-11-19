@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <title>Project Dashboard</title>
+  <defs>
+    <linearGradient id="gold" gradientUnits="userSpaceOnUse" x1="26" y1="6" x2="6" y2="26">
+      <stop offset="0" stop-color="#d4af37"/>
+      <stop offset="0.5" stop-color="#b8860b"/>
+      <stop offset="1" stop-color="#8b6914"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="7" fill="#0a0a0a"/>
+  <g fill="url(#gold)">
+    <rect x="6" y="6" width="9" height="11" rx="1.75"/>
+    <rect x="17" y="6" width="9" height="6" rx="1.75"/>
+    <rect x="17" y="14" width="9" height="12" rx="1.75"/>
+    <rect x="6" y="19" width="9" height="7" rx="1.75"/>
+  </g>
+</svg>

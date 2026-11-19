@@ -93,14 +93,28 @@ fixture's request log. Fetches on new threads each round levelled off. The few m
 transport and allocator churn in the live path, not state the board keeps. The budget allows for them and catches
 any per-fetch leak by orders of magnitude.
 
-`BUDGETS` in `qualification.rs` holds the limits. They are set from CI's own measurements, which are slower and
-noisier than a workstation:
+On CI (debug build, at `81eed8f`; Linux also at `ebec16b`):
 
-- latency at several times the CI p95;
-- memory at several times the measured growth;
-- threads and handles a few above the counts measured.
+| Platform | Refresh p95 per kind (ms) | Memory growth | Threads | Handles | Threads after teardown |
+| --- | --- | ---: | ---: | ---: | ---: |
+| ubuntu-latest | 42–121 | 1.06–1.19 MB | +0 | +0 | 0 |
+| windows-latest | 51–103 | 1.15 MB | +0 | +0 | +1 |
 
-The pull request that sets or changes them records the measured values it used.
+Both served 5151 requests. The leaking fixture failed on both with 690 threads above warm-up, 806 or 807 threads
+after teardown, and 623–635 MB of growth.
+
+The budgets in `BUDGETS` (`qualification.rs`) leave room for a slow or noisy runner, and still miss a leak like the
+fixture's by orders of magnitude:
+
+| Budget | Value | From |
+| --- | ---: | --- |
+| Refresh p95, each kind | 1000 ms | about 8× the worst CI p95 (121 ms) |
+| Private memory growth | 16 MB | about 13× CI, and 5× the local worst (3.3 MB) |
+| Threads above warm-up | 4 | one set of refresh workers |
+| Handles above warm-up | 32 | |
+| Threads after teardown | 2 | |
+
+A pull request that changes a budget records the new measurements it used, from both CI platforms.
 
 ## When it fails
 

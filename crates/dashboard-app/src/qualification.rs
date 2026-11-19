@@ -54,11 +54,15 @@ pub(crate) struct Budgets {
     pub threads_after_teardown: i64,
 }
 
+/// From CI at 81eed8f (and ebec16b on Linux), debug build: p95 at most 121 ms on Linux and 103 ms on Windows, memory
+/// growth 1.06 to 1.19 MB, threads and handles +0, threads after teardown 0 to 1. Locally on Windows 11: p95 up to
+/// 155 ms and growth up to 3.3 MB. Each budget leaves room for a slow or noisy runner; the leaking fixture misses them
+/// by orders of magnitude (690 threads, over 600 MB).
 pub(crate) const BUDGETS: Budgets = Budgets {
-    refresh_p95_ms: 3000.0,
-    memory_growth_bytes: 24 * 1024 * 1024,
-    thread_growth: 8,
-    handle_growth: 64,
+    refresh_p95_ms: 1000.0,
+    memory_growth_bytes: 16 * 1024 * 1024,
+    thread_growth: 4,
+    handle_growth: 32,
     threads_after_teardown: 2,
 };
 
@@ -787,8 +791,8 @@ mod evaluation {
         let failures = evaluate(&r, &BUDGETS);
         assert_eq!(failures.len(), 3, "{failures:?}");
         assert!(failures[0].starts_with("private memory growth (bytes)"));
-        assert!(failures[1].starts_with("threads above warm-up 29 is over 8"));
-        assert!(failures[2].starts_with("handles above warm-up 290 is over 64"));
+        assert!(failures[1].starts_with("threads above warm-up 29 is over 4"));
+        assert!(failures[2].starts_with("handles above warm-up 290 is over 32"));
     }
 
     #[test]

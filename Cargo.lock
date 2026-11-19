@@ -5461,6 +5461,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "quality"
+version = "0.14.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

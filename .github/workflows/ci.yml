@@ -68,6 +68,41 @@ jobs:
       - name: Standalone core test
         run: cargo test -p dashboard-core --locked --target-dir target/standalone-core-test
 
+      # Line coverage and CRAP per function against this platform's baseline (#100, docs/quality.md). Runs at review
+      # on pull requests and again for the merged revision on main.
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-llvm-cov@0.9.1
+
+      # pwsh, like the test steps above, not bash. Under Git Bash the filtered-token tests in config_atomic_73 failed
+      # on Windows (the token could assign the Administrators owner and write where it shouldn't). Git Bash's runtime
+      # enables backup and restore privileges on the token its children inherit.
+      - name: Core coverage and CRAP
+        shell: pwsh
+        run: |
+          $platform = if ($IsWindows) { 'windows' } else { 'linux' }
+          rustup component add llvm-tools-preview
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force target/quality | Out-Null
+          $env:CARGO_TARGET_DIR = 'target/core-coverage'
+          cargo llvm-cov -p dashboard-core --locked --lcov --output-path "target/quality/core-$platform.lcov"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Remove-Item Env:CARGO_TARGET_DIR
+          cargo run -p quality --locked --target-dir target/quality-tool -- crap --src crates/dashboard-core/src `
+            --lcov "target/quality/core-$platform.lcov" --platform $platform --revision (git rev-parse HEAD) `
+            --baseline "crates/quality/baselines/crap-$platform.json" --out target/quality
+          exit $LASTEXITCODE
+
+      - name: Upload coverage and CRAP report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: core-crap-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: target/quality/
+          if-no-files-found: warn
+          retention-days: 30
+
   rust:
     strategy:
       fail-fast: false

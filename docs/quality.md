@@ -7,15 +7,17 @@ worse (#100). It isn't shipped; it only reads the source and a coverage report.
 ## Run it
 
 ```sh
-rustup component add llvm-tools-preview
+rustup toolchain install 1.99.0 --profile minimal --component llvm-tools-preview
 cargo install cargo-llvm-cov --version 0.9.1 --locked
-cargo llvm-cov -p dashboard-core --locked --lcov --output-path target/quality/core.lcov
+cargo +1.99.0 llvm-cov -p dashboard-core --locked --lcov --output-path target/quality/core.lcov
 cargo run -p quality --locked -- crap --src crates/dashboard-core/src --lcov target/quality/core.lcov \
   --platform linux --revision "$(git rev-parse HEAD)" --baseline crates/quality/baselines/crap-linux.json \
   --out target/quality
 ```
 
-Use `--platform windows` and `crap-windows.json` on Windows. The command writes `crap-<platform>.json` (every function,
+Use `--platform windows` and `crap-windows.json` on Windows.
+
+Coverage is measured with **rustc 1.99.0**, not the build's `stable`: another compiler maps coverage onto lines differently. On `main` at `0e3722b`, a Windows runner image with a newer stable counted 4051 instrumented lines instead of 4120 and failed the floor with no code change. CI installs that version for the coverage step only (`COVERAGE_TOOLCHAIN` in `ci.yml`). To move to a newer one, change `COVERAGE_TOOLCHAIN`, this page and both baselines in one pull request, rewriting the baselines with `--write-baseline` on that version. The command writes `crap-<platform>.json` (every function,
 with its lines, complexity, coverage, CRAP or exclusion reason) and `crap-<platform>.md` (totals, failures, review queue
 and the 25 worst), and prints the Markdown. It exits 0 when the gate passes, 1 when it fails, and 2 when an input is
 missing or malformed. A missing or unreadable baseline is an error, never a pass.
@@ -79,6 +81,7 @@ Do it in the pull request that changes the numbers, so the diff shows each moved
 
 - after coverage rises, to raise the floor;
 - when a function above 30 improves, to lock in its lower score;
+- when `COVERAGE_TOOLCHAIN` changes, on both platforms;
 - when a function is renamed or moved, since its key (`file::module::Type::name`) changes and the old score would
   otherwise read as a new function.
 

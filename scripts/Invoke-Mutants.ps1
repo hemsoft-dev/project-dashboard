@@ -50,9 +50,11 @@ if ($Mode -eq 'diff') {
         exit 2
     }
     $diff = Join-Path $Out 'changes.diff'
-    git diff --no-color --no-ext-diff $Base $revision -- @files | Set-Content -Path $diff -Encoding utf8NoBOM
+    # Captured as text: an empty diff writes nothing to a pipeline, and Set-Content would then create no file.
+    $text = (git diff --no-color --no-ext-diff $Base $revision -- @files) -join "`n"
     if ($LASTEXITCODE) { exit 2 }
-    if ((Get-Item $diff).Length -eq 0) {
+    [IO.File]::WriteAllText([IO.Path]::GetFullPath($diff), $(if ($text) { "$text`n" } else { '' }))
+    if (-not $text) {
         $note = "No examined file changed since $Base; nothing to mutate."
         Set-Content -Path (Join-Path $Out "mutants-diff-$platform.md") -Value "# dashboard-core mutation report (diff, $platform)`n`n- Revision: ``$revision```n- $note`n- Gate: pass"
         Write-Output $note

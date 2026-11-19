@@ -68,6 +68,7 @@ cargo deny --locked check advisories                          # needs cargo inst
 python scripts/check_action_pins.py                           # every workflow action pinned to a commit (--verify: on GitHub)
 cargo llvm-cov -p dashboard-core --locked --lcov --output-path target/quality/core.lcov   # then `quality crap`, docs/quality.md
 pwsh scripts/Invoke-Mutants.ps1 -Mode full                    # mutation gate on Linux (-Mode diff -Base origin/main)
+PERF_DIR=$PWD/target/perf PERF_REVISION=$(git rev-parse HEAD) cargo test -p dashboard-app --locked qualification_repeated -- --ignored --test-threads=1   # docs/qualification.md
 CAPTURE_DIR=$PWD/captures cargo test -p dashboard-app captures -- --ignored   # PNGs (Linux or macOS; absolute path)
 ```
 
@@ -97,6 +98,9 @@ Every change passes these before merge; CI runs them on `ubuntu-latest` and `win
    function above CRAP 30, or on a legacy one getting worse ([docs/quality.md](docs/quality.md)).
    On pull requests, core (ubuntu-latest) also requires every mutant in the changed lines of core's write, edit,
    board and sort code caught; the full mutation run is the Mutants workflow ([docs/quality.md](docs/quality.md)).
+6. **Refresh qualification**: the rust jobs run a repeated refresh workload in an in-process test window and fail on
+   latency or retained-resource budgets, or on work that outlives the window; a leaking fixture must fail them
+   ([docs/qualification.md](docs/qualification.md)).
 
 The [main ruleset](https://github.com/hemsoft-dev/project-dashboard/rules/26477626) requires a pull request and
 these exact GitHub Actions check names: advisories, core (ubuntu-latest), core (windows-latest),

@@ -142,7 +142,8 @@ A run is **incomplete**, and can't pass, when any of these holds:
   cargo-mutants counts `total_mutants` as results land, so a run that stopped part way agrees with its own count;
 - a result is one the reader doesn't know;
 - cargo-mutants exited with anything but 0, 2, 3 or 4 (an internal error or a usage error);
-- a non-empty diff produced no outcomes.
+- a non-empty diff produced no outcomes and cargo-mutants exited with an error. A diff whose changed lines hold no
+  mutable code (comments, say) makes cargo-mutants exit 0 without outcomes, and that passes as "no mutants".
 
 Any timeout fails the gate, including one in excluded code: an exclusion decides whether a result counts, never hides a
 timeout. A test that hangs under a mutant counts against the tests, never for them.

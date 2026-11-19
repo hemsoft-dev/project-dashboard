@@ -137,8 +137,11 @@ A mutant is **excluded** in two cases:
 A run is **incomplete**, and can't pass, when any of these holds:
 
 - the unmutated baseline failed;
-- a mutant has no result;
+- `outcomes.json` has no `end_time`, which cargo-mutants writes only when the run ends;
+- the outcomes don't match the plan, `mutants.json`: a planned mutant has no result, or a result wasn't planned.
+  cargo-mutants counts `total_mutants` as results land, so a run that stopped part way agrees with its own count;
 - a result is one the reader doesn't know;
+- cargo-mutants exited with anything but 0, 2, 3 or 4 (an internal error or a usage error);
 - a non-empty diff produced no outcomes.
 
 Any timeout fails the gate. A test that hangs under a mutant counts against the tests, never for them.

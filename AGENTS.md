@@ -63,6 +63,7 @@ cargo fmt --all --check                                       # format
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked                               # unit tests and headless UI tests
 cargo deny --locked check advisories                          # needs cargo install cargo-deny --version 0.20.2 --locked
+python scripts/check_action_pins.py                           # every workflow action pinned to a commit (--verify: on GitHub)
 CAPTURE_DIR=$PWD/captures cargo test -p dashboard-app captures -- --ignored   # PNGs (Linux or macOS; absolute path)
 ```
 
@@ -83,6 +84,8 @@ Every change passes these before merge; CI runs them on `ubuntu-latest` and `win
 4. **Advisories**: `cargo deny --locked check advisories` clean. CI's `advisories` job runs it once, on `ubuntu-latest`,
    because it covers every target. Patch a vulnerability, never accept it. `deny.toml` accepts only unmaintained crates
    that arrive through GPUI, each by ID with its reason. The job reads the lockfile and uploads no source.
+   The same job fails on a workflow action not pinned to a full commit SHA with its release in a comment
+   (`scripts/check_action_pins.py`, [docs/action-pins.md](docs/action-pins.md)).
 
 5. **Standalone core**: on both Ubuntu and Windows, CI runs
    cargo check -p dashboard-core --locked and cargo test -p dashboard-core --locked with separate clean target directories.

@@ -23,8 +23,11 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-# `uses:` as a mapping key, optionally after the `- ` of a list item, with an optional quoted value.
-USES = re.compile(r"""^\s*(?:-\s+)?uses:\s*(?P<quote>['"]?)(?P<ref>[^'"\s#]+)(?P=quote)\s*(?:#\s*(?P<comment>.*?))?\s*$""")
+# `uses:` as a mapping key, optionally after the `- ` of a list item. YAML allows the key and the value to be quoted
+# (`"uses": "a/b@sha"`), so both may be.
+USES = re.compile(
+    r"""^\s*(?:-\s+)?(?P<kq>['"]?)uses(?P=kq)\s*:\s*(?P<quote>['"]?)(?P<ref>[^'"\s#]+)(?P=quote)\s*(?:#\s*(?P<comment>.*?))?\s*$"""
+)
 PINNED = re.compile(r"^(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?P<path>/[^@]+)?@(?P<sha>[0-9a-f]{40})$")
 VERSION = re.compile(r"^v\d+(?:\.\d+){0,2}$")
 DIGEST = re.compile(r"^docker://[^@\s]+@sha256:[0-9a-f]{64}$")
@@ -46,7 +49,10 @@ class Use:
         return f"{self.file.as_posix()}:{self.line}"
 
 
-ANY_USES = re.compile(r"(?:^|[\s{,-])uses\s*:")
+# Any other line that could be a `uses` key: bare or quoted, in a flow mapping, or with a space before the colon.
+ANY_USES = re.compile(r"""(?:^|[\s{,-])(?P<kq>['"]?)uses(?P=kq)\s*:""")
+# A double-quoted key with an escape can spell `uses` without the letters (`"uses"`), so it can't be read safely.
+ESCAPED_KEY = re.compile(r"""^\s*(?:-\s+)?"[^"]*\\[^"]*"\s*:""")
 UNPARSED = "<unparsed>"
 
 
@@ -58,7 +64,7 @@ def find_uses(path: Path) -> list[Use]:
         m = USES.match(text)
         if m:
             out.append(Use(path, number, m["ref"], m["comment"] or None))
-        elif ANY_USES.search(text.split("#", 1)[0]):
+        elif ANY_USES.search(text.split("#", 1)[0]) or ESCAPED_KEY.match(text):
             # A form this line reader doesn't follow, such as `{ uses: ... }`, fails rather than passing unread.
             out.append(Use(path, number, UNPARSED, text.strip()))
     return out

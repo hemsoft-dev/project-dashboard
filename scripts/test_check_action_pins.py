@@ -105,6 +105,31 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("unrecognized `uses:` form", out)
 
+    def test_a_quoted_key_is_still_checked(self):
+        # SFL's finding on #109: a quoted `uses` key matched neither pattern, so a mutable ref passed unread.
+        for key in ['"uses"', "'uses'", "uses ", '"uses" ']:
+            with self.subTest(key=key):
+                code, out = self.check(f"jobs:\n  a:\n    steps:\n      - {key}: actions/checkout@v4\n")
+                self.assertEqual(code, 1, out)
+                self.assertIn("mutable ref 'v4'", out)
+                code, out = self.check(f"jobs:\n  a:\n    steps:\n      - {key}: actions/checkout@{SHA} # v4.4.0\n")
+                self.assertEqual(code, 0, out)
+
+    def test_keys_and_values_the_reader_cannot_follow_fail(self):
+        pinned = f"      - uses: actions/checkout@{SHA} # v4.4.0\n"
+        for line, reason in [
+            ('      - "\\u0075ses": actions/checkout@v4', "unrecognized `uses:` form"),  # an escape that spells uses
+            ("      - uses:", "unrecognized `uses:` form"),  # the value on the next line
+            ("      - uses: >-", "no ref"),  # a folded block value
+            ("      - uses: *checkout", "no ref"),  # an alias
+        ]:
+            with self.subTest(line=line):
+                # A pinned step beside it, so the file has a reference and only this line can fail it.
+                code, out = self.check(f"jobs:\n  a:\n    steps:\n{pinned}{line}\n        actions/checkout@v4\n")
+                self.assertEqual(code, 1, out)
+                self.assertIn(f"ci.yml:5 ", out)
+                self.assertIn(reason, out)
+
     def test_comments_and_prose_are_not_references(self):
         body = workflow(f"actions/checkout@{SHA} # v4.4.0") + "      # uses: actions/checkout@v4 in a comment\n"
         body += "      - run: echo 'this step uses no action'\n"

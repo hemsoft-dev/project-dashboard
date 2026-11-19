@@ -12,8 +12,9 @@ A tag such as `@v4` can be moved upstream, which changes the code a job runs (in
 ## The check
 
 `scripts/check_action_pins.py` fails on any reference that isn't a full lowercase 40-character SHA with a `# vX.Y.Z`
-comment. Local actions (`./...`) and containers pinned by `sha256` digest pass. A `uses:` the line reader doesn't
-recognize, such as the flow form `{ uses: ... }`, fails rather than going unread.
+comment. Local actions (`./...`) and containers pinned by `sha256` digest pass. Quoted keys and values (`"uses":`)
+are checked like plain ones. A `uses` the line reader can't follow fails rather than going unread: the flow form
+`{ uses: ... }`, a value on the next line or in a block, an alias, or a double-quoted key with an escape.
 
 ```sh
 python scripts/check_action_pins.py            # offline; CI runs this in the required advisories job

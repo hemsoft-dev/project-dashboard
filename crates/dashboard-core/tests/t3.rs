@@ -484,9 +484,11 @@ fn answer(mut stream: std::net::TcpStream, status: u16, body: &str) {
     );
 }
 
+/// An origin no server can answer on. Port 0 can't be listened on, so connecting fails at once on every platform.
+/// A port freed by dropping a listener could be handed to another test's `FakeT3` running in parallel, which then
+/// answered this probe (seen under cargo-mutants' parallel baseline, #101).
 fn closed_origin() -> String {
-    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
-    format!("http://{}", closed.local_addr().unwrap())
+    "http://127.0.0.1:0".to_string()
 }
 
 #[test]

@@ -1,0 +1,26 @@
+{
+  "platform": "linux",
+  "files": [
+    "crates/dashboard-core/src/write.rs",
+    "crates/dashboard-core/src/edit.rs",
+    "crates/dashboard-core/src/lib.rs",
+    "crates/dashboard-core/src/sort.rs"
+  ],
+  "break_score": 100.0,
+  "target_score": 100.0,
+  "min_mutants": 300,
+  "baseline": {
+    "revision": "e04206a75f7658176f7076acaa6d478c64bb32b7",
+    "counts": {
+      "total": 346,
+      "caught": 291,
+      "missed": 0,
+      "timeout": 0,
+      "unviable": 41,
+      "excluded": 14,
+      "denominator": 291,
+      "score": 100.0
+    }
+  },
+  "equivalent": []
+}

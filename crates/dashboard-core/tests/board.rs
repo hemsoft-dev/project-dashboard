@@ -234,6 +234,9 @@ fn hosted_signals_order_blocked_then_waiting_then_failing_checks() {
             "Board unavailable"
         ]
     );
+    // Nothing to say about clean signals: no "Blocked: 0".
+    assert!(signals(0, 0, &[], true).describe().is_empty());
+    assert_eq!(signals(0, 1, &[], true).describe(), ["Waiting on Franz: 1"]);
 }
 
 #[test]

@@ -35,8 +35,8 @@ LCOV file and both reports. The report's `revision` is the commit the job checke
   listed.
 - **Platforms.** Coverage is measured separately on Linux and Windows, each against its own baseline. A function the
   platform doesn't build is reported as excluded with its `cfg`, never as uncovered. On Linux that is the Windows ACL
-  code in `config.rs` and `write.rs` (14 functions at the baseline); on Windows it is the Linux mode-bits code (7).
-  Each is measured on the other platform. `owner_only_file` under `cfg(not(any(unix, windows)))` is built on
+  code in `config.rs` and `write.rs` (13 functions at the baseline); on Windows it is the Linux mode-bits code (6).
+  Each of those is measured on the other platform. `owner_only_file` under `cfg(not(any(unix, windows)))` is built on
   neither and stays excluded on both. A `cfg` reaches everything under it: a file's `#![cfg(...)]`, a module's,
   and a function's nested `fn`s. `#[path]` modules are followed from the declaring file's folder. An unknown `cfg`
   predicate, or a `#[path]` inside an inline `mod` block, stops the run instead of guessing.
@@ -87,3 +87,101 @@ Do it in the pull request that changes the numbers, so the diff shows each moved
 
 Lowering the floor, or accepting a higher score for a function above 30, needs its reason in the pull request
 description. CI reports belong to whoever changed the code they measure: a failing gate is that pull request's to fix.
+
+# Mutation testing for dashboard-core
+
+cargo-mutants changes one thing at a time in dashboard-core's write client (`write.rs`), edit and conflict flow
+(`edit.rs`), board and refresh generations (`lib.rs`) and sorting (`sort.rs`). Examples are a comparison, an `||`,
+or a whole function body. It then runs the core tests against each change. A mutant the tests don't notice is
+behavior no assertion pins down (#101). `quality mutants` reads the run and checks it against
+`crates/quality/baselines/mutants-linux.json`.
+
+## Run it
+
+On Linux, from the repository root:
+
+```sh
+cargo install cargo-mutants --version 27.1.0 --locked
+pwsh scripts/Invoke-Mutants.ps1 -Mode full            # every examined file, about 25 minutes with 4 jobs on mini
+pwsh scripts/Invoke-Mutants.ps1 -Mode diff -Base origin/main   # only the lines changed since origin/main
+cargo test -p quality --test mutants_fixture -- --ignored      # the gate on a fixture, with real cargo-mutants
+```
+
+The script reads the examined files from the policy, so the script and the gate can't disagree. cargo-mutants builds
+every mutant in its own copy of the tree. Each run starts from an empty `target/mutants`, so a report always comes
+from that run. The script exits 0 when the gate passes, 1 when it fails, and 2 when the run is incomplete or an input
+is missing. It writes `mutants-<mode>-linux.json` (every mutant and its class) and `.md`, and keeps cargo-mutants'
+own `mutants.out/`.
+
+## What is counted
+
+Every mutant lands in exactly one class:
+
+- **Caught:** a test failed.
+- **Missed:** every test passed.
+- **Timeout:** the tests ran past cargo-mutants' limit, which it derives from the unmutated run.
+- **Unviable:** the mutant doesn't build.
+- **Excluded:** see the next paragraph.
+
+The score is caught / (caught + missed + timeout). Unviable and excluded mutants aren't in the denominator, and
+every report prints the denominator next to the score.
+
+A mutant is **excluded** in two cases:
+
+- It is in a function the platform doesn't build. The `cfg` walk from the CRAP report decides this. On Linux that's
+  the Windows ACL code in `write.rs` and the `cfg(not(any(unix, windows)))` fallback: 14 mutants at the baseline.
+  Without the exclusion, every one of them would be "missed", because the code it changes isn't compiled.
+- It is listed under `equivalent` in the policy: an exact file and description, with the reason it can't change
+  behavior. The list is empty. An entry names one mutant, never a pattern or a whole module.
+
+A run is **incomplete**, and can't pass, when any of these holds:
+
+- the unmutated baseline failed;
+- `outcomes.json` has no `end_time`, which cargo-mutants writes only when the run ends;
+- the outcomes don't match the plan, `mutants.json`: a planned mutant has no result, or a result wasn't planned.
+  cargo-mutants counts `total_mutants` as results land, so a run that stopped part way agrees with its own count;
+- a result is one the reader doesn't know;
+- cargo-mutants exited with anything but 0, 2, 3 or 4 (an internal error or a usage error);
+- a non-empty diff produced no outcomes.
+
+Any timeout fails the gate, including one in excluded code: an exclusion decides whether a result counts, never hides a
+timeout. A test that hangs under a mutant counts against the tests, never for them.
+
+## The gates
+
+- **Pull requests (review):** `core (ubuntu-latest)` runs the fixture first: an asserting test passes the gate, and
+  the same test without its assertion fails it. Then it runs diff mode against the merge commit's first parent.
+  Every mutant in the changed lines of the four files must be caught. A pull request that touches none of them
+  passes with a note. The report is uploaded as `mutants-diff-<head sha>`.
+- **Full run (final qualification):** `.github/workflows/mutants.yml` runs after every merge to `main` that touches
+  `crates/dashboard-core`, the gate or its workflow, weekly on Monday at 06:17 UTC, and on demand. It fails below
+  the break threshold, on any timeout, or with fewer than `min_mutants` mutants, which would mean the run examined
+  less than it should. The report is uploaded as `mutants-full-<sha>` and kept for 90 days.
+
+## Thresholds
+
+The first full run on Linux (mini, Ubuntu, cargo-mutants 27.1.0, 4 jobs, 24 minutes) tested 346 mutants: 291 caught,
+0 missed, 0 timeouts, 41 unviable and 14 excluded, a score of 100%. Before the tests #101 added, the same four files
+scored 87.5% on Windows: 266 caught and 38 missed.
+
+| Setting | Value | Why |
+| --- | ---: | --- |
+| `break_score` | 100% | The baseline. A new survivor anywhere fails the full run, as coverage may not fall below its floor. |
+| `target_score` | 100% | Already met. It stays there as long as the break threshold does. |
+| `min_mutants` | 300 | A run that tests far fewer than 346 lost files or functions from its scope. |
+
+## When a gate fails
+
+The failure belongs to the pull request, or the merge, whose code it measures:
+
+- **A missed mutant in a diff:** add a test that fails under that change. The report shows the mutant's diff.
+- **A missed mutant in the weekly run:** it came from code merged before, or from a change in cargo-mutants'
+  mutations after a version bump. Whoever maintains the repository opens an issue from the run's report, then
+  fixes it with a test.
+- **A mutant that really can't change behavior:** add it to `equivalent` with its exact description and reason,
+  in a pull request.
+- **A timeout:** a test that waits longer than it needs or never ends. Fix the test. Raising the limit isn't a
+  fix.
+
+Lowering `break_score`, or changing the examined files or the cargo-mutants version, needs its reason in the pull
+request. Update `baseline` from a new full run in the same change.

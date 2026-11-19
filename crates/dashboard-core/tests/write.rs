@@ -7,7 +7,6 @@ use dashboard_core::write::{
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -184,7 +183,8 @@ fn every_pmd_status_maps_to_its_typed_error() {
 #[test]
 fn network_failure_and_a_closed_port_are_unavailable() {
     let dir = Dir::new();
-    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    // Port 0: nothing can listen there, so the connection fails at once (a freed port could go to a parallel stub).
+    let port = 0;
     let writer = PmdWriter {
         url: format!("http://127.0.0.1:{port}"),
         ..dir.writer(&Stub::new(|_| unreachable!()))
@@ -364,7 +364,8 @@ fn tokens_never_appear_in_any_error() {
     };
     errors.push(writer.write(&patch(1)).unwrap_err());
     errors.push(writer.write(&create()).unwrap_err());
-    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    // Port 0: nothing can listen there, so the connection fails at once (a freed port could go to a parallel stub).
+    let port = 0;
     errors.push(
         PmdWriter {
             url: format!("http://{WRITE}@127.0.0.1:{port}"),
@@ -699,4 +700,212 @@ fn a_form_checking_a_failed_save_stays_busy() {
     form.set("name", "typed meanwhile");
     assert_eq!(form.value("name"), "air", "no edits while checking");
     assert_eq!(form.begin_save(), None, "and no second save");
+}
+
+// Boundaries and small accessors that #101's mutation baseline showed no test pinned.
+
+#[test]
+fn a_body_of_exactly_64_kb_is_sent_and_one_byte_more_is_not() {
+    let dir = Dir::new();
+    let stub = Stub::new(|_| Reply::json(200, json!({"version": 2})));
+    // pmd's documented limit, written out rather than read from MAX_BODY, so a changed constant fails here.
+    const PMD_LIMIT: usize = 64 * 1024;
+    assert_eq!(MAX_BODY, PMD_LIMIT);
+    let mut request = patch(1);
+    // `{"statusReason":""}` is 19 bytes, so this body serializes to exactly 64 KB.
+    request.body = json!({"statusReason": "x".repeat(PMD_LIMIT - 19)});
+    assert_eq!(serde_json::to_vec(&request.body).unwrap().len(), PMD_LIMIT);
+    assert_eq!(dir.writer(&stub).write(&request), Ok(json!({"version": 2})));
+    assert_eq!(stub.requests()[0].body.len(), PMD_LIMIT);
+
+    request.body = json!({"statusReason": "x".repeat(PMD_LIMIT - 18)});
+    assert_eq!(dir.writer(&stub).write(&request), Err(WriteError::TooLarge));
+    assert_eq!(stub.requests().len(), 1, "the oversized body is never sent");
+}
+
+#[test]
+fn a_response_of_exactly_1_mb_is_read_and_one_byte_more_is_malformed() {
+    const MAX_RESPONSE: usize = 1024 * 1024;
+    // `{"version":1,"pad":""}` is 22 bytes.
+    let exact = json!({"version": 1, "pad": "x".repeat(MAX_RESPONSE - 22)}).to_string();
+    assert_eq!(exact.len(), MAX_RESPONSE);
+    let dir = Dir::new();
+    let body = exact.clone();
+    let stub = Stub::new(move |_| Reply {
+        body: body.clone(),
+        ..Reply::json(200, Value::Null)
+    });
+    assert_eq!(dir.writer(&stub).write(&patch(1)).unwrap()["version"], 1);
+
+    // One more byte, a space, so the first 1 MB alone would still be valid JSON: only the size check refuses it.
+    let over = format!("{exact} ");
+    let stub = Stub::new(move |_| Reply {
+        body: over.clone(),
+        ..Reply::json(200, Value::Null)
+    });
+    assert_eq!(dir.writer(&stub).write(&patch(1)), Err(WriteError::Malformed));
+}
+
+#[test]
+fn a_token_of_exactly_8_kb_loads_whole_and_one_byte_more_is_refused() {
+    let dir = Dir::new();
+    let path = dir.0.join("long-token");
+    let exact = "t".repeat(8192);
+    std::fs::write(&path, &exact).unwrap();
+    assert_eq!(load_token(&path), Ok(exact.clone()));
+    std::fs::write(&path, format!("{exact}t")).unwrap();
+    assert_eq!(load_token(&path), Err(WriteError::MissingToken));
+}
+
+#[test]
+fn a_response_that_stalls_mid_body_is_a_timeout() {
+    // Headers and part of the body arrive, then nothing: the read of the body times out, not the request.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut seen = Vec::new();
+        let mut byte = [0];
+        while !seen.ends_with(b"\r\n\r\n") && stream.read_exact(&mut byte).is_ok() {
+            seen.push(byte[0]);
+        }
+        let _ =
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nContent-Type: application/json\r\n\r\n{\"ver");
+        let _ = stream.flush();
+        std::thread::sleep(Duration::from_millis(800));
+    });
+    let dir = Dir::new();
+    let writer = PmdWriter {
+        url,
+        timeout: Duration::from_millis(300),
+        ..dir.writer(&Stub::new(|_| unreachable!()))
+    };
+    assert_eq!(writer.write(&patch(1)), Err(WriteError::Timeout { create: None }));
+    server.join().unwrap();
+}
+
+#[test]
+fn each_feature_has_its_menu_label() {
+    let labels: Vec<&str> = Feature::ALL.iter().map(|f| f.label()).collect();
+    assert_eq!(labels, ["Projects", "Work items", "Fleet"]);
+}
+
+#[test]
+fn only_errors_that_carry_pmds_message_return_it() {
+    let text = || "pmd's message".to_owned();
+    for error in [
+        WriteError::BadRequest {
+            code: "bad_request".into(),
+            message: text(),
+        },
+        WriteError::InsufficientScope { message: text() },
+        WriteError::Conflict {
+            code: "not_tracked".into(),
+            message: text(),
+        },
+        WriteError::Server {
+            status: 503,
+            code: "github_unavailable".into(),
+            message: text(),
+        },
+    ] {
+        assert_eq!(error.message(), Some("pmd's message"), "{error:?}");
+    }
+    for error in [
+        WriteError::WritesOff,
+        WriteError::Network,
+        WriteError::StaleVersion,
+        WriteError::TooLarge,
+    ] {
+        assert_eq!(error.message(), None, "{error:?}");
+    }
+}
+
+#[test]
+fn a_listing_without_a_query_is_a_plain_read_and_with_one_needs_its_own_backend() {
+    struct ReadsOnly;
+    impl WriteBackend for ReadsOnly {
+        fn token_path(&self) -> Option<std::path::PathBuf> {
+            None
+        }
+        fn whoami(&self) -> Result<dashboard_core::write::Whoami, WriteError> {
+            Err(WriteError::WritesOff)
+        }
+        fn store_token(&self, _: &str) -> Result<(), WriteError> {
+            Err(WriteError::WritesOff)
+        }
+        fn read(&self, path: &str) -> Result<Value, WriteError> {
+            Ok(json!({"read": path}))
+        }
+        fn write(&self, _: &WriteRequest) -> Result<Value, WriteError> {
+            Err(WriteError::WritesOff)
+        }
+    }
+    assert_eq!(ReadsOnly.list("v1/work", &[]), Ok(json!({"read": "v1/work"})));
+    let query = [("status".to_owned(), "open".to_owned())];
+    assert_eq!(ReadsOnly.list("v1/work", &query), Err(WriteError::Malformed));
+}
+
+#[test]
+fn the_off_backend_has_no_token_and_refuses_everything() {
+    use dashboard_core::write::Off;
+    assert_eq!(Off.token_path(), None);
+    assert_eq!(Off.whoami().unwrap_err(), WriteError::WritesOff);
+    assert_eq!(Off.store_token(WRITE), Err(WriteError::WritesOff));
+    assert_eq!(Off.read("v1/work/01JBX"), Err(WriteError::WritesOff));
+    assert_eq!(Off.list("v1/work", &[]), Err(WriteError::WritesOff));
+    assert_eq!(Off.write(&patch(1)), Err(WriteError::WritesOff));
+}
+
+#[test]
+fn the_live_backend_reports_its_configured_token_path() {
+    let dir = Dir::new();
+    let writer = dir.writer(&Stub::new(|_| unreachable!()));
+    assert_eq!(writer.token_path(), Some(dir.0.join("pmd-write-token")));
+    let off = PmdWriter {
+        write_token_path: None,
+        ..writer
+    };
+    assert_eq!(off.token_path(), None);
+}
+
+#[test]
+fn a_form_lists_its_fields_in_the_order_given() {
+    let form = Form::edit(row(1, "T", "2"), &["priority", "title"]);
+    assert_eq!(form.fields().collect::<Vec<_>>(), ["priority", "title"]);
+    let create = Form::create(&["title"], &BTreeMap::new());
+    assert_eq!(create.fields().collect::<Vec<_>>(), ["title"]);
+}
+
+#[test]
+fn a_form_ignores_text_for_a_field_it_does_not_have_and_while_a_conflict_waits() {
+    let mut form = Form::edit(row(4, "Old", "2"), &["title", "priority"]);
+    form.set("notes", "not a field of this form");
+    assert_eq!(form.values().len(), 2);
+    assert!(!form.values().contains_key("notes"));
+    assert!(!form.is_dirty());
+
+    form.begin_save();
+    form.failed(&WriteError::StaleVersion);
+    form.conflict(row(7, "Theirs", "1"));
+    form.set("title", "Typed during the conflict");
+    assert_ne!(
+        form.value("title"),
+        "Typed during the conflict",
+        "the user chooses first"
+    );
+}
+
+#[test]
+fn a_rejected_field_blocks_saving_until_its_error_is_cleared() {
+    let mut form = Form::edit(row(4, "Old", "2"), &["title", "priority"]);
+    form.set("priority", "high");
+    form.reject("priority", "a number from 0 to 4");
+    assert_eq!(form.field_error("priority"), Some("a number from 0 to 4"));
+    assert_eq!(form.begin_save(), None, "a known problem sends nothing");
+    form.clear_error("priority");
+    assert_eq!(form.field_error("priority"), None);
+    assert_eq!(form.begin_save(), Some(Precondition::IfMatch(4)));
 }

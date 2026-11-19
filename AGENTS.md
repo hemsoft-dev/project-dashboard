@@ -47,6 +47,8 @@ crates/
                     # the write client and token (write.rs), one row's edit (edit.rs) and the board (lib.rs). Fixtures: tests/fixtures/status-*.json.
   dashboard-app/    # GPUI views and the `project-dashboard` binary. `--demo` shows the fixtures. manage.rs: the Manage menu.
                     # src/mark.rs draws the icon; build.rs embeds it and the version block on Windows.
+  quality/          # Not shipped: per-function coverage, complexity and CRAP for dashboard-core, and its gate
+                    # (docs/quality.md). baselines/crap-<platform>.json hold the accepted measurement.
 scripts/Build-WindowsRelease.ps1   # Release build, executable checks and zip (.github/workflows/release.yml).
 ```
 
@@ -64,6 +66,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked                               # unit tests and headless UI tests
 cargo deny --locked check advisories                          # needs cargo install cargo-deny --version 0.20.2 --locked
 python scripts/check_action_pins.py                           # every workflow action pinned to a commit (--verify: on GitHub)
+cargo llvm-cov -p dashboard-core --locked --lcov --output-path target/quality/core.lcov   # then `quality crap`, docs/quality.md
 CAPTURE_DIR=$PWD/captures cargo test -p dashboard-app captures -- --ignored   # PNGs (Linux or macOS; absolute path)
 ```
 
@@ -89,6 +92,8 @@ Every change passes these before merge; CI runs them on `ubuntu-latest` and `win
 
 5. **Standalone core**: on both Ubuntu and Windows, CI runs
    cargo check -p dashboard-core --locked and cargo test -p dashboard-core --locked with separate clean target directories.
+   The same jobs measure core line coverage and CRAP per function and fail below the platform's baseline floor, on a new
+   function above CRAP 30, or on a legacy one getting worse ([docs/quality.md](docs/quality.md)).
 
 The [main ruleset](https://github.com/hemsoft-dev/project-dashboard/rules/26477626) requires a pull request and
 these exact GitHub Actions check names: advisories, core (ubuntu-latest), core (windows-latest),

@@ -12,7 +12,7 @@ desktop window, the user's running app or the real pmd.
 
 - **Data:**
   - 8 checkouts, each a folder with its own `origin` (`hemsoft-dev/repo-0` to `repo-7`).
-  - A loopback pmd that serves each project's status (4906 B), a Board and work list of 20 items (4189 B), and the
+  - A loopback pmd that serves each project's status (4716 B), a Board and work list of 20 items (4189 B), and the
     Fleet routes.
   - A live `Pmd` source, priorities and write backend, as in the app. Config and cache live in a temporary folder.
 - **One cycle:**

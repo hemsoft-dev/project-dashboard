@@ -389,7 +389,10 @@ fn project_routes(path: &str) -> Option<(u16, String)> {
     if let Some(rest) = path.strip_prefix("/v1/projects/")
         && let Some(slug) = rest.strip_suffix("/status").and_then(project)
     {
-        let status = dashboard_core::fixtures::CLEAN.replace("hemsoft-dev/gh-x", &format!("hemsoft-dev/{slug}"));
+        // LF line endings whatever the checkout did to the fixture file, so the payload is the same size everywhere.
+        let status = dashboard_core::fixtures::CLEAN
+            .replace("\r\n", "\n")
+            .replace("hemsoft-dev/gh-x", &format!("hemsoft-dev/{slug}"));
         return Some((
             200,
             format!(

@@ -200,6 +200,8 @@ jobs:
             exit 1
           }
           Write-Output "The leaking fixture failed as it must: $($leak.failures -join '; ')"
+          # The expected failure left a nonzero LASTEXITCODE, which the pwsh wrapper would return.
+          exit 0
 
       - name: Upload the refresh qualification
         if: always()

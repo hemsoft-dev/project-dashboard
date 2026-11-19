@@ -78,15 +78,21 @@ jobs:
       # pwsh, like the test steps above, not bash. Under Git Bash the filtered-token tests in config_atomic_73 failed
       # on Windows (the token could assign the Administrators owner and write where it shouldn't). Git Bash's runtime
       # enables backup and restore privileges on the token its children inherit.
+      # The coverage toolchain is pinned: another rustc maps coverage to lines differently, so a runner image with a
+      # newer stable moved the numbers without a code change (main at 0e3722b). The baselines in crates/quality are
+      # measured with this version; change both together (docs/quality.md).
       - name: Core coverage and CRAP
         shell: pwsh
+        env:
+          COVERAGE_TOOLCHAIN: 1.99.0
         run: |
           $platform = if ($IsWindows) { 'windows' } else { 'linux' }
-          rustup component add llvm-tools-preview
+          rustup toolchain install $env:COVERAGE_TOOLCHAIN --profile minimal --component llvm-tools-preview
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Force target/quality | Out-Null
           $env:CARGO_TARGET_DIR = 'target/core-coverage'
-          cargo llvm-cov -p dashboard-core --locked --lcov --output-path "target/quality/core-$platform.lcov"
+          cargo "+$env:COVERAGE_TOOLCHAIN" llvm-cov -p dashboard-core --locked --lcov `
+            --output-path "target/quality/core-$platform.lcov"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           Remove-Item Env:CARGO_TARGET_DIR
           cargo run -p quality --locked --target-dir target/quality-tool -- crap --src crates/dashboard-core/src `

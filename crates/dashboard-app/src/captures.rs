@@ -1081,6 +1081,205 @@ fn captures_fixture_backlog() {
     save(&mut cx, handle, &out, "fixture-backlog");
 }
 
+/// The Backlog's column sort (#118) over three projects with priorities, reasons and holders: pmd's dispatch order
+/// under the new headers, Project both ways, Priority both ways (no priority last), and a third click back to
+/// dispatch order. Each state is reached by clicking the header.
+#[test]
+#[ignore = "writes Backlog sort UI evidence offscreen"]
+fn captures_backlog_sort() {
+    type Work = (
+        &'static str,
+        &'static str,
+        u64,
+        &'static str,
+        &'static str,
+        Option<u8>,
+        Option<&'static str>,
+    );
+    let out = PathBuf::from(std::env::var_os("CAPTURE_DIR").expect("CAPTURE_DIR"));
+    std::fs::create_dir_all(&out).unwrap();
+    // (id, kind, number, title, status, priority, live holder "machine model").
+    let projects: [(&str, Vec<Work>); 3] = [
+        (
+            "codexbar",
+            vec![
+                (
+                    "cb-ready",
+                    "issue",
+                    231,
+                    "Show the tray icon on Linux",
+                    "ready",
+                    Some(1),
+                    None,
+                ),
+                (
+                    "cb-blocked",
+                    "issue",
+                    240,
+                    "Sign the macOS build",
+                    "blocked",
+                    Some(1),
+                    None,
+                ),
+                (
+                    "cb-active",
+                    "issue",
+                    219,
+                    "Remember the window placement per display",
+                    "in_progress",
+                    Some(2),
+                    Some("mini claude-opus-5.5"),
+                ),
+                ("cb-later", "issue", 31, "Read shared API data", "ready", Some(4), None),
+            ],
+        ),
+        (
+            "gh-x",
+            vec![
+                (
+                    "gx-ready",
+                    "issue",
+                    88,
+                    "Show checks for every open pull request",
+                    "ready",
+                    Some(0),
+                    None,
+                ),
+                (
+                    "gx-pr",
+                    "pr",
+                    90,
+                    "feat: add the --json flag to status",
+                    "ready",
+                    Some(2),
+                    None,
+                ),
+                ("gx-later", "issue", 70, "Document the config file", "ready", None, None),
+            ],
+        ),
+        (
+            "hs-buddy",
+            vec![
+                (
+                    "hb-wait",
+                    "pr",
+                    12,
+                    "fix: retry the Slack upload",
+                    "waiting_on_franz",
+                    Some(1),
+                    Some("box gpt-6.1-sol"),
+                ),
+                (
+                    "hb-ready",
+                    "issue",
+                    14,
+                    "Summarize the weekly review",
+                    "ready",
+                    Some(3),
+                    None,
+                ),
+                ("hb-later", "issue", 20, "Add a dark theme", "ready", Some(5), None),
+            ],
+        ),
+    ];
+    let template = demo::HostedSource
+        .fetch(Path::new("/demo/codexbar"), false)
+        .unwrap()
+        .hosted
+        .unwrap()
+        .work[0]
+        .clone();
+    let documents: Vec<(PathBuf, StatusDocument)> = projects
+        .iter()
+        .map(|(name, work)| {
+            let checkout = PathBuf::from(format!("/demo/{name}"));
+            let mut document = demo::HostedSource.fetch(&checkout, false).unwrap();
+            let hosted = document.hosted.as_mut().unwrap();
+            hosted.work = work
+                .iter()
+                .map(|&(id, kind, number, title, status, priority, holder)| {
+                    let mut item = template.clone();
+                    item.id = id.into();
+                    item.project = (*name).into();
+                    item.kind = kind.into();
+                    item.number = number;
+                    item.title = title.into();
+                    item.status = status.into();
+                    item.url = format!(
+                        "https://github.com/hemsoft-dev/{name}/{}/{number}",
+                        if kind == "pr" { "pull" } else { "issues" }
+                    );
+                    item.detail = dashboard_core::backlog::Detail {
+                        gh_state: "open".into(),
+                        priority,
+                        // Author-model tags on two rows, to show where they sit and how a narrow window clips them.
+                        labels: match id {
+                            "cb-active" => vec!["model:claude-opus-5.5".into()],
+                            "gx-pr" => vec!["model:gpt-6.1-sol".into()],
+                            _ => Vec::new(),
+                        },
+                        assignment: holder.map(|holder| {
+                            let (machine, model) = holder.split_once(' ').unwrap();
+                            dashboard_core::backlog::Assignment {
+                                id: format!("{id}-assignment"),
+                                machine: machine.into(),
+                                model: model.into(),
+                                state: "running".into(),
+                                ..Default::default()
+                            }
+                        }),
+                        ..Default::default()
+                    };
+                    item
+                })
+                .collect();
+            hosted.backlog = Default::default();
+            (checkout, document)
+        })
+        .collect();
+    let mut cx = headless();
+    let show = |cx: &mut HeadlessAppContext, width: f32| {
+        let checkouts = documents.iter().map(|(checkout, _)| checkout.clone()).collect();
+        let (handle, view) = open_sized(cx, checkouts, width, 720.);
+        cx.update(|cx| {
+            view.update(cx, |v, cx| {
+                for (checkout, document) in &documents {
+                    v.apply(
+                        Outcome {
+                            checkout: checkout.clone(),
+                            result: Ok(document.clone()),
+                        },
+                        cx,
+                    );
+                }
+                v.selected_view = dashboard_core::config::View::Backlog;
+                cx.notify();
+            })
+        });
+        cx.run_until_parked();
+        handle
+    };
+    let handle = show(&mut cx, 1100.);
+    let click = |cx: &mut HeadlessAppContext, id: &'static str| {
+        cx.update_window(handle, |_, window, cx| window.click(id, cx)).unwrap();
+        cx.run_until_parked();
+    };
+    save(&mut cx, handle, &out, "backlog-sort-1-dispatch");
+    click(&mut cx, "backlog-sort-project");
+    save(&mut cx, handle, &out, "backlog-sort-2-project-ascending");
+    click(&mut cx, "backlog-sort-project");
+    save(&mut cx, handle, &out, "backlog-sort-3-project-descending");
+    click(&mut cx, "backlog-sort-priority");
+    save(&mut cx, handle, &out, "backlog-sort-4-priority-ascending");
+    click(&mut cx, "backlog-sort-priority");
+    save(&mut cx, handle, &out, "backlog-sort-5-priority-descending");
+    click(&mut cx, "backlog-sort-priority");
+    save(&mut cx, handle, &out, "backlog-sort-6-dispatch-again");
+    // A narrow window: the columns shrink together and the Item cell clips its tags at the Reason column.
+    let narrow = show(&mut cx, 640.);
+    save(&mut cx, narrow, &out, "backlog-sort-7-narrow");
+}
+
 #[test]
 #[ignore = "writes screenshots; run with CAPTURE_DIR set"]
 fn captures_merge_counts() {

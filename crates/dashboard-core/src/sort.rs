@@ -1,12 +1,14 @@
-//! The Project table's row order and name filter (#98).
+//! The Project table's row order and name filter (#98), and the Backlog's column sort (#118).
 //!
-//! Every column sorts in both directions. Rows without a value for the sorted column follow every row that has one,
-//! in either direction, and rows that compare equal keep config order. Clicking a header cycles its first direction,
-//! the reverse, then config order again.
+//! Every column of either table sorts in both directions, and rows without a value for the sorted column follow every
+//! row that has one, in either direction. In the Project table, rows that compare equal keep config order, and a
+//! header click cycles its first direction, the reverse, then config order again. The Backlog sorts within each stage
+//! group: equal rows keep pmd's dispatch order, and a header click cycles ascending, descending, then dispatch order.
 
 use std::cmp::Ordering;
 
 use crate::Card;
+use crate::backlog::Row;
 use crate::columns::Column;
 
 /// A Project-table column the rows can be sorted by.
@@ -187,6 +189,8 @@ enum Key {
     Number(u64),
     Time(jiff::Timestamp),
     Text(String),
+    /// A work item: whether it is a pull request (issues first), then its number.
+    Item(bool, u64),
 }
 
 /// What a row shows for `column`, as a comparable key, or `None` when it shows no value.
@@ -232,6 +236,112 @@ fn compare<K: Ord>(a: Option<&K>, b: Option<&K>, direction: Direction) -> Orderi
         (Some(a), Some(b), Direction::Ascending) => a.cmp(b),
         (Some(a), Some(b), Direction::Descending) => b.cmp(a),
         (a, b, _) => b.is_some().cmp(&a.is_some()),
+    }
+}
+
+/// A Backlog column the rows can be sorted by (#118).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BacklogColumn {
+    /// The project slug, ignoring case.
+    Project,
+    /// pmd's priority tier, P0 first when ascending.
+    Priority,
+    /// The row's first item: issues before pull requests, then by number.
+    Item,
+    /// Why the work waits, ignoring case.
+    Reason,
+    /// The live holders ("machine · model"), ignoring case.
+    Holder,
+}
+
+impl BacklogColumn {
+    /// Every column, in table order.
+    pub const ALL: [BacklogColumn; 5] = [Self::Project, Self::Priority, Self::Item, Self::Reason, Self::Holder];
+
+    /// The header's text.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Project => "Project",
+            Self::Priority => "Priority",
+            Self::Item => "Item",
+            Self::Reason => "Reason",
+            Self::Holder => "Holder",
+        }
+    }
+
+    /// What the direction means for this column, for the header's accessible label. A first click is always
+    /// ascending: text A to Z, P0 first, issues and low numbers first.
+    fn meaning(self, direction: Direction) -> &'static str {
+        match (self, direction) {
+            (Self::Priority, Direction::Ascending) => "highest first",
+            (Self::Priority, Direction::Descending) => "lowest first",
+            (Self::Item, Direction::Ascending) => "issues first, lowest number first",
+            (Self::Item, Direction::Descending) => "pull requests first, highest number first",
+            (_, Direction::Ascending) => "A to Z",
+            (_, Direction::Descending) => "Z to A",
+        }
+    }
+
+    /// What `row` shows for this column, as a comparable key, or `None` when it shows no value.
+    fn key(self, row: &Row) -> Option<Key> {
+        match self {
+            Self::Project => Some(Key::Text(row.project.to_lowercase())),
+            Self::Priority => row.priority().map(|p| Key::Number(p.into())),
+            Self::Item => row.items.first().map(|i| Key::Item(i.kind != "issue", i.number)),
+            Self::Reason => (!row.reason.is_empty()).then(|| Key::Text(row.reason.to_lowercase())),
+            Self::Holder => (!row.workers.is_empty()).then(|| Key::Text(row.workers.join(" / ").to_lowercase())),
+        }
+    }
+}
+
+/// How the Backlog orders the rows within each stage group (#118). Never saved: every start uses pmd's dispatch order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BacklogSort {
+    /// pmd's dispatch order: priority, rank, then the dispatch plan (`backlog::rows`).
+    #[default]
+    Dispatch,
+    /// By one column's value, in one direction.
+    By(BacklogColumn, Direction),
+}
+
+impl BacklogSort {
+    /// The order after a click on `column`'s header: ascending, descending, then dispatch order again. A click on
+    /// another column than the sorted one starts that column ascending.
+    pub fn next_for(self, column: BacklogColumn) -> Self {
+        match self {
+            Self::By(sorted, Direction::Ascending) if sorted == column => Self::By(column, Direction::Descending),
+            Self::By(sorted, _) if sorted == column => Self::Dispatch,
+            _ => Self::By(column, Direction::Ascending),
+        }
+    }
+
+    /// The direction `column` is sorted in, or `None` when the Backlog is sorted by something else.
+    pub fn direction_of(self, column: BacklogColumn) -> Option<Direction> {
+        match self {
+            Self::By(sorted, direction) if sorted == column => Some(direction),
+            _ => None,
+        }
+    }
+
+    /// `column`'s header label: "Project, A to Z" or "Project, not sorted".
+    pub fn label(self, column: BacklogColumn) -> String {
+        match self.direction_of(column) {
+            Some(direction) => format!("{}, {}", column.title(), column.meaning(direction)),
+            None => format!("{}, not sorted", column.title()),
+        }
+    }
+
+    /// Orders `rows`, which `backlog::rows` returned in dispatch order, within each stage group. Groups keep their
+    /// order; rows without a value follow every row with one; equal rows keep dispatch order.
+    pub fn apply(self, rows: &mut [Row]) {
+        let Self::By(column, direction) = self else {
+            return;
+        };
+        rows.sort_by(|a, b| {
+            a.group
+                .cmp(&b.group)
+                .then_with(|| compare(column.key(a).as_ref(), column.key(b).as_ref(), direction))
+        });
     }
 }
 

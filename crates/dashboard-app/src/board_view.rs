@@ -31,7 +31,7 @@ use dashboard_core::status::{HealthRow, Issue, PullRequest, RunOutcome, Section,
 use dashboard_core::t3::{self, Lookup, ThreadFinder};
 use dashboard_core::ui_state::UiState;
 use dashboard_core::write::{PmdWriter, WriteBackend};
-use dashboard_core::{APP_NAME, Board, Card, Overall, SortColumn, SortOrder};
+use dashboard_core::{APP_NAME, BacklogColumn, BacklogSort, Board, Card, Overall, SortColumn, SortOrder};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::tag::Tag;
@@ -135,6 +135,8 @@ pub struct BoardView {
     /// Expanded rows, by checkout, so expansion survives refreshes and re-sorting.
     expanded: HashSet<PathBuf>,
     sort: SortOrder,
+    /// The Backlog's column sort (#118). Never saved: every launch starts in pmd's dispatch order.
+    pub(crate) backlog_sort: BacklogSort,
     /// The Project table's name filter (#98). Like the sort, it starts empty on every launch.
     filter: Entity<InputState>,
     pub(crate) columns: ColumnWidths,
@@ -221,6 +223,7 @@ impl BoardView {
             options,
             expanded: HashSet::new(),
             sort: SortOrder::NEWEST_FIRST,
+            backlog_sort: BacklogSort::Dispatch,
             filter,
             columns,
             resizing: None,
@@ -513,6 +516,12 @@ impl BoardView {
     /// A click on `column`'s header: its first direction, the reverse, then config order (#98).
     pub fn cycle_column_sort(&mut self, column: SortColumn, cx: &mut Context<Self>) {
         self.sort = self.sort.next_for(column);
+        cx.notify();
+    }
+
+    /// A click on a Backlog header: ascending, descending, then pmd's dispatch order (#118).
+    pub fn cycle_backlog_sort(&mut self, column: BacklogColumn, cx: &mut Context<Self>) {
+        self.backlog_sort = self.backlog_sort.next_for(column);
         cx.notify();
     }
 

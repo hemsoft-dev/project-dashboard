@@ -11,7 +11,7 @@ use dashboard_core::fixtures::{self, ATTENTION, CLEAN, UNAVAILABLE};
 use dashboard_core::scheduler::Outcome;
 use dashboard_core::source::{FetchError, StatusSource};
 use dashboard_core::status::StatusDocument;
-use dashboard_core::{EmptyState, Overall, SortOrder};
+use dashboard_core::{BacklogSort, EmptyState, Overall, SortOrder};
 use gpui_kit::component::{ActiveTheme as _, Root};
 use gpui_kit::test::{TestAppContextExt as _, TestWindowExt as _};
 use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext, px, size};
@@ -3633,6 +3633,10 @@ fn backlog_empty_state_and_switcher_render(cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert!(window.try_find("backlog-empty").is_some());
+        assert!(
+            window.try_find("backlog-header").is_none(),
+            "no headers over an empty Backlog"
+        );
         assert!(window.try_find("Project").is_some());
     })
     .unwrap();
@@ -3720,6 +3724,161 @@ fn backlog_long_linked_work_stays_on_one_compact_line(cx: &mut TestAppContext) {
         let work = window.find(("backlog-work", 0usize));
         assert!(work.bounds().size.height <= px(32.));
         assert!(window.try_find(("backlog-row", 1usize)).is_none());
+    })
+    .unwrap();
+}
+
+/// codexbar's hosted document with only these items: (id, kind, number, status, priority, rank).
+fn backlog_document(items: &[(&str, &str, u64, &str, u8, i64)]) -> (PathBuf, StatusDocument) {
+    let checkout = PathBuf::from("/demo/codexbar");
+    let mut doc = demo::HostedSource.fetch(&checkout, false).unwrap();
+    let hosted = doc.hosted.as_mut().unwrap();
+    let template = hosted.work[0].clone();
+    hosted.work = items
+        .iter()
+        .map(|&(id, kind, number, status, priority, rank)| {
+            let mut item = template.clone();
+            item.id = id.into();
+            item.kind = kind.into();
+            item.number = number;
+            item.title = id.into();
+            item.status = status.into();
+            item.detail.gh_state = "open".into();
+            item.detail.priority = Some(priority);
+            item.detail.rank = rank;
+            item.detail.links.clear();
+            item.detail.labels.clear();
+            item.detail.assignment = None;
+            item
+        })
+        .collect();
+    hosted.backlog = Default::default();
+    (checkout, doc)
+}
+
+#[gpui_kit::test]
+fn backlog_headers_sort_within_stage_groups_then_return_to_dispatch_order(cx: &mut TestAppContext) {
+    // Up next in dispatch order: i1 (P1, rank 0), i3 (P1, rank 1), i2 (P2). Waiting / Blocked: i4.
+    let (checkout, doc) = backlog_document(&[
+        ("i1", "issue", 20, "ready", 1, 0),
+        ("i2", "issue", 5, "ready", 2, 0),
+        ("i3", "pr", 3, "ready", 1, 1),
+        ("i4", "issue", 9, "blocked", 0, 0),
+    ]);
+    let (handle, view) = open_board(
+        cx,
+        vec![checkout.clone()],
+        StatusCache::default(),
+        Arc::new(demo::HostedSource),
+        options(),
+    );
+    let show = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            view.update(cx, |v, cx| {
+                v.apply(
+                    Outcome {
+                        checkout: checkout.clone(),
+                        result: Ok(doc.clone()),
+                    },
+                    cx,
+                );
+                v.selected_view = dashboard_core::config::View::Backlog;
+                cx.notify();
+            })
+        })
+    };
+    show(cx);
+    let ids = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            (0..)
+                .map_while(|ix: usize| window.try_find(("backlog-row", ix)))
+                .map(|row| {
+                    let label = row.label().unwrap_or_default().to_owned();
+                    ["i1", "i2", "i3", "i4"]
+                        .into_iter()
+                        .find(|id| label.contains(&format!(" {id}")))
+                        .unwrap_or("?")
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap()
+    };
+    let header = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find("backlog-sort-item").label().unwrap_or_default().to_owned()
+        })
+        .unwrap()
+    };
+    let click = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| window.click("backlog-sort-item", cx))
+            .unwrap();
+        cx.run_until_parked();
+    };
+    assert_eq!(cx.update(|cx| view.read(cx).backlog_sort), BacklogSort::Dispatch);
+    assert_eq!(ids(cx), ["i1", "i3", "i2", "i4"]);
+    assert_eq!(header(cx), "Item, not sorted");
+
+    click(cx);
+    assert_eq!(header(cx), "Item, issues first, lowest number first");
+    assert_eq!(
+        ids(cx),
+        ["i2", "i1", "i3", "i4"],
+        "#5, #20, then PR #3; i4 stays in its group"
+    );
+    // A refresh keeps the sort.
+    show(cx);
+    assert_eq!(ids(cx), ["i2", "i1", "i3", "i4"]);
+
+    click(cx);
+    assert_eq!(header(cx), "Item, pull requests first, highest number first");
+    assert_eq!(ids(cx), ["i3", "i1", "i2", "i4"]);
+
+    click(cx);
+    assert_eq!(header(cx), "Item, not sorted");
+    assert_eq!(cx.update(|cx| view.read(cx).backlog_sort), BacklogSort::Dispatch);
+    assert_eq!(ids(cx), ["i1", "i3", "i2", "i4"]);
+}
+
+#[gpui_kit::test]
+fn backlog_headers_line_up_with_their_cells(cx: &mut TestAppContext) {
+    let (checkout, doc) = backlog_document(&[("i1", "issue", 20, "blocked", 1, 0)]);
+    let (handle, view) = open_board(
+        cx,
+        vec![checkout.clone()],
+        StatusCache::default(),
+        Arc::new(demo::HostedSource),
+        options(),
+    );
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.apply(
+                Outcome {
+                    checkout,
+                    result: Ok(doc),
+                },
+                cx,
+            );
+            v.selected_view = dashboard_core::config::View::Backlog;
+            cx.notify();
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        for (header, cell) in [
+            ("backlog-sort-project", "backlog-project"),
+            ("backlog-sort-priority", "backlog-priority"),
+            ("backlog-sort-item", "backlog-work"),
+            ("backlog-sort-reason", "backlog-reason"),
+        ] {
+            let (header, cell) = (window.find(header).bounds(), window.find((cell, 0usize)).bounds());
+            assert!(
+                (header.origin.x - cell.origin.x).abs() < px(0.5),
+                "{header:?} vs {cell:?}"
+            );
+        }
     })
     .unwrap();
 }

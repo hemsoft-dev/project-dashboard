@@ -9,9 +9,9 @@ use gpui_kit::{
 };
 
 /// A Backlog column's size (#118). The header and every row size their cells the same way, so values line up under
-/// their titles. Item takes the room left; the others shrink together in a narrow window. Item clips what doesn't fit,
-/// so in a very narrow window its author-model tags are cut at the Reason column instead of drawn under it; the row's
-/// tooltip and accessible label still carry them.
+/// their titles. Item takes the room left; the others shrink together in a narrow window. Inside Item the title keeps
+/// at least 6rem and the author-model tags give way first, and Item clips what still doesn't fit, so tags are cut at
+/// the Reason column instead of drawn under it. The row's tooltip and accessible label always carry them.
 fn cell(column: BacklogColumn) -> Div {
     let cell = div().min_w_0();
     match column {
@@ -159,20 +159,31 @@ impl BoardView {
                         h_flex()
                             .min_w_0()
                             .gap_2()
+                            // The title keeps at least 6rem; the tags give way first and clip, so a narrow
+                            // window never shows a row's tags without its title.
                             .child(
                                 div()
                                     .id(("backlog-work", ix))
                                     .test_support()
                                     .flex_1()
-                                    .min_w_0()
+                                    .min_w(rems(6.))
                                     .truncate()
                                     .child(work),
                             )
-                            .children(
-                                row.author_models
-                                    .into_iter()
-                                    .map(|model| div().flex_none().child(Tag::new().child(model).small().outline())),
-                            ),
+                            .when(!row.author_models.is_empty(), |item| {
+                                item.child(
+                                    h_flex()
+                                        .id(("backlog-tags", ix))
+                                        .test_support()
+                                        .flex_shrink_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .gap_2()
+                                        .children(row.author_models.into_iter().map(|model| {
+                                            div().flex_none().child(Tag::new().child(model).small().outline())
+                                        })),
+                                )
+                            }),
                     ),
                 )
                 .child(

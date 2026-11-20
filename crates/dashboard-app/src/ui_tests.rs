@@ -3956,6 +3956,47 @@ fn every_backlog_header_cycles_with_its_label_arrow_and_row_order(cx: &mut TestA
 }
 
 #[gpui_kit::test]
+fn a_narrow_backlog_keeps_the_title_and_clips_tags_before_the_reason_column(cx: &mut TestAppContext) {
+    let (checkout, mut doc) = backlog_document(&[("i1", "issue", 20, "blocked", 1, 0)]);
+    doc.hosted.as_mut().unwrap().work[0].detail.labels =
+        vec!["model:claude-opus-5.5".into(), "model:gpt-6.1-sol".into()];
+    let (handle, view) = open_board_sized(
+        cx,
+        vec![checkout.clone()],
+        StatusCache::default(),
+        Arc::new(demo::HostedSource),
+        options(),
+        640.,
+    );
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.apply(
+                Outcome {
+                    checkout,
+                    result: Ok(doc),
+                },
+                cx,
+            );
+            v.selected_view = dashboard_core::config::View::Backlog;
+            cx.notify();
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let rem = window.rem_size();
+        let work = window.find(("backlog-work", 0usize)).bounds();
+        assert!(work.size.width >= rem * 6. - px(0.5), "the title keeps 6rem: {work:?}");
+        let tags = window.find(("backlog-tags", 0usize)).bounds();
+        let reason = window.find(("backlog-reason", 0usize)).bounds();
+        assert!(
+            tags.origin.x + tags.size.width <= reason.origin.x + px(0.5),
+            "tags end before Reason: {tags:?} vs {reason:?}"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn backlog_headers_line_up_with_their_cells(cx: &mut TestAppContext) {
     let (checkout, mut doc) = backlog_document(&[("i1", "issue", 20, "blocked", 1, 0)]);
     doc.hosted.as_mut().unwrap().work[0].detail.assignment = Some(dashboard_core::backlog::Assignment {

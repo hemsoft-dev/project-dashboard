@@ -37,7 +37,7 @@ use crate::scheduler::Outcome;
 use crate::source::FetchError;
 use crate::status::StatusDocument;
 
-pub use crate::sort::{Direction, SortColumn, SortOrder};
+pub use crate::sort::{BacklogColumn, BacklogSort, Direction, SortColumn, SortOrder};
 
 /// The app's name, as the window title and the taskbar show it.
 pub const APP_NAME: &str = "Project Dashboard";

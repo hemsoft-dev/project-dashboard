@@ -174,6 +174,11 @@ impl Row {
             .join(" → ")
     }
 
+    /// pmd's priority tier, P0 to P5, or None when no item has one.
+    pub fn priority(&self) -> Option<u8> {
+        (self.priority <= 5).then_some(self.priority)
+    }
+
     pub fn priority_label(&self) -> String {
         if self.priority <= 5 {
             format!("P{}", self.priority)

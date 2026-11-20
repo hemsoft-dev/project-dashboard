@@ -11,7 +11,7 @@ use dashboard_core::fixtures::{self, ATTENTION, CLEAN, UNAVAILABLE};
 use dashboard_core::scheduler::Outcome;
 use dashboard_core::source::{FetchError, StatusSource};
 use dashboard_core::status::StatusDocument;
-use dashboard_core::{BacklogSort, EmptyState, Overall, SortOrder};
+use dashboard_core::{BacklogColumn, BacklogSort, Direction, EmptyState, Overall, SortOrder};
 use gpui_kit::component::{ActiveTheme as _, Root};
 use gpui_kit::test::{TestAppContextExt as _, TestWindowExt as _};
 use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext, px, size};
@@ -3843,8 +3843,127 @@ fn backlog_headers_sort_within_stage_groups_then_return_to_dispatch_order(cx: &m
 }
 
 #[gpui_kit::test]
+fn every_backlog_header_cycles_with_its_label_arrow_and_row_order(cx: &mut TestAppContext) {
+    // Two stage groups, with a live holder and a status reason so every column has values to sort.
+    let (checkout, mut doc) = backlog_document(&[
+        ("i1", "issue", 20, "ready", 1, 0),
+        ("i2", "issue", 5, "ready", 2, 0),
+        ("i3", "pr", 3, "ready", 1, 1),
+        ("i4", "issue", 9, "blocked", 0, 0),
+        ("i5", "issue", 7, "blocked", 1, 0),
+    ]);
+    {
+        let work = &mut doc.hosted.as_mut().unwrap().work;
+        work[3].detail.status_reason = Some("Needs a decision".into());
+        work[4].detail.assignment = Some(dashboard_core::backlog::Assignment {
+            state: "running".into(),
+            machine: "mini".into(),
+            model: "gpt-6.1-sol".into(),
+            ..Default::default()
+        });
+    }
+    let (handle, view) = open_board(
+        cx,
+        vec![checkout.clone()],
+        StatusCache::default(),
+        Arc::new(demo::HostedSource),
+        options(),
+    );
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.apply(
+                Outcome {
+                    checkout,
+                    result: Ok(doc.clone()),
+                },
+                cx,
+            );
+            v.selected_view = dashboard_core::config::View::Backlog;
+            cx.notify();
+        })
+    });
+    // The order the core sort gives, which the view must show.
+    let expected = |sort: BacklogSort| {
+        let mut rows = dashboard_core::backlog::rows([&doc]);
+        sort.apply(&mut rows);
+        rows.iter().map(|r| r.items[0].id.clone()).collect::<Vec<_>>()
+    };
+    let shown = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            (0..)
+                .map_while(|ix: usize| window.try_find(("backlog-row", ix)))
+                .map(|row| {
+                    let label = row.label().unwrap_or_default().to_owned();
+                    ["i1", "i2", "i3", "i4", "i5"]
+                        .into_iter()
+                        .find(|id| label.contains(&format!(" {id}")))
+                        .unwrap_or("?")
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap()
+    };
+    // Each header's label, and the direction of the arrow it shows, if any.
+    let headers = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            BacklogColumn::ALL
+                .iter()
+                .enumerate()
+                .map(|(ix, &column)| {
+                    let label = window
+                        .find(crate::backlog_view::sort_id(column))
+                        .label()
+                        .unwrap_or_default()
+                        .to_owned();
+                    let arrow = [Direction::Ascending, Direction::Descending]
+                        .into_iter()
+                        .filter(|&d| window.try_find((crate::backlog_view::arrow_id(d), ix)).is_some())
+                        .collect::<Vec<_>>();
+                    (label, arrow)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap()
+    };
+    assert_ne!(
+        expected(BacklogSort::By(BacklogColumn::Holder, Direction::Ascending)),
+        expected(BacklogSort::Dispatch),
+        "the fixture must let a sort move rows"
+    );
+    for column in BacklogColumn::ALL {
+        for sort in [
+            BacklogSort::By(column, Direction::Ascending),
+            BacklogSort::By(column, Direction::Descending),
+            BacklogSort::Dispatch,
+        ] {
+            cx.update_window(handle, |_, window, cx| {
+                window.click(crate::backlog_view::sort_id(column), cx)
+            })
+            .unwrap();
+            cx.run_until_parked();
+            assert_eq!(cx.update(|cx| view.read(cx).backlog_sort), sort, "{column:?}");
+            assert_eq!(shown(cx), expected(sort), "{sort:?}");
+            let wanted: Vec<(String, Vec<Direction>)> = BacklogColumn::ALL
+                .iter()
+                .map(|&c| (sort.label(c), sort.direction_of(c).into_iter().collect()))
+                .collect();
+            assert_eq!(headers(cx), wanted, "{sort:?}");
+        }
+    }
+}
+
+#[gpui_kit::test]
 fn backlog_headers_line_up_with_their_cells(cx: &mut TestAppContext) {
-    let (checkout, doc) = backlog_document(&[("i1", "issue", 20, "blocked", 1, 0)]);
+    let (checkout, mut doc) = backlog_document(&[("i1", "issue", 20, "blocked", 1, 0)]);
+    doc.hosted.as_mut().unwrap().work[0].detail.assignment = Some(dashboard_core::backlog::Assignment {
+        state: "running".into(),
+        machine: "mini".into(),
+        model: "gpt-6.1-sol".into(),
+        ..Default::default()
+    });
     let (handle, view) = open_board(
         cx,
         vec![checkout.clone()],
@@ -3872,6 +3991,7 @@ fn backlog_headers_line_up_with_their_cells(cx: &mut TestAppContext) {
             ("backlog-sort-priority", "backlog-priority"),
             ("backlog-sort-item", "backlog-work"),
             ("backlog-sort-reason", "backlog-reason"),
+            ("backlog-sort-holder", "backlog-holder"),
         ] {
             let (header, cell) = (window.find(header).bounds(), window.find((cell, 0usize)).bounds());
             assert!(

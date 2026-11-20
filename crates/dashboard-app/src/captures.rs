@@ -1182,12 +1182,6 @@ fn captures_backlog_sort() {
             ],
         ),
     ];
-    let mut cx = headless();
-    let checkouts: Vec<PathBuf> = projects
-        .iter()
-        .map(|(name, _)| PathBuf::from(format!("/demo/{name}")))
-        .collect();
-    let (handle, view) = open_sized(&mut cx, checkouts.clone(), 1100., 720.);
     let template = demo::HostedSource
         .fetch(Path::new("/demo/codexbar"), false)
         .unwrap()
@@ -1195,58 +1189,77 @@ fn captures_backlog_sort() {
         .unwrap()
         .work[0]
         .clone();
-    cx.update(|cx| {
-        view.update(cx, |v, cx| {
-            for (checkout, (_, work)) in checkouts.into_iter().zip(&projects) {
-                let mut document = demo::HostedSource.fetch(&checkout, false).unwrap();
-                let hosted = document.hosted.as_mut().unwrap();
-                let name = checkout.file_name().unwrap().to_string_lossy().into_owned();
-                hosted.work = work
-                    .iter()
-                    .map(|&(id, kind, number, title, status, priority, holder)| {
-                        let mut item = template.clone();
-                        item.id = id.into();
-                        item.project = name.clone();
-                        item.kind = kind.into();
-                        item.number = number;
-                        item.title = title.into();
-                        item.status = status.into();
-                        item.url = format!(
-                            "https://github.com/hemsoft-dev/{name}/{}/{number}",
-                            if kind == "pr" { "pull" } else { "issues" }
-                        );
-                        item.detail = dashboard_core::backlog::Detail {
-                            gh_state: "open".into(),
-                            priority,
-                            assignment: holder.map(|holder| {
-                                let (machine, model) = holder.split_once(' ').unwrap();
-                                dashboard_core::backlog::Assignment {
-                                    id: format!("{id}-assignment"),
-                                    machine: machine.into(),
-                                    model: model.into(),
-                                    state: "running".into(),
-                                    ..Default::default()
-                                }
-                            }),
-                            ..Default::default()
-                        };
-                        item
-                    })
-                    .collect();
-                hosted.backlog = Default::default();
-                v.apply(
-                    Outcome {
-                        checkout,
-                        result: Ok(document),
-                    },
-                    cx,
-                );
-            }
-            v.selected_view = dashboard_core::config::View::Backlog;
-            cx.notify();
+    let documents: Vec<(PathBuf, StatusDocument)> = projects
+        .iter()
+        .map(|(name, work)| {
+            let checkout = PathBuf::from(format!("/demo/{name}"));
+            let mut document = demo::HostedSource.fetch(&checkout, false).unwrap();
+            let hosted = document.hosted.as_mut().unwrap();
+            hosted.work = work
+                .iter()
+                .map(|&(id, kind, number, title, status, priority, holder)| {
+                    let mut item = template.clone();
+                    item.id = id.into();
+                    item.project = (*name).into();
+                    item.kind = kind.into();
+                    item.number = number;
+                    item.title = title.into();
+                    item.status = status.into();
+                    item.url = format!(
+                        "https://github.com/hemsoft-dev/{name}/{}/{number}",
+                        if kind == "pr" { "pull" } else { "issues" }
+                    );
+                    item.detail = dashboard_core::backlog::Detail {
+                        gh_state: "open".into(),
+                        priority,
+                        // Author-model tags on two rows, to show where they sit and how a narrow window clips them.
+                        labels: match id {
+                            "cb-active" => vec!["model:claude-opus-5.5".into()],
+                            "gx-pr" => vec!["model:gpt-6.1-sol".into()],
+                            _ => Vec::new(),
+                        },
+                        assignment: holder.map(|holder| {
+                            let (machine, model) = holder.split_once(' ').unwrap();
+                            dashboard_core::backlog::Assignment {
+                                id: format!("{id}-assignment"),
+                                machine: machine.into(),
+                                model: model.into(),
+                                state: "running".into(),
+                                ..Default::default()
+                            }
+                        }),
+                        ..Default::default()
+                    };
+                    item
+                })
+                .collect();
+            hosted.backlog = Default::default();
+            (checkout, document)
         })
-    });
-    cx.run_until_parked();
+        .collect();
+    let mut cx = headless();
+    let show = |cx: &mut HeadlessAppContext, width: f32| {
+        let checkouts = documents.iter().map(|(checkout, _)| checkout.clone()).collect();
+        let (handle, view) = open_sized(cx, checkouts, width, 720.);
+        cx.update(|cx| {
+            view.update(cx, |v, cx| {
+                for (checkout, document) in &documents {
+                    v.apply(
+                        Outcome {
+                            checkout: checkout.clone(),
+                            result: Ok(document.clone()),
+                        },
+                        cx,
+                    );
+                }
+                v.selected_view = dashboard_core::config::View::Backlog;
+                cx.notify();
+            })
+        });
+        cx.run_until_parked();
+        handle
+    };
+    let handle = show(&mut cx, 1100.);
     let click = |cx: &mut HeadlessAppContext, id: &'static str| {
         cx.update_window(handle, |_, window, cx| window.click(id, cx)).unwrap();
         cx.run_until_parked();
@@ -1262,6 +1275,9 @@ fn captures_backlog_sort() {
     save(&mut cx, handle, &out, "backlog-sort-5-priority-descending");
     click(&mut cx, "backlog-sort-priority");
     save(&mut cx, handle, &out, "backlog-sort-6-dispatch-again");
+    // A narrow window: the columns shrink together and the Item cell clips its tags at the Reason column.
+    let narrow = show(&mut cx, 640.);
+    save(&mut cx, narrow, &out, "backlog-sort-7-narrow");
 }
 
 #[test]

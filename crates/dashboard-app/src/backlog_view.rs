@@ -1,6 +1,6 @@
 use crate::board_view::BoardView;
-use dashboard_core::BacklogColumn;
 use dashboard_core::web_url::WebUrl;
+use dashboard_core::{BacklogColumn, Direction};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _, h_flex, tag::Tag, tooltip::Tooltip, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -9,20 +9,39 @@ use gpui_kit::{
 };
 
 /// A Backlog column's size (#118). The header and every row size their cells the same way, so values line up under
-/// their titles. Item takes the room left; the others shrink together in a narrow window.
+/// their titles. Item takes the room left; the others shrink together in a narrow window. Item clips what doesn't fit,
+/// so in a very narrow window its author-model tags are cut at the Reason column instead of drawn under it; the row's
+/// tooltip and accessible label still carry them.
 fn cell(column: BacklogColumn) -> Div {
     let cell = div().min_w_0();
     match column {
         BacklogColumn::Project => cell.w(rems(9.)).flex_shrink_1(),
         BacklogColumn::Priority => cell.w(rems(4.5)).flex_none(),
-        BacklogColumn::Item => cell.flex_grow_1().flex_shrink_1().flex_basis(rems(12.)),
+        BacklogColumn::Item => cell
+            .flex_grow_1()
+            .flex_shrink_1()
+            .flex_basis(rems(12.))
+            .overflow_hidden(),
         BacklogColumn::Reason => cell.w(rems(10.)).flex_shrink_1(),
         BacklogColumn::Holder => cell.w(rems(12.)).flex_shrink_1(),
     }
 }
 
+/// The position of `column` in the header, for its arrow's element id.
+fn index(column: BacklogColumn) -> usize {
+    BacklogColumn::ALL.iter().position(|&c| c == column).unwrap_or_default()
+}
+
+/// The sort arrow's element id, which names its direction, so tests can tell the arrows apart without reading text.
+pub(crate) fn arrow_id(direction: Direction) -> &'static str {
+    match direction {
+        Direction::Ascending => "backlog-sort-ascending",
+        Direction::Descending => "backlog-sort-descending",
+    }
+}
+
 /// A Backlog header's element id.
-fn sort_id(column: BacklogColumn) -> &'static str {
+pub(crate) fn sort_id(column: BacklogColumn) -> &'static str {
     match column {
         BacklogColumn::Project => "backlog-sort-project",
         BacklogColumn::Priority => "backlog-sort-priority",
@@ -200,7 +219,13 @@ impl BoardView {
                     .hover(move |style| style.text_color(foreground))
                     .on_click(cx.listener(move |view, _, _, cx| view.cycle_backlog_sort(column, cx)))
                     .child(div().min_w_0().truncate().child(column.title()))
-                    .children(direction.map(|direction| div().flex_none().child(direction.arrow()))),
+                    .children(direction.map(|direction| {
+                        div()
+                            .id((arrow_id(direction), index(column)))
+                            .test_support()
+                            .flex_none()
+                            .child(direction.arrow())
+                    })),
             )
         });
         div()

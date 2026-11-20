@@ -1,8 +1,9 @@
 //! The Project table's row order and name filter (#98), and the Backlog's column sort (#118).
 //!
-//! Every column sorts in both directions. Rows without a value for the sorted column follow every row that has one,
-//! in either direction, and rows that compare equal keep config order. Clicking a header cycles its first direction,
-//! the reverse, then config order again.
+//! Every column of either table sorts in both directions, and rows without a value for the sorted column follow every
+//! row that has one, in either direction. In the Project table, rows that compare equal keep config order, and a
+//! header click cycles its first direction, the reverse, then config order again. The Backlog sorts within each stage
+//! group: equal rows keep pmd's dispatch order, and a header click cycles ascending, descending, then dispatch order.
 
 use std::cmp::Ordering;
 

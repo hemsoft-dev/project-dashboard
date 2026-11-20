@@ -51,7 +51,8 @@ fn document(work: Vec<WorkItem>) -> StatusDocument {
     }
 }
 
-/// Three projects, one capitalized, with rows in every stage group:
+/// Three projects, two capitalized, with rows in every stage group. Byte order would put "Alpha" and "Gamma" before
+/// "beta"; ignoring case puts them alpha, beta, gamma.
 /// In progress: g2. Up next: b1, b2, a1. Waiting / Blocked: b3 (blocked), a2 (no reason), g1 (waiting on Franz, held).
 /// P4 and later: a4 (P4), b4 (P5), a3 (no priority).
 fn documents() -> Vec<StatusDocument> {
@@ -71,7 +72,7 @@ fn documents() -> Vec<StatusDocument> {
         document(vec![
             item(
                 "g1",
-                "gamma",
+                "Gamma",
                 ("issue", 2),
                 "waiting_on_franz",
                 Some(1),
@@ -80,7 +81,7 @@ fn documents() -> Vec<StatusDocument> {
             ),
             item(
                 "g2",
-                "gamma",
+                "Gamma",
                 ("pr", 1),
                 "in_progress",
                 Some(3),
@@ -119,7 +120,7 @@ fn each_column_sorts_within_its_stage_group_both_ways_with_missing_values_last()
     use BacklogColumn::*;
     use Direction::*;
     let cases: [(BacklogColumn, Direction, [&str; 10]); 10] = [
-        // Case is ignored ("Alpha" before "beta"); equal projects keep dispatch order.
+        // Case is ignored (alpha, beta, Gamma, not Alpha, Gamma, beta); equal projects keep dispatch order.
         (
             Project,
             Ascending,
@@ -202,6 +203,27 @@ fn holders_compare_by_their_text_ignoring_case() {
     assert_eq!(ids(&rows), ["y", "x", "z"]);
     BacklogSort::By(BacklogColumn::Holder, Direction::Descending).apply(&mut rows);
     assert_eq!(ids(&rows), ["z", "x", "y"]);
+}
+
+#[test]
+fn reasons_compare_ignoring_case() {
+    // Reasons are pmd's status reason plus the waiting status, sorted and joined: "Zulu · blocked", "apple · blocked",
+    // "blocked". Byte order would put "Zulu" first.
+    let mut documents = vec![document(vec![
+        item("r1", "p", ("issue", 1), "blocked", Some(1), 0, None),
+        item("r2", "p", ("issue", 2), "blocked", Some(1), 0, None),
+        item("r3", "p", ("issue", 3), "blocked", Some(1), 0, None),
+    ])];
+    let work = &mut documents[0].hosted.as_mut().unwrap().work;
+    work[0].detail.status_reason = Some("Zulu".into());
+    work[1].detail.status_reason = Some("apple".into());
+    let mut rows = backlog::rows(&documents);
+    let reasons = |rows: &[Row]| rows.iter().map(|r| r.reason.clone()).collect::<Vec<_>>();
+    assert_eq!(reasons(&rows), ["Zulu · blocked", "apple · blocked", "blocked"]);
+    BacklogSort::By(BacklogColumn::Reason, Direction::Ascending).apply(&mut rows);
+    assert_eq!(reasons(&rows), ["apple · blocked", "blocked", "Zulu · blocked"]);
+    BacklogSort::By(BacklogColumn::Reason, Direction::Descending).apply(&mut rows);
+    assert_eq!(reasons(&rows), ["Zulu · blocked", "blocked", "apple · blocked"]);
 }
 
 #[test]
